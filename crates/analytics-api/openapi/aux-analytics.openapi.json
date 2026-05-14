@@ -1,0 +1,2534 @@
+{
+  "components": {
+    "schemas": {
+      "AnalyticsColumn": {
+        "description": "Analytical column definition.",
+        "example": {
+          "column_name": "org_id",
+          "column_type": {
+            "kind": "primitive",
+            "primitive": "var_char"
+          }
+        },
+        "properties": {
+          "column_name": {
+            "description": "Output analytical column name. Must not be one of the built-in output\ncolumns: `tenant_id`, `table_name`, or `__id`.",
+            "example": "org_id",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "column_type": {
+            "description": "DuckDB-compatible column type.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "column_name",
+          "column_type"
+        ],
+        "type": "object"
+      },
+      "AnalyticsManifest": {
+        "description": "Top-level analytics manifest that registers source stream tables as\nanalytical tables.",
+        "example": {
+          "tables": [
+            {
+              "analytics_table_name": "users",
+              "clustering_keys": [
+                {
+                  "column_name": "email",
+                  "order": "asc"
+                }
+              ],
+              "document_column": "item",
+              "partition_keys": [
+                {
+                  "column_name": "tenant_id"
+                }
+              ],
+              "projection_columns": [
+                {
+                  "attribute_path": "profile.email",
+                  "column_name": "email",
+                  "column_type": {
+                    "kind": "primitive",
+                    "primitive": "var_char"
+                  }
+                }
+              ],
+              "row_identity": {
+                "kind": "record_key"
+              },
+              "skip_delete": false,
+              "source_table_name": "source_users",
+              "tenant_id": "tenant-a",
+              "tenant_selector": {
+                "kind": "table_name"
+              }
+            }
+          ],
+          "version": 1
+        },
+        "properties": {
+          "tables": {
+            "description": "Table registrations to create and maintain in the analytical catalog.",
+            "example": [
+              {
+                "analytics_table_name": "users",
+                "projection_columns": [
+                  {
+                    "attribute_path": "profile.email",
+                    "column_name": "email"
+                  }
+                ],
+                "source_table_name": "source_users",
+                "tenant_id": "tenant-a"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TableRegistration"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "version": {
+            "default": 1,
+            "description": "Manifest format version supported by this crate.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "tables"
+        ],
+        "type": "object"
+      },
+      "CheckpointHealth": {
+        "description": "Source checkpoint position for a single source table shard.",
+        "example": {
+          "position": "49668899999999999999999999999999999999999999999999999999",
+          "shard_id": "shard-0001",
+          "source_table_name": "source_users",
+          "updated_at_ms": 1778670000200
+        },
+        "properties": {
+          "position": {
+            "description": "Opaque source stream position to resume from.",
+            "example": "49668899999999999999999999999999999999999999999999999999",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "shard_id": {
+            "description": "Source shard identifier.",
+            "example": "shard-0001",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_table_name": {
+            "description": "Source table name from the analytics source configuration.",
+            "example": "source_users",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when this checkpoint was updated.",
+            "example": 1778670000200,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "source_table_name",
+          "shard_id",
+          "position"
+        ],
+        "type": "object"
+      },
+      "ClusteringKey": {
+        "description": "`DuckLake` clustering or sorting key definition.",
+        "example": {
+          "column_name": "email",
+          "order": "asc"
+        },
+        "properties": {
+          "column_name": {
+            "description": "Output column used for clustering.",
+            "example": "email",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "order": {
+            "default": "asc",
+            "description": "Sort direction. Defaults to ascending when omitted.",
+            "example": "asc",
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SortOrder",
+                "description": "Sort direction. Defaults to ascending when omitted."
+              }
+            ]
+          }
+        },
+        "required": [
+          "column_name"
+        ],
+        "type": "object"
+      },
+      "DiagnosticsResponse": {
+        "description": "Process diagnostics including source poller state.",
+        "example": {
+          "source": {
+            "checkpoints": [],
+            "last_error": null,
+            "last_error_at_ms": null,
+            "last_poll_started_at_ms": null,
+            "last_success_at_ms": null,
+            "poller_enabled": false,
+            "status": "disabled",
+            "table_count": 0,
+            "total_checkpoint_errors": 0,
+            "total_checkpoints_saved": 0,
+            "total_ingest_errors": 0,
+            "total_poll_errors": 0,
+            "total_polls": 0,
+            "total_records_ingested": 0
+          },
+          "status": "ok"
+        },
+        "properties": {
+          "retention": {
+            "$ref": "#/components/schemas/RetentionHealth",
+            "description": "Retention sweeper health details."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceHealth",
+            "description": "Source poller health details."
+          },
+          "status": {
+            "description": "Human-readable diagnostic status.",
+            "example": "ok",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "source",
+          "retention"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "description": "Error response for invalid requests and query failures.",
+        "example": {
+          "error": "query must be a single read-only SELECT statement"
+        },
+        "properties": {
+          "error": {
+            "description": "Human-readable error message.",
+            "example": "query must be a single read-only SELECT statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "Basic service health response.",
+        "example": {
+          "source": {
+            "checkpoints": [],
+            "last_error": null,
+            "last_error_at_ms": null,
+            "last_poll_started_at_ms": null,
+            "last_success_at_ms": null,
+            "poller_enabled": false,
+            "status": "disabled",
+            "table_count": 0,
+            "total_checkpoint_errors": 0,
+            "total_checkpoints_saved": 0,
+            "total_ingest_errors": 0,
+            "total_poll_errors": 0,
+            "total_polls": 0,
+            "total_records_ingested": 0
+          },
+          "status": "healthy"
+        },
+        "properties": {
+          "retention": {
+            "$ref": "#/components/schemas/RetentionHealth",
+            "description": "Retention sweeper health details."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceHealth",
+            "description": "Source poller health details."
+          },
+          "status": {
+            "description": "Human-readable health status.",
+            "example": "healthy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "source",
+          "retention"
+        ],
+        "type": "object"
+      },
+      "IngestResponse": {
+        "description": "Stream ingestion outcome.",
+        "example": {
+          "outcome": "inserted"
+        },
+        "properties": {
+          "outcome": {
+            "description": "Final ingestion action performed by the engine.",
+            "example": "inserted",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "IngestStreamRecordPayload": {
+        "description": "Accepted ingestion payload shapes.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/StorageStreamRecord",
+            "description": "Domain-agnostic analytics wire format."
+          },
+          {
+            "$ref": "#/components/schemas/StandardStreamEventRecord",
+            "description": "Standard stream event envelope containing a DynamoDB-compatible record."
+          }
+        ]
+      },
+      "IngestStreamRecordRequest": {
+        "description": "Stream ingestion request.",
+        "example": {
+          "record": {
+            "Keys": {
+              "pk": {
+                "S": "USER#user-1"
+              }
+            },
+            "NewImage": {
+              "org_id": {
+                "S": "org-a"
+              },
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "ada@example.com"
+                  }
+                }
+              }
+            },
+            "SequenceNumber": "49668899999999999999999999999999999999999999999999999999"
+          },
+          "record_key": "user-1"
+        },
+        "properties": {
+          "record": {
+            "$ref": "#/components/schemas/IngestStreamRecordPayload",
+            "description": "Stream record in the analytics wire format or a standard stream event\nenvelope."
+          },
+          "record_key": {
+            "default": null,
+            "description": "Stable row key for idempotent writes. Defaults to the stream sequence or\nevent id when omitted.",
+            "example": "user-1",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "record"
+        ],
+        "type": "object"
+      },
+      "PartitionBucket": {
+        "description": "Partition bucketing transform.",
+        "oneOf": [
+          {
+            "description": "Hash bucket a column into a fixed number of buckets.",
+            "properties": {
+              "buckets": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "enum": [
+                  "hash"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "buckets",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Time bucket a timestamp column.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "time"
+                ],
+                "type": "string"
+              },
+              "size": {
+                "format": "int32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unit": {
+                "$ref": "#/components/schemas/TimeBucketUnit"
+              }
+            },
+            "required": [
+              "unit",
+              "size",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PartitionKey": {
+        "description": "`DuckLake` partition key definition.",
+        "example": {
+          "column_name": "tenant_id"
+        },
+        "properties": {
+          "bucket": {
+            "default": null,
+            "description": "Optional partition bucketing transform.",
+            "example": {
+              "buckets": 32,
+              "kind": "hash"
+            },
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PartitionBucket",
+                "description": "Optional partition bucketing transform."
+              }
+            ]
+          },
+          "column_name": {
+            "description": "Output column used for partitioning.",
+            "example": "tenant_id",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "column_name"
+        ],
+        "type": "object"
+      },
+      "PrimitiveColumnType": {
+        "description": "Primitive `DuckDB` column type supported by the manifest contract.",
+        "enum": [
+          "boolean",
+          "var_char",
+          "json",
+          "big_int",
+          "decimal",
+          "timestamp"
+        ],
+        "type": "string"
+      },
+      "ProjectionColumn": {
+        "description": "Typed projected column sourced from a nested source attribute path.",
+        "example": {
+          "attribute_path": "profile.email",
+          "column_name": "email",
+          "column_type": {
+            "kind": "primitive",
+            "primitive": "var_char"
+          }
+        },
+        "properties": {
+          "attribute_path": {
+            "description": "Dot-separated source attribute path.",
+            "example": "profile.email",
+            "maxLength": 1024,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_.$-]+(\\\\.[A-Za-z0-9_.$-]+)*$",
+            "type": "string"
+          },
+          "column_name": {
+            "description": "Output analytical column name. Must not be one of the built-in output\ncolumns: `tenant_id`, `table_name`, or `__id`.",
+            "example": "email",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "column_type": {
+            "default": null,
+            "description": "Optional output column type. Defaults to VARCHAR when omitted.",
+            "example": {
+              "kind": "primitive",
+              "primitive": "var_char"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "column_name",
+          "attribute_path"
+        ],
+        "type": "object"
+      },
+      "QueryExpression": {
+        "description": "Structured expression used by filters, grouping, and ordering.",
+        "oneOf": [
+          {
+            "description": "Registered analytical column expression.",
+            "properties": {
+              "column_name": {
+                "description": "Registered column name.",
+                "example": "org_id",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "column"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "column_name",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "JSON document path expression.",
+            "properties": {
+              "document_column": {
+                "description": "Registered document column name.",
+                "example": "item",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "document_path"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "description": "Dot-separated JSON path relative to the document root.",
+                "example": "profile.email",
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_column",
+              "path",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "QueryOrder": {
+        "description": "Structured ORDER BY clause.",
+        "example": {
+          "direction": "asc",
+          "expression": {
+            "column_name": "email",
+            "kind": "column"
+          }
+        },
+        "properties": {
+          "direction": {
+            "default": "asc",
+            "description": "Sort direction. Defaults to ascending when omitted.",
+            "example": "asc",
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SortOrder",
+                "description": "Sort direction. Defaults to ascending when omitted."
+              }
+            ]
+          },
+          "expression": {
+            "$ref": "#/components/schemas/QueryExpression",
+            "description": "Expression to order by."
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "type": "object"
+      },
+      "QueryPredicate": {
+        "description": "Structured predicate used in WHERE clauses.",
+        "oneOf": [
+          {
+            "description": "Equality predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "eq"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Inequality predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "not_eq"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Greater-than predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "gt"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Greater-than-or-equal predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "gte"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Less-than predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "lt"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Less-than-or-equal predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Left-hand expression."
+              },
+              "kind": {
+                "enum": [
+                  "lte"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "description": "Right-hand literal JSON value."
+              }
+            },
+            "required": [
+              "expression",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "IS NULL predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Expression to test."
+              },
+              "kind": {
+                "enum": [
+                  "is_null"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "IS NOT NULL predicate.",
+            "properties": {
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression",
+                "description": "Expression to test."
+              },
+              "kind": {
+                "enum": [
+                  "is_not_null"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "QueryResponse": {
+        "description": "Query result rows as JSON objects.",
+        "example": {
+          "rows": [
+            {
+              "email": "ada@example.com",
+              "org_id": "org-a"
+            }
+          ]
+        },
+        "properties": {
+          "rows": {
+            "description": "Result rows returned by `DuckDB`.",
+            "example": [
+              {
+                "email": "ada@example.com",
+                "org_id": "org-a"
+              }
+            ],
+            "items": {},
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows"
+        ],
+        "type": "object"
+      },
+      "QuerySelect": {
+        "description": "Structured select expression.",
+        "oneOf": [
+          {
+            "description": "Select a registered analytical column.",
+            "properties": {
+              "alias": {
+                "default": null,
+                "description": "Optional output alias. Defaults to the column name when omitted.",
+                "example": "user_email",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "column_name": {
+                "description": "Registered column name.",
+                "example": "email",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "column"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "column_name",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Select a path from the configured JSON document column.",
+            "properties": {
+              "alias": {
+                "description": "Required output alias for the extracted value.",
+                "example": "email",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "document_column": {
+                "description": "Registered document column name.",
+                "example": "item",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "document_path"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "description": "Dot-separated JSON path relative to the document root.",
+                "example": "profile.email",
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "document_column",
+              "path",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Select count(*).",
+            "properties": {
+              "alias": {
+                "description": "Required output alias for the count column.",
+                "example": "count",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "count"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ReadyResponse": {
+        "description": "Readiness response.",
+        "example": {
+          "status": "ready"
+        },
+        "properties": {
+          "status": {
+            "description": "Human-readable readiness status.",
+            "example": "ready",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "RetentionHealth": {
+        "example": {
+          "last_sweep_completed_at_ms": 1778670000200,
+          "last_sweep_duration_ms": 25.0,
+          "status": "healthy",
+          "sweeper_enabled": true,
+          "table_count": 1,
+          "total_rows_deleted": 128,
+          "total_sweep_errors": 0
+        },
+        "properties": {
+          "last_sweep_completed_at_ms": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_sweep_duration_ms": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/RetentionHealthStatus"
+          },
+          "sweeper_enabled": {
+            "type": "boolean"
+          },
+          "table_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_rows_deleted": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_sweep_errors": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "sweeper_enabled"
+        ],
+        "type": "object"
+      },
+      "RetentionHealthStatus": {
+        "enum": [
+          "disabled",
+          "starting",
+          "healthy",
+          "degraded"
+        ],
+        "type": "string"
+      },
+      "RetentionPolicy": {
+        "description": "Static retention policy for one analytical table.",
+        "example": {
+          "period_ms": 7776000000,
+          "timestamp": {
+            "attribute_path": "created_at_ms",
+            "kind": "attribute"
+          }
+        },
+        "properties": {
+          "period_ms": {
+            "description": "Retention duration in milliseconds.",
+            "example": 7776000000,
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "timestamp": {
+            "$ref": "#/components/schemas/RetentionTimestamp",
+            "description": "Timestamp used as the start time for retention."
+          }
+        },
+        "required": [
+          "period_ms",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "RetentionTimestamp": {
+        "description": "Timestamp basis used to compute row expiry.",
+        "oneOf": [
+          {
+            "description": "Read a unix epoch millisecond value from a source item attribute path.",
+            "properties": {
+              "attribute_path": {
+                "description": "Dot-separated source attribute path.",
+                "example": "created_at_ms",
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "attribute"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attribute_path",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Use the aux-analytics ingestion time.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "ingested_at"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RowIdentity": {
+        "description": "Stable row identity extraction rule.",
+        "oneOf": [
+          {
+            "description": "Use the record key supplied to the ingest endpoint.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "record_key"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Hash the source stream key map.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "stream_keys"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Hash a string attribute value from the source item.",
+            "properties": {
+              "attribute_name": {
+                "description": "Source string attribute containing row identity.",
+                "example": "id",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "attribute"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attribute_name",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Extract row identity from a named regex capture group on a string\nattribute.",
+            "properties": {
+              "attribute_name": {
+                "description": "Source string attribute to match.",
+                "example": "pk",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "capture": {
+                "description": "Named capture group to use as row identity.",
+                "example": "user_id",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "attribute_regex"
+                ],
+                "type": "string"
+              },
+              "regex": {
+                "description": "Regular expression with the configured capture group.",
+                "example": "^TENANT#(?<tenant_id>[^#]+)#USER#(?<user_id>[^#]+)$",
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "attribute_name",
+              "regex",
+              "capture",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SortOrder": {
+        "description": "Sort direction for clustering and structured order clauses.",
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "type": "string"
+      },
+      "SourceHealth": {
+        "description": "Current source polling and checkpoint health for diagnostics responses.",
+        "example": {
+          "checkpoints": [
+            {
+              "position": "49668899999999999999999999999999999999999999999999999999",
+              "shard_id": "shard-0001",
+              "source_table_name": "source_users",
+              "updated_at_ms": 1778670000200
+            }
+          ],
+          "last_error": null,
+          "last_error_at_ms": null,
+          "last_poll_started_at_ms": 1778670000000,
+          "last_success_at_ms": 1778670000200,
+          "poller_enabled": true,
+          "status": "healthy",
+          "table_count": 1,
+          "total_checkpoint_errors": 0,
+          "total_checkpoints_saved": 16,
+          "total_ingest_errors": 0,
+          "total_poll_errors": 0,
+          "total_polls": 42,
+          "total_records_ingested": 128
+        },
+        "properties": {
+          "checkpoints": {
+            "default": [],
+            "description": "Last known checkpoint positions by source table and shard.",
+            "example": [
+              {
+                "position": "49668899999999999999999999999999999999999999999999999999",
+                "shard_id": "shard-0001",
+                "source_table_name": "source_users",
+                "updated_at_ms": 1778670000200
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/CheckpointHealth"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "last_error": {
+            "default": null,
+            "description": "Last source polling error message, when present.",
+            "example": "analytics source http request failed with status 503: unavailable",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_error_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds for the most recent poll error.",
+            "example": 1778670000100,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_poll_started_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when the most recent poll started.",
+            "example": 1778670000000,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_success_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds for the most recent successful poll.",
+            "example": 1778670000200,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "poller_enabled": {
+            "default": false,
+            "description": "Whether source polling is enabled for this process.",
+            "example": true,
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SourceHealthStatus",
+            "description": "Overall poller state."
+          },
+          "table_count": {
+            "default": 0,
+            "description": "Number of source tables configured for polling.",
+            "example": 1,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_checkpoint_errors": {
+            "default": 0,
+            "description": "Total source checkpoint persistence failures.",
+            "example": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_checkpoints_saved": {
+            "default": 0,
+            "description": "Total source checkpoints persisted.",
+            "example": 16,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_ingest_errors": {
+            "default": 0,
+            "description": "Total source records that failed ingestion.",
+            "example": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_poll_errors": {
+            "default": 0,
+            "description": "Total poll cycles that failed since process start.",
+            "example": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_polls": {
+            "default": 0,
+            "description": "Total poll cycles attempted since process start.",
+            "example": 42,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_records_ingested": {
+            "default": 0,
+            "description": "Total records successfully ingested by the source poller.",
+            "example": 128,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "poller_enabled"
+        ],
+        "type": "object"
+      },
+      "SourceHealthStatus": {
+        "description": "Health state for the optional source poller.",
+        "enum": [
+          "disabled",
+          "starting",
+          "healthy",
+          "degraded"
+        ],
+        "type": "string"
+      },
+      "StandardStreamEventRecord": {
+        "description": "Standard stream event envelope.",
+        "example": {
+          "dynamodb": {
+            "Keys": {
+              "pk": {
+                "S": "USER#user-1"
+              }
+            },
+            "NewImage": {
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "ada@example.com"
+                  }
+                }
+              }
+            },
+            "SequenceNumber": "49668899999999999999999999999999999999999999999999999999"
+          },
+          "eventID": "event-user-1-insert",
+          "eventName": "INSERT"
+        },
+        "properties": {
+          "dynamodb": {
+            "$ref": "#/components/schemas/StandardStreamStorageRecord",
+            "description": "DynamoDB-compatible stream record body."
+          },
+          "eventID": {
+            "default": null,
+            "description": "Source event id used as a fallback ingestion row key.",
+            "example": "event-user-1-insert",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "eventName": {
+            "default": null,
+            "description": "Source event operation name, such as INSERT, MODIFY, or REMOVE.",
+            "example": "INSERT",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "dynamodb"
+        ],
+        "type": "object"
+      },
+      "StandardStreamStorageRecord": {
+        "description": "DynamoDB-compatible stream record body.",
+        "example": {
+          "Keys": {
+            "pk": {
+              "S": "USER#user-1"
+            }
+          },
+          "NewImage": {
+            "pk": {
+              "S": "USER#user-1"
+            },
+            "profile": {
+              "M": {
+                "email": {
+                  "S": "ada@example.com"
+                }
+              }
+            }
+          },
+          "SequenceNumber": "49668899999999999999999999999999999999999999999999999999"
+        },
+        "properties": {
+          "Keys": {
+            "description": "Primary key attributes for the source record.",
+            "type": "object"
+          },
+          "NewImage": {
+            "default": null,
+            "description": "New record image for insert and update events.",
+            "example": {
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "ada@example.com"
+                  }
+                }
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "OldImage": {
+            "default": null,
+            "description": "Previous record image for update and delete events.",
+            "example": {
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "old@example.com"
+                  }
+                }
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "SequenceNumber": {
+            "description": "Source stream sequence number.",
+            "example": "49668899999999999999999999999999999999999999999999999999",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "Keys",
+          "SequenceNumber"
+        ],
+        "type": "object"
+      },
+      "StorageStreamRecord": {
+        "description": "Domain-agnostic storage stream record accepted by the analytics ingestion\nAPI.",
+        "example": {
+          "Keys": {
+            "pk": {
+              "S": "USER#user-1"
+            }
+          },
+          "NewImage": {
+            "org_id": {
+              "S": "org-a"
+            },
+            "pk": {
+              "S": "USER#user-1"
+            },
+            "profile": {
+              "M": {
+                "email": {
+                  "S": "ada@example.com"
+                }
+              }
+            }
+          },
+          "OldImage": null,
+          "SequenceNumber": "49668899999999999999999999999999999999999999999999999999"
+        },
+        "properties": {
+          "Keys": {
+            "description": "Source storage key attributes for the record.",
+            "type": "object"
+          },
+          "NewImage": {
+            "default": null,
+            "description": "New source image for insert and update events.",
+            "example": {
+              "org_id": {
+                "S": "org-a"
+              },
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "ada@example.com"
+                  }
+                }
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "OldImage": {
+            "default": null,
+            "description": "Previous source image for update and delete events.",
+            "example": {
+              "pk": {
+                "S": "USER#user-1"
+              },
+              "profile": {
+                "M": {
+                  "email": {
+                    "S": "old@example.com"
+                  }
+                }
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "SequenceNumber": {
+            "description": "Source stream sequence number or equivalent monotonically ordered\nposition.",
+            "example": "49668899999999999999999999999999999999999999999999999999",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "Keys",
+          "SequenceNumber"
+        ],
+        "type": "object"
+      },
+      "StructuredQuery": {
+        "description": "Structured query tree compiled to safe SQL by the analytics engine.",
+        "example": {
+          "analytics_table_name": "users",
+          "filters": [
+            {
+              "expression": {
+                "column_name": "org_id",
+                "kind": "column"
+              },
+              "kind": "eq",
+              "value": "org-a"
+            }
+          ],
+          "group_by": [],
+          "limit": 100,
+          "order_by": [
+            {
+              "direction": "asc",
+              "expression": {
+                "column_name": "email",
+                "kind": "column"
+              }
+            }
+          ],
+          "select": [
+            {
+              "alias": null,
+              "column_name": "email",
+              "kind": "column"
+            }
+          ]
+        },
+        "properties": {
+          "analytics_table_name": {
+            "description": "Registered analytical table name to query.",
+            "example": "users",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "filters": {
+            "default": [],
+            "description": "Optional filter predicates joined with AND.",
+            "example": [
+              {
+                "expression": {
+                  "column_name": "org_id",
+                  "kind": "column"
+                },
+                "kind": "eq",
+                "value": "org-a"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/QueryPredicate"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "group_by": {
+            "default": [],
+            "description": "Optional GROUP BY expressions.",
+            "example": [],
+            "items": {
+              "$ref": "#/components/schemas/QueryExpression"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "limit": {
+            "default": null,
+            "description": "Optional row limit.",
+            "example": 100,
+            "format": "int32",
+            "maximum": 100000,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "order_by": {
+            "default": [],
+            "description": "Optional ORDER BY clauses.",
+            "example": [
+              {
+                "direction": "asc",
+                "expression": {
+                  "column_name": "email",
+                  "kind": "column"
+                }
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/QueryOrder"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "select": {
+            "description": "Select list. At least one select item is required.",
+            "example": [
+              {
+                "alias": null,
+                "column_name": "email",
+                "kind": "column"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/QuerySelect"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "analytics_table_name",
+          "select"
+        ],
+        "type": "object"
+      },
+      "TableRegistration": {
+        "description": "Registration for one analytical table populated from one source table or\nsource table family.",
+        "example": {
+          "analytics_table_name": "users",
+          "clustering_keys": [
+            {
+              "column_name": "email",
+              "order": "asc"
+            }
+          ],
+          "columns": [],
+          "condition_expression": null,
+          "document_column": "item",
+          "expression_attribute_names": null,
+          "expression_attribute_values": null,
+          "partition_keys": [
+            {
+              "column_name": "tenant_id"
+            }
+          ],
+          "projection_attribute_names": null,
+          "projection_columns": [
+            {
+              "attribute_path": "profile.email",
+              "column_name": "email",
+              "column_type": {
+                "kind": "primitive",
+                "primitive": "var_char"
+              }
+            }
+          ],
+          "row_identity": {
+            "kind": "record_key"
+          },
+          "skip_delete": false,
+          "source_table_name": "source_users",
+          "source_table_name_prefix": null,
+          "tenant_id": "tenant-a",
+          "tenant_selector": {
+            "kind": "table_name"
+          }
+        },
+        "properties": {
+          "analytics_table_name": {
+            "description": "DuckDB-compatible analytical table name to create and query.",
+            "example": "users",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "clustering_keys": {
+            "default": [],
+            "description": "`DuckLake` clustering or sorting layout columns.",
+            "example": [
+              {
+                "column_name": "email",
+                "order": "asc"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ClusteringKey"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "columns": {
+            "default": [],
+            "description": "Explicit analytical columns. When present, these define table shape\ndirectly. Custom column names must not use the built-in output\ncolumn names `tenant_id`, `table_name`, or `__id`.",
+            "example": [],
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsColumn"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "condition_expression": {
+            "default": null,
+            "description": "Optional DynamoDB-compatible condition expression that filters source\nitems before ingestion.",
+            "example": "attribute_exists(profile.email)",
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "document_column": {
+            "default": "item",
+            "description": "JSON document column containing the full source item. Set null to omit\nthe full document. Must not use the built-in output column names\n`tenant_id`, `table_name`, or `__id`.",
+            "example": "item",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expression_attribute_names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": null,
+            "description": "Expression attribute name aliases referenced by condition or projection\nexpressions.",
+            "example": {
+              "#email": "profile.email"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "expression_attribute_values": {
+            "default": null,
+            "description": "Expression attribute values referenced by condition or projection\nexpressions.",
+            "example": {
+              ":active": {
+                "BOOL": true
+              }
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "partition_keys": {
+            "default": [],
+            "description": "`DuckLake` partition layout columns.",
+            "example": [
+              {
+                "column_name": "tenant_id"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/PartitionKey"
+            },
+            "minItems": 0,
+            "type": "array"
+          },
+          "projection_attribute_names": {
+            "default": null,
+            "description": "Simple top-level source attribute names to project as VARCHAR columns.\nValues must not use the built-in output column names `tenant_id`,\n`table_name`, or `__id`.",
+            "example": [
+              "email",
+              "org_id"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "projection_columns": {
+            "default": null,
+            "description": "Typed projection columns from nested source attributes.\nProjection output names must not use the built-in output column names\n`tenant_id`, `table_name`, or `__id`.",
+            "example": [
+              {
+                "attribute_path": "profile.email",
+                "column_name": "email",
+                "column_type": {
+                  "kind": "primitive",
+                  "primitive": "var_char"
+                }
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ProjectionColumn"
+            },
+            "minItems": 1,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "retention": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RetentionPolicy",
+                "description": "Optional static retention policy for rows in this analytical table."
+              }
+            ]
+          },
+          "row_identity": {
+            "default": {
+              "kind": "record_key"
+            },
+            "description": "Rule used to derive the stable row id for upserts and deletes.",
+            "example": {
+              "attribute_name": "id",
+              "kind": "attribute"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RowIdentity",
+                "description": "Rule used to derive the stable row id for upserts and deletes."
+              }
+            ]
+          },
+          "skip_delete": {
+            "default": false,
+            "description": "Whether delete events should be ignored instead of removing analytical\nrows.",
+            "example": false,
+            "type": "boolean"
+          },
+          "source_table_name": {
+            "description": "Source storage table name to read from.",
+            "example": "source_users",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_table_name_prefix": {
+            "default": null,
+            "description": "Optional source table prefix for families of source tables that share\none registration.",
+            "example": "tenant_",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant_id": {
+            "default": null,
+            "description": "Static tenant id to write into ingested rows when the source does not\ncarry tenant identity.",
+            "example": "tenant-a",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tenant_selector": {
+            "default": {
+              "kind": "table_name"
+            },
+            "description": "Rule used to derive tenant id from records when tenant_id is not static.",
+            "example": {
+              "attribute_name": "tenant_id",
+              "kind": "attribute"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TenantSelector",
+                "description": "Rule used to derive tenant id from records when `tenant_id` is not\nstatic."
+              }
+            ]
+          }
+        },
+        "required": [
+          "source_table_name",
+          "analytics_table_name"
+        ],
+        "type": "object"
+      },
+      "TenantQueryRequest": {
+        "description": "Tenant-scoped structured query request for callers that should not\nconstruct SQL.",
+        "example": {
+          "query": {
+            "analytics_table_name": "users",
+            "filters": [
+              {
+                "expression": {
+                  "column_name": "org_id",
+                  "kind": "column"
+                },
+                "kind": "eq",
+                "value": "org-a"
+              }
+            ],
+            "group_by": [],
+            "limit": 100,
+            "order_by": [
+              {
+                "direction": "asc",
+                "expression": {
+                  "column_name": "email",
+                  "kind": "column"
+                }
+              }
+            ],
+            "select": [
+              {
+                "alias": null,
+                "column_name": "email",
+                "kind": "column"
+              }
+            ]
+          },
+          "target_tenant_id": "tenant_01"
+        },
+        "properties": {
+          "query": {
+            "$ref": "#/components/schemas/StructuredQuery",
+            "description": "Structured query tree compiled by the analytics engine."
+          },
+          "target_tenant_id": {
+            "description": "Tenant id that the query is authorized to read. The API injects this as\nan engine-owned tenant predicate; callers must not rely on their own\ntenant filters for isolation.",
+            "example": "tenant_01",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_tenant_id",
+          "query"
+        ],
+        "type": "object"
+      },
+      "TenantSelector": {
+        "description": "Tenant id extraction rule.",
+        "oneOf": [
+          {
+            "description": "Do not write tenant ids.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "none"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Use the source table name as tenant context.",
+            "properties": {
+              "kind": {
+                "enum": [
+                  "table_name"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Read tenant id from a string attribute.",
+            "properties": {
+              "attribute_name": {
+                "description": "Source string attribute containing tenant id.",
+                "example": "tenant_id",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "attribute"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "attribute_name",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Extract tenant id from a named regex capture group on a string\nattribute.",
+            "properties": {
+              "attribute_name": {
+                "description": "Source string attribute to match.",
+                "example": "pk",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "capture": {
+                "description": "Named capture group to use as tenant id.",
+                "example": "tenant_id",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "attribute_regex"
+                ],
+                "type": "string"
+              },
+              "regex": {
+                "description": "Regular expression with the configured capture group.",
+                "example": "^TENANT#(?<tenant_id>[^#]+)#USER#(?<user_id>[^#]+)$",
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "attribute_name",
+              "regex",
+              "capture",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Prefer table name when available, otherwise parse a partition-key\nprefix.",
+            "properties": {
+              "attribute_name": {
+                "default": "pk",
+                "description": "Source partition key attribute.",
+                "example": "pk",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "table_name_or_partition_key_prefix"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Parse tenant id from the prefix of a partition key attribute.",
+            "properties": {
+              "attribute_name": {
+                "default": "pk",
+                "description": "Source partition key attribute.",
+                "example": "pk",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "partition_key_prefix"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TimeBucketUnit": {
+        "description": "Time bucket unit for partitioning.",
+        "enum": [
+          "minute",
+          "hour",
+          "day",
+          "month"
+        ],
+        "type": "string"
+      },
+      "UnscopedSqlQueryRequest": {
+        "description": "Explicitly unscoped raw SQL query request. The HTTP API validates this shape\nbut rejects execution until an admin authorization boundary exists.",
+        "example": {
+          "sql": "select email, org_id from users where org_id = 'org-a' order by email"
+        },
+        "properties": {
+          "sql": {
+            "description": "Raw SQL text. The HTTP API rejects raw SQL execution because arbitrary\nSQL cannot prove tenant isolation without a separate admin boundary.",
+            "example": "select email, org_id from users where org_id = 'org-a' order by email",
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "type": "object"
+      },
+      "UnscopedStructuredQueryRequest": {
+        "description": "Explicitly unscoped structured query request.",
+        "example": {
+          "query": {
+            "analytics_table_name": "legacy_items",
+            "filters": [],
+            "group_by": [],
+            "limit": 100,
+            "order_by": [],
+            "select": [
+              {
+                "alias": "email",
+                "document_column": "item",
+                "kind": "document_path",
+                "path": "profile.email"
+              }
+            ]
+          }
+        },
+        "properties": {
+          "query": {
+            "$ref": "#/components/schemas/StructuredQuery",
+            "description": "Structured query tree compiled by the analytics engine without a tenant\npredicate. Use only for explicitly unscoped data."
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "",
+    "license": {
+      "identifier": "BUSL-1.1",
+      "name": "BUSL-1.1"
+    },
+    "title": "analytics-api",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/diagnostics": {
+      "get": {
+        "operationId": "diagnostics",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsResponse"
+                }
+              }
+            },
+            "description": "Service diagnostics including source polling and checkpoint health"
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Service is healthy"
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/ingest/{analytics_table_name}": {
+      "post": {
+        "operationId": "ingest_stream_record",
+        "parameters": [
+          {
+            "description": "Registered analytics table name",
+            "in": "path",
+            "name": "analytics_table_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestStreamRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResponse"
+                }
+              }
+            },
+            "description": "Ingest outcome"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or ingest failure"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/manifest": {
+      "get": {
+        "operationId": "manifest",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsManifest"
+                }
+              }
+            },
+            "description": "Active analytics manifest"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi_json",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "OpenAPI document"
+          }
+        },
+        "tags": [
+          "OpenAPI"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "ready",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "Service is ready"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service is not ready"
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/tenant-query": {
+      "post": {
+        "operationId": "tenant_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            },
+            "description": "Query tenant-scoped rows as JSON objects"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or query"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/unscoped-sql-query": {
+      "post": {
+        "operationId": "unscoped_sql_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnscopedSqlQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Raw SQL is not available through HTTP without an admin boundary"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/unscoped-structured-query": {
+      "post": {
+        "operationId": "unscoped_structured_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnscopedStructuredQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            },
+            "description": "Query explicitly unscoped rows as JSON objects"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or query"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/up": {
+      "get": {
+        "operationId": "up",
+        "responses": {
+          "200": {
+            "description": "Service process is up"
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    }
+  },
+  "tags": [
+    {
+      "description": "Service health and readiness",
+      "name": "Health"
+    },
+    {
+      "description": "Analytics manifest, ingestion, and query API",
+      "name": "Analytics"
+    },
+    {
+      "description": "OpenAPI document",
+      "name": "OpenAPI"
+    }
+  ]
+}

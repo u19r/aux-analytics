@@ -1,0 +1,36 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-engine"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+default = ["bundled"]
+bundled = ["duckdb/bundled"]
+dynamic = []
+
+[dependencies]
+analytics-contract = { workspace = true }
+config = { workspace = true }
+duckdb = { workspace = true }
+regex = { workspace = true }
+rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+storage-condition = { workspace = true }
+storage-types = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+analytics-fixtures = { workspace = true }
+analytics-quint-test-support = { workspace = true }
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

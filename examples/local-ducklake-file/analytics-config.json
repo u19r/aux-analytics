@@ -1,0 +1,37 @@
+{
+  "http": {
+    "bind_addr": "127.0.0.1:39091"
+  },
+  "analytics": {
+    "manifest_path": "examples/local-ducklake-file/manifest.json",
+    "http": {
+      "ingest_endpoint_enabled": false
+    },
+    "source": {
+      "stream_type": "storage_stream",
+      "poll_interval_ms": 100,
+      "poll_max_shards": 16,
+      "poll_max_responses_per_interval": 160,
+      "tables": [
+        {
+          "table_name": "events",
+          "stream_identifier": "arn:aws:dynamodb:us-east-1:123456789012:table/events/stream/2026-05-13T00:00:00.000"
+        }
+      ]
+    },
+    "catalog": {
+      "backend": "ducklake_sqlite",
+      "connection_string": "examples/local-ducklake-file/run/catalog.ducklake"
+    },
+    "object_storage": {
+      "provider": "generic",
+      "scheme": "file",
+      "path": "examples/local-ducklake-file/run/data"
+    }
+  },
+  "features": {
+    "metrics": {
+      "enabled": true
+    }
+  }
+}

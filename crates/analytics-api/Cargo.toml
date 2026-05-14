@@ -1,0 +1,50 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-api"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+doctest = false
+
+[[bin]]
+name = "aux-analytics-api"
+path = "src/main.rs"
+
+[features]
+default = ["bundled"]
+bundled = ["analytics-engine/bundled"]
+
+[dependencies]
+analytics-contract = { workspace = true }
+analytics-engine = { workspace = true, default-features = false }
+analytics-storage = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+config = { workspace = true }
+http-body-util = { workspace = true }
+jsonschema = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+utoipa = { workspace = true }
+
+[dev-dependencies]
+analytics-fixtures = { workspace = true }
+analytics-quint-test-support = { workspace = true }
+anyhow = { workspace = true }
+http-body-util = { workspace = true }
+quint-connect = { workspace = true }
+serde = { workspace = true }
+tower = { workspace = true }
+
+[lints]
+workspace = true

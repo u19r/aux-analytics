@@ -1,0 +1,86 @@
+services:
+  storage:
+    image: aux-storage-api:compose
+    build:
+      context: ../../../aux-storage
+      dockerfile: docker/storage-api.Dockerfile
+      args:
+        STORAGE_BACKEND: sqlite
+    command:
+      - --storage
+      - sqlite
+      - --db-path
+      - /var/lib/aux-storage/db/storage.db
+      - --port
+      - "8080"
+      - --enable-internal-helper-routes
+    ports:
+      - "39124:8080"
+    volumes:
+      - storage-data:/var/lib/aux-storage/db
+
+  analytics:
+    image: aux-analytics:compose
+    build:
+      context: ../../..
+      dockerfile: aux-analytics/docker/aux-analytics.Dockerfile
+    command:
+      - --manifest
+      - /etc/aux-analytics/manifest.json
+      - --config
+      - /etc/aux-analytics/analytics-config.json
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+    ports:
+      - "39090:39090"
+    volumes:
+      - ./manifest.json:/etc/aux-analytics/manifest.json:ro
+      - ./analytics-config.json:/etc/aux-analytics/analytics-config.json:ro
+      - analytics-data:/var/lib/aux-analytics
+
+  storage-init:
+    image: analytics-canary:compose
+    build:
+      context: ../../..
+      dockerfile: aux-analytics/docker/analytics-canary.Dockerfile
+    depends_on:
+      - storage
+    command:
+      - --mode
+      - prepare-source-table
+      - --storage-base-url
+      - http://storage:8080/storage
+      - --source-table
+      - analytics_canary
+      - --timeout-secs
+      - "60"
+
+  canary:
+    image: analytics-canary:compose
+    build:
+      context: ../../..
+      dockerfile: aux-analytics/docker/analytics-canary.Dockerfile
+    profiles:
+      - test
+    depends_on:
+      - storage
+      - analytics
+    command:
+      - --mode
+      - external-polling-e2e
+      - --storage-base-url
+      - http://storage:8080/storage
+      - --analytics-base-url
+      - http://analytics:39090
+      - --source-table
+      - analytics_canary
+      - --analytics-table
+      - users
+      - --timeout-secs
+      - "60"
+      - --skip-cleanup
+
+volumes:
+  storage-data:
+  analytics-data:

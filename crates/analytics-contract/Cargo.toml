@@ -1,0 +1,26 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-contract"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+jsonschema = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+utoipa = { workspace = true }
+
+[dev-dependencies]
+analytics-quint-test-support = { workspace = true }
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

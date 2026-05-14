@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "source_table_name": "events",
+      "analytics_table_name": "events",
+      "tenant_selector": {
+        "kind": "attribute",
+        "attribute_name": "tenant_id"
+      },
+      "row_identity": {
+        "kind": "attribute",
+        "attribute_name": "event_id"
+      },
+      "document_column": "item",
+      "projection_columns": [
+        {
+          "column_name": "event_type",
+          "attribute_path": "event_type",
+          "column_type": {
+            "kind": "primitive",
+            "primitive": "var_char"
+          }
+        },
+        {
+          "column_name": "created_at",
+          "attribute_path": "created_at",
+          "column_type": {
+            "kind": "primitive",
+            "primitive": "timestamp"
+          }
+        }
+      ],
+      "partition_keys": [
+        {
+          "column_name": "tenant_id"
+        }
+      ]
+    }
+  ]
+}

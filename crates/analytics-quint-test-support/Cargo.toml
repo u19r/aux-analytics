@@ -1,0 +1,12 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-quint-test-support"
+repository.workspace = true
+version.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

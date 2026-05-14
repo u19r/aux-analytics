@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "source_table_name": "audit_stream",
+      "analytics_table_name": "audit_events",
+      "tenant_selector": { "kind": "attribute", "attribute_name": "tenant_id" },
+      "row_identity": { "kind": "attribute", "attribute_name": "event_id" },
+      "projection_attribute_names": ["event_id", "tenant_id", "created_at_ms", "action"],
+      "retention": {
+        "period_ms": 7776000000,
+        "timestamp": { "kind": "attribute", "attribute_path": "created_at_ms" }
+      }
+    }
+  ]
+}

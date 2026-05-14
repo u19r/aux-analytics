@@ -1,0 +1,731 @@
+{
+  "$defs": {
+    "AnalyticsCatalogBackend": {
+      "enum": [
+        "duckdb",
+        "ducklake_sqlite",
+        "ducklake_postgres"
+      ],
+      "type": "string"
+    },
+    "AnalyticsCatalogConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsCatalogBackend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connection_string": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/AnalyticsCatalogConfig",
+          "default": {}
+        },
+        "http": {
+          "$ref": "#/$defs/AnalyticsHttpConfig",
+          "default": {
+            "ingest_endpoint_enabled": true
+          }
+        },
+        "manifest_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_storage": {
+          "$ref": "#/$defs/AnalyticsObjectStorageConfig",
+          "default": {
+            "provider": "s3",
+            "scheme": "s3"
+          }
+        },
+        "retention": {
+          "$ref": "#/$defs/AnalyticsRetentionConfig",
+          "default": {
+            "delete_batch_pause_ms": 250,
+            "delete_batch_size": 500,
+            "enabled": false,
+            "sweep_interval_ms": 60000,
+            "tables": []
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/AnalyticsSourceConfig",
+          "default": {
+            "poll_interval_ms": 100,
+            "poll_max_responses_per_interval": 160,
+            "poll_max_shards": 16,
+            "tables": []
+          }
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsHttpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "ingest_endpoint_enabled": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsObjectStorageConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "bucket": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "credentials": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteCredentialsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/AnalyticsObjectStorageProvider",
+          "default": "s3"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scheme": {
+          "default": "s3",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsObjectStorageProvider": {
+      "enum": [
+        "s3",
+        "r2",
+        "generic"
+      ],
+      "type": "string"
+    },
+    "AnalyticsRetentionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "delete_batch_pause_ms": {
+          "default": 250,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "delete_batch_size": {
+          "default": 500,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sweep_interval_ms": {
+          "default": 60000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tables": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AnalyticsRetentionTableConfig"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsRetentionTableConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "analytics_table_name": {
+          "type": "string"
+        },
+        "default_period_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "strict": {
+          "default": false,
+          "type": "boolean"
+        },
+        "tenant_policy": {
+          "$ref": "#/$defs/TenantRetentionPolicyConfig"
+        },
+        "timestamp": {
+          "$ref": "#/$defs/RetentionTimestampConfig"
+        }
+      },
+      "required": [
+        "analytics_table_name",
+        "default_period_ms",
+        "timestamp",
+        "tenant_policy"
+      ],
+      "type": "object"
+    },
+    "AnalyticsSourceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "credentials": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteCredentialsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poll_interval_ms": {
+          "default": 100,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_max_responses_per_interval": {
+          "default": 160,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_max_shards": {
+          "default": 16,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsStreamType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tables": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AnalyticsSourceTableConfig"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsSourceTableConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "stream_identifier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalyticsStreamType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "table_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table_name"
+      ],
+      "type": "object"
+    },
+    "AnalyticsStreamType": {
+      "enum": [
+        "storage_stream",
+        "aux_storage"
+      ],
+      "type": "string"
+    },
+    "Cors": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_origins": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Features": {
+      "additionalProperties": false,
+      "properties": {
+        "metrics": {
+          "$ref": "#/$defs/MetricsConfig",
+          "default": {
+            "enabled": true,
+            "prometheus": {}
+          }
+        }
+      },
+      "type": "object"
+    },
+    "HttpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "bind_addr": {
+          "default": "0.0.0.0:8080",
+          "type": "string"
+        },
+        "cors": {
+          "$ref": "#/$defs/Cors",
+          "default": {
+            "allow_origins": [
+              "*"
+            ]
+          }
+        }
+      },
+      "type": "object"
+    },
+    "MetricsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "prometheus": {
+          "$ref": "#/$defs/PrometheusMetricsConfig",
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "PrometheusMetricsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "bearer_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RemoteCredentialsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "instance_keys": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "static": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteStaticCredentialsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RemoteStaticCredentialsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "access_key": {
+          "type": "string"
+        },
+        "secret_key": {
+          "type": "string"
+        },
+        "session_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "access_key",
+        "secret_key"
+      ],
+      "type": "object"
+    },
+    "RetentionDurationSelector": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attribute_path"
+      ],
+      "type": "object"
+    },
+    "RetentionTimestampConfig": {
+      "oneOf": [
+        {
+          "properties": {
+            "attribute_path": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "attribute",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "attribute_path"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "ingested_at",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TenantRetentionGetItemRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "consistent_read": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "expression_attribute_names": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "key": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "projection_expression": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "table_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table_name",
+        "key"
+      ],
+      "type": "object"
+    },
+    "TenantRetentionPolicyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_ttl_ms": {
+          "default": 300000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "credentials": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RemoteCredentialsConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration_selector": {
+          "$ref": "#/$defs/RetentionDurationSelector"
+        },
+        "endpoint_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/TenantRetentionPolicyRequest"
+        },
+        "source": {
+          "$ref": "#/$defs/TenantRetentionPolicySource"
+        }
+      },
+      "required": [
+        "source",
+        "request",
+        "duration_selector"
+      ],
+      "type": "object"
+    },
+    "TenantRetentionPolicyRequest": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "get_item": {
+              "$ref": "#/$defs/TenantRetentionGetItemRequest"
+            }
+          },
+          "required": [
+            "get_item"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "query_table": {
+              "$ref": "#/$defs/TenantRetentionQueryTableRequest"
+            }
+          },
+          "required": [
+            "query_table"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TenantRetentionPolicySource": {
+      "enum": [
+        "aux_storage",
+        "dynamodb"
+      ],
+      "type": "string"
+    },
+    "TenantRetentionQueryTableRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "expression_attribute_names": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "expression_attribute_values": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "filter_expression": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key_condition_expression": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scan_index_forward": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "table_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "table_name",
+        "key_condition_expression",
+        "expression_attribute_values",
+        "limit"
+      ],
+      "type": "object"
+    },
+    "Tracing": {
+      "additionalProperties": false,
+      "properties": {
+        "log_level": {
+          "default": "warn",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "analytics": {
+      "$ref": "#/$defs/AnalyticsConfig",
+      "default": {
+        "catalog": {},
+        "http": {
+          "ingest_endpoint_enabled": true
+        },
+        "object_storage": {
+          "provider": "s3",
+          "scheme": "s3"
+        },
+        "retention": {
+          "delete_batch_pause_ms": 250,
+          "delete_batch_size": 500,
+          "enabled": false,
+          "sweep_interval_ms": 60000,
+          "tables": []
+        },
+        "source": {
+          "poll_interval_ms": 100,
+          "poll_max_responses_per_interval": 160,
+          "poll_max_shards": 16,
+          "tables": []
+        }
+      }
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "features": {
+      "$ref": "#/$defs/Features",
+      "default": {
+        "metrics": {
+          "enabled": true,
+          "prometheus": {}
+        }
+      }
+    },
+    "http": {
+      "$ref": "#/$defs/HttpConfig",
+      "default": {
+        "bind_addr": "0.0.0.0:8080",
+        "cors": {
+          "allow_origins": [
+            "*"
+          ]
+        }
+      }
+    },
+    "tracing": {
+      "$ref": "#/$defs/Tracing",
+      "default": {
+        "log_level": "warn"
+      }
+    },
+    "version": {
+      "default": "1",
+      "type": "string"
+    }
+  },
+  "title": "RootConfig",
+  "type": "object"
+}

@@ -1,0 +1,35 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-cli"
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "aux-analytics"
+path = "src/main.rs"
+
+[features]
+default = ["bundled"]
+bundled = ["analytics-api/bundled", "analytics-engine/bundled"]
+
+[dependencies]
+analytics-api = { workspace = true, default-features = false }
+analytics-contract = { workspace = true }
+analytics-engine = { workspace = true, default-features = false }
+analytics-storage = { workspace = true }
+clap = { workspace = true }
+config = { workspace = true }
+schemars = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+serde = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

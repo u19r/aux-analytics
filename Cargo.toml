@@ -1,0 +1,75 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "BUSL-1.1"
+repository = "https://github.com/u19r/aux-analytics"
+version = "0.1.0"
+
+[workspace.dependencies]
+analytics-api = { path = "crates/analytics-api", default-features = false }
+analytics-canary = { path = "crates/analytics-canary" }
+analytics-contract = { path = "crates/analytics-contract" }
+analytics-engine = { path = "crates/analytics-engine", default-features = false }
+analytics-fixtures = { path = "crates/analytics-fixtures" }
+analytics-quint-test-support = { path = "crates/analytics-quint-test-support" }
+analytics-storage = { path = "crates/analytics-storage" }
+anyhow = "1.0.100"
+aws-config = "1.8.16"
+aws-credential-types = "1.2.14"
+aws-sdk-dynamodb = "1.99.0"
+aws-sdk-dynamodbstreams = "1.99.0"
+axum = "0.8.9"
+base64 = "0.22.1"
+clap = { version = "4.6.1", features = ["derive"] }
+config = { package = "analytics-config", path = "crates/analytics-config" }
+cucumber = "0.23.0"
+duckdb = { version = "1.10502.0", default-features = false, features = [
+    "json",
+    "r2d2",
+] }
+http-body-util = "0.1.3"
+jsonschema = { version = "0.46.4", default-features = false, features = [
+    "resolve-file",
+] }
+lambda_runtime = "0.11"
+metrics = "0.24.5"
+metrics-exporter-prometheus = "0.18.3"
+quint-connect = "0.1.1"
+regex = "1.12.3"
+reqwest = { version = "0.13.3", default-features = false, features = [
+    "json",
+    "rustls",
+] }
+rust_decimal = "1.42.0"
+schemars = { version = "1.2.1", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+storage = { path = "../aux-storage/crates/storage", default-features = false }
+storage-condition = { path = "../aux-storage/crates/storage-condition" }
+storage-types = { path = "../aux-storage/crates/storage-types", default-features = false }
+tempfile = "3.27.0"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full", "tracing"] }
+tower = { version = "0.5.2", features = ["util"] }
+tower-http = { version = "0.6.8", features = ["catch-panic", "cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
+url = "2.5.7"
+utoipa = { version = "5.5.0", features = ["axum_extras"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"

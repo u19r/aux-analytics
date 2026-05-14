@@ -1,0 +1,36 @@
+{
+  "http": {
+    "bind_addr": "0.0.0.0:39090"
+  },
+  "analytics": {
+    "http": {
+      "ingest_endpoint_enabled": false
+    },
+    "source": {
+      "stream_type": "aux_storage",
+      "endpoint_url": "http://storage:8080/storage",
+      "poll_interval_ms": 100,
+      "poll_max_shards": 16,
+      "poll_max_responses_per_interval": 160,
+      "tables": [
+        {
+          "table_name": "analytics_canary"
+        }
+      ]
+    },
+    "catalog": {
+      "backend": "duckdb",
+      "connection_string": "/var/lib/aux-analytics/analytics.duckdb"
+    },
+    "object_storage": {
+      "provider": "generic",
+      "scheme": "file",
+      "path": "/var/lib/aux-analytics/objects"
+    }
+  },
+  "features": {
+    "metrics": {
+      "enabled": true
+    }
+  }
+}

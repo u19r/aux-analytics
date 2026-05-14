@@ -1,0 +1,16 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-fixtures"
+publish = false
+repository.workspace = true
+version.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+analytics-contract = { workspace = true }
+
+[lints]
+workspace = true

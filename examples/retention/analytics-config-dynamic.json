@@ -1,0 +1,40 @@
+{
+  "analytics": {
+    "manifest_path": "manifest-static.json",
+    "catalog": {
+      "backend": "duckdb",
+      "connection_string": "analytics.duckdb"
+    },
+    "retention": {
+      "enabled": true,
+      "sweep_interval_ms": 60000,
+      "delete_batch_size": 500,
+      "delete_batch_pause_ms": 250,
+      "tables": [
+        {
+          "analytics_table_name": "audit_events",
+          "default_period_ms": 7776000000,
+          "strict": false,
+          "timestamp": { "kind": "ingested_at" },
+          "tenant_policy": {
+            "source": "aux_storage",
+            "endpoint_url": "http://127.0.0.1:39124/storage",
+            "request": {
+              "get_item": {
+                "table_name": "tenant_retention",
+                "key": {
+                  "tenant_id": { "S": "${tenant_id}" }
+                },
+                "consistent_read": true
+              }
+            },
+            "duration_selector": {
+              "attribute_path": "retention.analytics_ms"
+            },
+            "cache_ttl_ms": 300000
+          }
+        }
+      ]
+    }
+  }
+}

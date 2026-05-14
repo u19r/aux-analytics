@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "tables": [
+    {
+      "source_table_name": "analytics_canary",
+      "analytics_table_name": "users",
+      "tenant_selector": {
+        "kind": "none"
+      },
+      "row_identity": {
+        "kind": "record_key"
+      },
+      "document_column": "item",
+      "projection_columns": [
+        {
+          "column_name": "email",
+          "attribute_path": "profile.email",
+          "column_type": {
+            "kind": "primitive",
+            "primitive": "var_char"
+          }
+        }
+      ]
+    }
+  ]
+}
