@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, ProjectionColumn, QuerySelect,
     RowIdentity, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
@@ -223,17 +225,7 @@ impl CliQuerySecurityDriver {
     }
 
     fn apply_timeout_rejection(&mut self) -> Result {
-        let engine = AnalyticsEngine::connect_duckdb(":memory:")?;
-        let result = engine.query_unscoped_sql_json_with_timeout(
-            "select sum(i * j) as total from range(100000000) a(i), range(100000000) b(j)",
-            std::time::Duration::from_millis(1),
-        );
-        if !matches!(
-            result,
-            Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 1 })
-        ) {
-            return Err(anyhow::anyhow!("long-running query was not timed out"));
-        }
+        ensure_long_running_query_times_out()?;
         self.accepted = false;
         self.modifies_data = false;
         self.sees_other_tenant = false;
@@ -300,6 +292,30 @@ impl CliQuerySecurityDriver {
         self.timer_installed = timer_installed;
         self.last_result = result;
     }
+}
+
+fn ensure_long_running_query_times_out() -> Result {
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            let engine =
+                AnalyticsEngine::connect_duckdb(":memory:").map_err(|err| err.to_string())?;
+            let result = engine.query_unscoped_sql_json_with_timeout(
+                "select sum(i * j) as total from range(1000000) a(i), range(1000000) b(j)",
+                std::time::Duration::from_millis(1),
+            );
+            if matches!(
+                result,
+                Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 1 })
+            ) {
+                Ok(())
+            } else {
+                Err("long-running query was not timed out".to_string())
+            }
+        })
+        .as_ref()
+        .map_err(|message| anyhow::anyhow!(message.clone()))
+        .copied()
 }
 
 fn cli_raw_sql_accepted(sql: &str) -> Result<bool> {

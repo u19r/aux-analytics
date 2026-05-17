@@ -1,3 +1,5 @@
+use std::env;
+
 use analytics_contract::{
     AnalyticsColumn, ClusteringKey, INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN,
     INTERNAL_MISSING_RETENTION_COLUMN, PartitionKey, SortOrder,
@@ -7,11 +9,14 @@ use duckdb::Connection;
 
 use crate::AnalyticsEngineResult;
 
+pub(crate) const SOURCE_POSITION_COLUMN: &str = "__source_position";
+
 pub(crate) fn configure_connection(
     conn: &Connection,
     backend: &StorageBackend,
 ) -> AnalyticsEngineResult<()> {
-    conn.execute("LOAD json;", [])?;
+    configure_extension_directory(conn)?;
+    load_extension(conn, "json")?;
     if let StorageBackend::DuckLake {
         catalog,
         catalog_path,
@@ -19,11 +24,11 @@ pub(crate) fn configure_connection(
         object_storage,
     } = backend
     {
-        conn.execute("LOAD httpfs;", [])?;
-        conn.execute("LOAD ducklake;", [])?;
+        load_extension(conn, "httpfs")?;
+        load_extension(conn, "ducklake")?;
         match catalog {
-            CatalogType::Sqlite => conn.execute("LOAD sqlite;", [])?,
-            CatalogType::Postgres => conn.execute("LOAD postgres;", [])?,
+            CatalogType::Sqlite => load_extension(conn, "sqlite_scanner")?,
+            CatalogType::Postgres => load_extension(conn, "postgres_scanner")?,
         };
         if let Some(object_storage) = object_storage {
             configure_object_storage(conn, object_storage)?;
@@ -34,6 +39,40 @@ pub(crate) fn configure_connection(
         )?;
         conn.execute("USE dlake;", [])?;
     }
+    Ok(())
+}
+
+fn configure_extension_directory(conn: &Connection) -> AnalyticsEngineResult<()> {
+    let Some(extension_directory) = env::var_os("DUCKDB_EXTENSION_DIRECTORY") else {
+        return Ok(());
+    };
+    let extension_directory = extension_directory.to_string_lossy();
+    conn.execute(
+        format!(
+            "SET extension_directory = '{}';",
+            escape_sql_string(extension_directory.as_ref())
+        )
+        .as_str(),
+        [],
+    )?;
+    Ok(())
+}
+
+fn load_extension(conn: &Connection, extension: &str) -> AnalyticsEngineResult<()> {
+    if let Some(extension_path) = env::var_os("DUCKDB_EXTENSION_PATH") {
+        let extension_path = extension_path.to_string_lossy();
+        let path = format!(
+            "{}/{}.duckdb_extension",
+            extension_path.trim_end_matches('/'),
+            extension
+        );
+        conn.execute(
+            format!("LOAD '{}';", escape_sql_string(path.as_str())).as_str(),
+            [],
+        )?;
+        return Ok(());
+    }
+    conn.execute(format!("LOAD {extension};").as_str(), [])?;
     Ok(())
 }
 
@@ -84,8 +123,16 @@ fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCred
 }
 
 pub(crate) fn quote_identifier(identifier: &str) -> String {
-    let escaped = identifier.replace('"', "\"\"");
-    format!("\"{escaped}\"")
+    let mut quoted = String::with_capacity(identifier.len() + 2);
+    quoted.push('"');
+    for character in identifier.chars() {
+        if character == '"' {
+            quoted.push('"');
+        }
+        quoted.push(character);
+    }
+    quoted.push('"');
+    quoted
 }
 
 pub(crate) fn create_table(table_name: &str, columns: &[AnalyticsColumn]) -> String {
@@ -93,13 +140,14 @@ pub(crate) fn create_table(table_name: &str, columns: &[AnalyticsColumn]) -> Str
         "tenant_id VARCHAR".to_string(),
         "__id VARCHAR".to_string(),
         "table_name VARCHAR".to_string(),
+        format!("{} JSON", quote_identifier(SOURCE_POSITION_COLUMN)),
     ];
-    let mut sorted_columns = columns.to_vec();
+    let mut sorted_columns = columns.iter().collect::<Vec<_>>();
     sorted_columns.sort_by(|left, right| left.column_name.cmp(&right.column_name));
     for column in sorted_columns {
         if matches!(
             column.column_name.as_str(),
-            "tenant_id" | "__id" | "table_name"
+            "tenant_id" | "__id" | "table_name" | SOURCE_POSITION_COLUMN
         ) {
             continue;
         }
@@ -132,6 +180,14 @@ pub(crate) fn retention_column_statements(table_name: &str) -> Vec<String> {
             quote_identifier(INTERNAL_MISSING_RETENTION_COLUMN)
         ),
     ]
+}
+
+pub(crate) fn source_position_column_statement(table_name: &str) -> String {
+    format!(
+        "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} JSON;",
+        quote_identifier(table_name),
+        quote_identifier(SOURCE_POSITION_COLUMN)
+    )
 }
 
 pub(crate) fn delete_expired_rows(table_name: &str) -> String {

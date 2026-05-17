@@ -50,6 +50,7 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.retention.tables[].tenant_policy.request.query_table` | optional | DynamoDB-compatible query request. `limit` is required and must be `1`. |
 | `analytics.retention.tables[].tenant_policy.duration_selector.attribute_path` | required | Dot path to a numeric duration value in milliseconds in the returned item. |
 | `analytics.retention.tables[].tenant_policy.cache_ttl_ms` | `300000` | Tenant retention policy cache TTL. |
+| `analytics.privacy.policy_path` | none | Path to a versioned privacy policy JSON file. When set, startup validates the policy and HTTP ingest, source polling, and Lambda ingestion filter denied data before analytical writes. |
 | `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, or `ducklake_postgres`. |
 | `analytics.catalog.connection_string` | none | DuckDB path or DuckLake catalog connection string. |
 | `analytics.object_storage.provider` | `s3` | Object store provider: `s3`, `r2`, or `generic`. |
@@ -113,10 +114,9 @@ sources, the checkpoint is the last successfully ingested sequence number per
 stream shard. On restart the poller resumes standard streams with
 `AFTER_SEQUENCE_NUMBER`.
 
-Aux-fn does not run analytics polling, checkpointing, or analytics background
-jobs when aux-analytics is deployed as the standalone product. Aux-fn only
-exports the manifest and passes config/deployment values through to the
-aux-analytics process.
+Application services do not need to run analytics polling, checkpointing, or analytics background
+jobs when aux-analytics is deployed as the standalone product. They only need to export the manifest
+and pass config/deployment values through to the aux-analytics process.
 
 Checkpoint health is visible in `/health` and `/diagnostics`. Prometheus
 metrics are available at `/metrics` when `features.metrics.enabled` is true,
@@ -124,7 +124,7 @@ including poll counts, poll errors, records per poll, ingested records, ingest
 errors, checkpoint saves, checkpoint errors, current checkpoint count, and query
 request counts.
 
-Metric names use the same dotted subsystem style as aux-fn instrumentation, and
+Metric names use a dotted subsystem style, and
 Prometheus renders them with underscores:
 
 | Metric | Type | Labels |
@@ -141,6 +141,9 @@ Prometheus renders them with underscores:
 | `analytics.query.latency_ms` | histogram | `type`, `outcome` |
 | `analytics.http.ingest.requests_total` | counter | `outcome` |
 | `analytics.http.ingest.latency_ms` | histogram | `outcome` |
+| `analytics.http.ingest.privacy_dropped_fields_total` | counter | `policy_version` |
+| `analytics.source.privacy_dropped_fields_total` | counter | `policy_version` |
+| `analytics.privacy.policy_load_failures_total` | counter | none |
 | `analytics.retention.lookups_total` | counter | `table`, `source`, `outcome` |
 | `analytics.retention.lookup_latency_ms` | histogram | `table`, `source`, `outcome` |
 | `analytics.retention.lookup_failures_total` | counter | `table`, `source`, `tenant_id` |

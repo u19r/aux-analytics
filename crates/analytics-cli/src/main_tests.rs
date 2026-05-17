@@ -1,9 +1,10 @@
+use clap::CommandFactory as _;
 use config::{
     AnalyticsCatalogBackend, AnalyticsCatalogConfig, AnalyticsConfig, AnalyticsObjectStorageConfig,
     AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamType, RootConfig,
 };
 
-use crate::{cli::BackendArgs, runtime_config::validate_source_config};
+use crate::{backend_args::BackendArgs, cli::Cli, runtime_config::validate_source_config};
 
 #[test]
 fn config_resolves_ducklake_backend_with_object_storage_path() {
@@ -91,6 +92,148 @@ fn source_tables_need_global_or_table_stream_type() {
     let error = validate_source_config(&source).expect_err("missing stream type");
 
     assert!(error.to_string().contains("tenant_entities"));
+}
+
+#[test]
+fn root_help_reads_like_entrypoint_documentation() {
+    let mut command = Cli::command();
+    let mut help = Vec::new();
+    command.write_long_help(&mut help).expect("help");
+    let help = String::from_utf8(help).expect("utf8 help");
+
+    for expected in [
+        "Common workflows:",
+        "Backend selection:",
+        "Safety model:",
+        "aux-analytics backfill plan",
+        "aux-analytics privacy-fix raw-backup",
+        "aux-analytics fix table",
+        "aux-analytics trim plan",
+        "aux-analytics completions zsh",
+        "aux-analytics operations status",
+        "Initialize analytical tables from a manifest",
+        "Plan and run backfill workflows",
+        "Generate a shell completion script",
+    ] {
+        assert!(help.contains(expected), "missing {expected:?} in:\n{help}");
+    }
+}
+
+#[test]
+fn completion_help_explains_local_installation() {
+    let help = command_help(["aux-analytics", "completions", "--help"]);
+
+    for expected in [
+        "Generate a shell completion script",
+        "mkdir -p ~/.zfunc",
+        "aux-analytics completions zsh > ~/.zfunc/_aux-analytics",
+        "Shell to generate completions for",
+    ] {
+        assert!(help.contains(expected), "missing {expected:?} in:\n{help}");
+    }
+}
+
+#[test]
+fn command_help_explains_backfill_and_operation_flags() {
+    let backfill_help = command_help(["aux-analytics", "backfill", "plan", "--help"]);
+    for expected in [
+        "Build a dry-run plan",
+        "Read a complete BackfillRequest JSON file",
+        "Whether DynamoDB point-in-time export is available",
+        "Target analytics table to backfill",
+    ] {
+        assert!(
+            backfill_help.contains(expected),
+            "missing {expected:?} in:\n{backfill_help}"
+        );
+    }
+
+    let backfill_run_help = command_help(["aux-analytics", "backfill", "run", "--help"]);
+    for expected in [
+        "Execute a BackfillExecutionRequest JSON file",
+        "LocalBackfillFixture JSON file",
+        "Operation store DuckDB path",
+    ] {
+        assert!(
+            backfill_run_help.contains(expected),
+            "missing {expected:?} in:\n{backfill_run_help}"
+        );
+    }
+
+    let backfill_resume_help = command_help(["aux-analytics", "backfill", "resume", "--help"]);
+    for expected in [
+        "Resume a BackfillExecutionRequest",
+        "LocalBackfillFixture JSON file",
+        "Operation store DuckDB path",
+    ] {
+        assert!(
+            backfill_resume_help.contains(expected),
+            "missing {expected:?} in:\n{backfill_resume_help}"
+        );
+    }
+
+    let operations_help = command_help(["aux-analytics", "operations", "status", "--help"]);
+    for expected in [
+        "Show one operation status",
+        "Operation store DuckDB path",
+        "Operation id to inspect",
+    ] {
+        assert!(
+            operations_help.contains(expected),
+            "missing {expected:?} in:\n{operations_help}"
+        );
+    }
+
+    let privacy_fix_help = command_help(["aux-analytics", "privacy-fix", "raw-backup", "--help"]);
+    for expected in [
+        "Scan local raw backup objects, apply a PrivacyPolicy",
+        "Source filesystem raw backup root",
+        "Clean target filesystem raw backup root",
+        "Cleanup action for tainted source objects after clean verification",
+        "Required when destructive cleanup is requested",
+    ] {
+        assert!(
+            privacy_fix_help.contains(expected),
+            "missing {expected:?} in:\n{privacy_fix_help}"
+        );
+    }
+
+    let fix_help = command_help(["aux-analytics", "fix", "table", "--help"]);
+    for expected in [
+        "Execute a TableFixRequest JSON file",
+        "TableFixRequest JSON file",
+        "Filesystem raw backup root",
+        "required for apply mode",
+        "Local DuckDB analytics database",
+        "Operation store DuckDB path",
+    ] {
+        assert!(
+            fix_help.contains(expected),
+            "missing {expected:?} in:\n{fix_help}"
+        );
+    }
+
+    let trim_help = command_help(["aux-analytics", "trim", "plan", "--help"]);
+    for expected in [
+        "Execute a TrimRequest JSON file",
+        "TrimRequest JSON file",
+        "Candidate row count",
+        "Local DuckDB analytics database",
+        "Operation store DuckDB path",
+    ] {
+        assert!(
+            trim_help.contains(expected),
+            "missing {expected:?} in:\n{trim_help}"
+        );
+    }
+}
+
+fn command_help<const N: usize>(args: [&str; N]) -> String {
+    let mut command = Cli::command();
+    let error = command
+        .try_get_matches_from_mut(args)
+        .expect_err("help exits");
+    error.to_string()
 }
 
 fn empty_backend_args() -> BackendArgs {

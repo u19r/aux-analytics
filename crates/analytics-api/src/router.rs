@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
-use analytics_engine::IngestOutcome;
+use analytics_engine::{IngestOutcome, StreamRecordBatchItem};
+use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -16,9 +17,11 @@ use serde_json::{Value, json};
 use crate::{
     request_validation::openapi_request_validator,
     types::{
-        AppState, DiagnosticsResponse, ErrorResponse, HealthResponse, IngestResponse,
-        IngestStreamRecordRequest, QueryResponse, ReadyResponse, TenantQueryRequest,
-        UnscopedSqlQueryRequest, UnscopedStructuredQueryRequest,
+        AppState, DiagnosticsResponse, ErrorResponse, HealthResponse, IngestBatchResponse,
+        IngestResponse, IngestStreamRecordBatchRequest, IngestStreamRecordRequest,
+        OperationAuditEventResponse, OperationAuditResponse, OperationCancelResponse,
+        OperationDiagnostics, OperationListResponse, OperationStatusResponse, QueryResponse,
+        ReadyResponse, TenantQueryRequest, UnscopedSqlQueryRequest, UnscopedStructuredQueryRequest,
     },
 };
 
@@ -26,6 +29,7 @@ const QUERY_REQUESTS_METRIC: &str = "analytics.query.requests_total";
 const QUERY_LATENCY_METRIC: &str = "analytics.query.latency_ms";
 const INGEST_REQUESTS_METRIC: &str = "analytics.http.ingest.requests_total";
 const INGEST_LATENCY_METRIC: &str = "analytics.http.ingest.latency_ms";
+const INGEST_PRIVACY_DROPS_METRIC: &str = "analytics.http.ingest.privacy_dropped_fields_total";
 
 #[derive(Debug, Clone)]
 pub struct MetricsEndpointConfig {
@@ -77,7 +81,14 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
         .route("/ready", get(ready))
         .route("/health", get(health_status))
         .route("/diagnostics", get(diagnostics))
+        .route("/operations", get(list_operations))
+        .route("/operations/{operation_id}", get(operation_status))
+        .route("/operations/{operation_id}/audit", get(operation_audit))
+        .route("/operations/{operation_id}/cancel", post(cancel_operation))
         .route("/manifest", get(manifest))
+        .route("/analytics/health", get(health_status))
+        .route("/analytics/diagnostics", get(diagnostics))
+        .route("/analytics/manifest", get(manifest))
         .route("/openapi.json", get(openapi_json))
         .route("/unscoped-sql-query", post(unscoped_sql_query))
         .route(
@@ -86,7 +97,12 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
         )
         .route("/tenant-query", post(tenant_query));
     if endpoint_config.ingest_enabled {
-        router = router.route("/ingest/{analytics_table_name}", post(ingest_stream_record));
+        router = router
+            .route("/ingest/{analytics_table_name}", post(ingest_stream_record))
+            .route(
+                "/ingest-batch/{analytics_table_name}",
+                post(ingest_stream_record_batch),
+            );
     }
     router
         .layer(axum::middleware::from_fn(openapi_request_validator))
@@ -179,6 +195,165 @@ pub(crate) async fn diagnostics(
         status: "ok".to_string(),
         source,
         retention,
+        operations: operation_diagnostics(&app_state),
+    })
+}
+
+fn operation_diagnostics(app_state: &AppState) -> OperationDiagnostics {
+    let Some(path) = app_state.operation_store_path.as_ref() else {
+        return OperationDiagnostics {
+            configured: false,
+            reachable: false,
+            operation_count: 0,
+            running_operations: 0,
+            degraded_operations: 0,
+            oldest_running_updated_at_ms: None,
+        };
+    };
+    let Ok(store) = OperationStore::connect_duckdb(path.as_path()) else {
+        return OperationDiagnostics {
+            configured: true,
+            reachable: false,
+            operation_count: 0,
+            running_operations: 0,
+            degraded_operations: 0,
+            oldest_running_updated_at_ms: None,
+        };
+    };
+    let Ok(operations) = store.list_operations() else {
+        return OperationDiagnostics {
+            configured: true,
+            reachable: false,
+            operation_count: 0,
+            running_operations: 0,
+            degraded_operations: 0,
+            oldest_running_updated_at_ms: None,
+        };
+    };
+    let running_operations = operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.status,
+                OperationStatus::Running | OperationStatus::Cancelling
+            )
+        })
+        .count();
+    let degraded_operations = operations
+        .iter()
+        .filter(|operation| matches!(operation.status, OperationStatus::Failed))
+        .count();
+    let oldest_running_updated_at_ms = operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation.status,
+                OperationStatus::Running | OperationStatus::Cancelling
+            )
+        })
+        .map(|operation| operation.updated_at_ms)
+        .min();
+    OperationDiagnostics {
+        configured: true,
+        reachable: true,
+        operation_count: operations.len(),
+        running_operations,
+        degraded_operations,
+        oldest_running_updated_at_ms,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/operations",
+    responses(
+        (status = 200, body = OperationListResponse, description = "Durable operation list"),
+        (status = 503, body = ErrorResponse, description = "Operation store is not configured")
+    ),
+    tag = "Operations"
+)]
+pub(crate) async fn list_operations(State(app_state): State<Arc<AppState>>) -> Response {
+    match operation_store_response(&app_state, |store| {
+        let operations = store
+            .list_operations()?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        Ok(OperationListResponse { operations })
+    }) {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => *response,
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/operations/{operation_id}",
+    params(("operation_id" = String, Path, description = "Operation id")),
+    responses(
+        (status = 200, body = OperationStatusResponse, description = "Durable operation status"),
+        (status = 404, body = ErrorResponse, description = "Operation not found"),
+        (status = 503, body = ErrorResponse, description = "Operation store is not configured")
+    ),
+    tag = "Operations"
+)]
+pub(crate) async fn operation_status(
+    State(app_state): State<Arc<AppState>>,
+    Path(operation_id): Path<String>,
+) -> Response {
+    operation_response_for_id(&app_state, operation_id, |store, operation_id| {
+        Ok(OperationStatusResponse::from(
+            store.show_operation(operation_id)?,
+        ))
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/operations/{operation_id}/audit",
+    params(("operation_id" = String, Path, description = "Operation id")),
+    responses(
+        (status = 200, body = OperationAuditResponse, description = "Durable operation audit events"),
+        (status = 404, body = ErrorResponse, description = "Operation not found"),
+        (status = 503, body = ErrorResponse, description = "Operation store is not configured")
+    ),
+    tag = "Operations"
+)]
+pub(crate) async fn operation_audit(
+    State(app_state): State<Arc<AppState>>,
+    Path(operation_id): Path<String>,
+) -> Response {
+    operation_response_for_id(&app_state, operation_id, |store, operation_id| {
+        let events = store
+            .audit_events(operation_id)?
+            .into_iter()
+            .map(OperationAuditEventResponse::from)
+            .collect();
+        Ok(OperationAuditResponse { events })
+    })
+}
+
+#[utoipa::path(
+    post,
+    path = "/operations/{operation_id}/cancel",
+    params(("operation_id" = String, Path, description = "Operation id")),
+    responses(
+        (status = 200, body = OperationCancelResponse, description = "Cancellation request accepted"),
+        (status = 404, body = ErrorResponse, description = "Operation not found"),
+        (status = 503, body = ErrorResponse, description = "Operation store is not configured")
+    ),
+    tag = "Operations"
+)]
+pub(crate) async fn cancel_operation(
+    State(app_state): State<Arc<AppState>>,
+    Path(operation_id): Path<String>,
+) -> Response {
+    operation_response_for_id(&app_state, operation_id, |store, operation_id| {
+        store.request_cancellation(operation_id)?;
+        Ok(OperationCancelResponse {
+            operation_id: operation_id.to_string(),
+            cancellation_requested: true,
+        })
     })
 }
 
@@ -333,17 +508,122 @@ pub(crate) async fn ingest_stream_record(
         None
     };
     let engine = app_state.engine.lock().await;
-    match engine.ingest_stream_record_with_retention(
-        app_state.manifest.as_ref(),
-        analytics_table_name.as_str(),
-        record_key.as_bytes(),
-        record,
-        retention.as_ref(),
-    ) {
-        Ok(outcome) => {
+    let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
+        engine
+            .ingest_stream_record_with_privacy_policy_and_retention(
+                app_state.manifest.as_ref(),
+                analytics_table_name.as_str(),
+                record_key.as_bytes(),
+                record,
+                policy,
+                retention.as_ref(),
+            )
+            .map(|outcome| {
+                metrics::counter!(
+                    INGEST_PRIVACY_DROPS_METRIC,
+                    "policy_version" => outcome.policy_version.clone()
+                )
+                .increment(outcome.dropped_fields);
+                (
+                    outcome.outcome,
+                    Some(outcome.policy_version),
+                    Some(outcome.dropped_fields),
+                )
+            })
+    } else {
+        engine
+            .ingest_stream_record_with_retention(
+                app_state.manifest.as_ref(),
+                analytics_table_name.as_str(),
+                record_key.as_bytes(),
+                record,
+                retention.as_ref(),
+            )
+            .map(|outcome| (outcome, None, None))
+    };
+    match ingest_result {
+        Ok((outcome, privacy_policy_version, privacy_dropped_fields)) => {
             record_ingest_metrics("success", started);
             Json(IngestResponse {
                 outcome: ingest_outcome_name(outcome).to_string(),
+                privacy_policy_version,
+                privacy_dropped_fields,
+            })
+            .into_response()
+        }
+        Err(err) => {
+            record_ingest_metrics("error", started);
+            error_response(StatusCode::BAD_REQUEST, &err.to_string())
+        }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/ingest-batch/{analytics_table_name}",
+    params(("analytics_table_name" = String, Path, description = "Registered analytics table name")),
+    request_body = IngestStreamRecordBatchRequest,
+    responses(
+        (status = 200, body = IngestBatchResponse, description = "Batch ingest outcomes"),
+        (status = 400, body = ErrorResponse, description = "Invalid request or batch ingest failure")
+    ),
+    tag = "Analytics"
+)]
+pub(crate) async fn ingest_stream_record_batch(
+    State(app_state): State<Arc<AppState>>,
+    Path(analytics_table_name): Path<String>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let started = Instant::now();
+    let request = match validate_json::<IngestStreamRecordBatchRequest>(payload) {
+        Ok(request) => request,
+        Err(err) => {
+            record_ingest_metrics("validation_error", started);
+            return err.into_response();
+        }
+    };
+    if request.records.is_empty() {
+        record_ingest_metrics("validation_error", started);
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "batch ingestion requires at least one record",
+        );
+    }
+    if app_state.privacy_policy.is_some() || app_state.retention.is_some() {
+        record_ingest_metrics("unsupported", started);
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "batch ingestion is only supported when privacy filtering and retention lookup are \
+             disabled",
+        );
+    }
+
+    let records = request
+        .records
+        .into_iter()
+        .map(|request| {
+            let (record_key, record) = request.into_contract_record();
+            StreamRecordBatchItem {
+                analytics_table_name: analytics_table_name.clone(),
+                record_key: record_key.into_bytes(),
+                record,
+            }
+        })
+        .collect();
+    let engine = app_state.engine.lock().await;
+    match engine.ingest_stream_record_batch(app_state.manifest.as_ref(), records) {
+        Ok(outcomes) => {
+            record_ingest_metrics("success", started);
+            Json(IngestBatchResponse {
+                record_count: outcomes.len(),
+                outcomes: outcomes
+                    .into_iter()
+                    .map(|outcome| IngestResponse {
+                        outcome: ingest_outcome_name(outcome).to_string(),
+                        privacy_policy_version: None,
+                        privacy_dropped_fields: None,
+                    })
+                    .collect(),
             })
             .into_response()
         }
@@ -368,6 +648,60 @@ fn record_ingest_metrics(outcome: &'static str, started: Instant) {
 
 fn duration_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
+}
+
+fn operation_store_response<T>(
+    app_state: &AppState,
+    build: impl FnOnce(OperationStore) -> Result<T, OperationApiError>,
+) -> Result<T, Box<Response>> {
+    let Some(path) = app_state.operation_store_path.as_ref() else {
+        return Err(Box::new(error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "operation store is not configured",
+        )));
+    };
+    let store = OperationStore::connect_duckdb(path.as_path())
+        .map_err(|error| Box::new(operation_error_response(error.into())))?;
+    build(store).map_err(|error| Box::new(operation_error_response(error)))
+}
+
+fn operation_response_for_id<T: serde::Serialize>(
+    app_state: &AppState,
+    operation_id: String,
+    build: impl FnOnce(&OperationStore, &OperationId) -> Result<T, OperationApiError>,
+) -> Response {
+    let operation_id = match OperationId::new(operation_id) {
+        Ok(operation_id) => operation_id,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, &error.to_string()),
+    };
+    match operation_store_response(app_state, |store| build(&store, &operation_id)) {
+        Ok(value) => Json(value).into_response(),
+        Err(response) => *response,
+    }
+}
+
+enum OperationApiError {
+    Store(analytics_operations::OperationStoreError),
+}
+
+impl From<analytics_operations::OperationStoreError> for OperationApiError {
+    fn from(error: analytics_operations::OperationStoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+fn operation_error_response(error: OperationApiError) -> Response {
+    match error {
+        OperationApiError::Store(analytics_operations::OperationStoreError::OperationNotFound(
+            operation_id,
+        )) => error_response(
+            StatusCode::NOT_FOUND,
+            format!("operation {operation_id} not found").as_str(),
+        ),
+        OperationApiError::Store(error) => {
+            error_response(StatusCode::BAD_REQUEST, error.to_string().as_str())
+        }
+    }
 }
 
 #[utoipa::path(

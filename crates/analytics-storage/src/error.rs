@@ -42,6 +42,18 @@ impl AnalyticsStorageError {
             source: Some(Box::new(source)),
         }
     }
+
+    fn with_debug_source(
+        kind: AnalyticsStorageErrorKind,
+        debug: AnalyticsStorageErrorDebug,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            debug,
+            source: Some(Box::new(source)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +155,12 @@ impl From<reqwest::header::InvalidHeaderValue> for AnalyticsStorageError {
 
 impl From<reqwest::Error> for AnalyticsStorageError {
     fn from(source: reqwest::Error) -> Self {
-        Self::with_source(AnalyticsStorageErrorKind::Http, source)
+        let message = source.to_string();
+        Self::with_debug_source(
+            AnalyticsStorageErrorKind::Http,
+            AnalyticsStorageErrorDebug::Message(message),
+            source,
+        )
     }
 }
 

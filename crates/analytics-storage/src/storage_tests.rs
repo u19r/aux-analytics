@@ -38,6 +38,10 @@ fn poller_defaults_allow_many_responses_per_interval() {
     let config = PollerConfig::default();
 
     assert_eq!(config.poll_interval, std::time::Duration::from_millis(100));
+    assert_eq!(
+        config.request_timeout,
+        std::time::Duration::from_millis(5_000)
+    );
     assert_eq!(config.max_shards, 16);
     assert_eq!(config.max_responses_per_interval, 160);
     assert_eq!(config.response_budget_per_shard(), 10);
@@ -47,6 +51,7 @@ fn poller_defaults_allow_many_responses_per_interval() {
 fn poller_plan_spreads_response_budget_across_concurrent_shards() {
     let config = PollerConfig {
         poll_interval: std::time::Duration::from_millis(100),
+        request_timeout: std::time::Duration::from_millis(5_000),
         max_shards: 3,
         max_responses_per_interval: 30,
     };
@@ -60,6 +65,23 @@ fn poller_plan_spreads_response_budget_across_concurrent_shards() {
     assert_eq!(requests[1].max_responses, 10);
     assert_eq!(requests[2].shard_id, "c");
     assert_eq!(requests[2].max_responses, 10);
+}
+
+#[test]
+fn poller_config_keeps_source_request_timeout_separate_from_poll_interval() {
+    let source = AnalyticsSourceConfig {
+        poll_interval_ms: 100,
+        poll_request_timeout_ms: 5_000,
+        ..AnalyticsSourceConfig::default()
+    };
+
+    let config = PollerConfig::from_source_config(&source);
+
+    assert_eq!(config.poll_interval, std::time::Duration::from_millis(100));
+    assert_eq!(
+        config.request_timeout,
+        std::time::Duration::from_millis(5_000)
+    );
 }
 
 #[test]
@@ -92,4 +114,52 @@ fn table_plans_map_source_tables_to_manifest_tables() {
     assert_eq!(plans[0].source_table_name, "tenant_entities");
     assert_eq!(plans[0].analytics_table_names, vec!["users"]);
     assert_eq!(plans[0].stream_type, AnalyticsStreamType::AuxStorage);
+}
+
+#[test]
+fn table_plans_use_manifest_source_tables_when_config_omits_table_list() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tables": [
+            {
+                "source_table_name": "sys",
+                "analytics_table_name": "sys_tenants",
+                "tenant_selector": { "kind": "none" },
+                "row_identity": { "kind": "stream_keys" },
+                "columns": []
+            },
+            {
+                "source_table_name": "sys",
+                "analytics_table_name": "sys_domains",
+                "tenant_selector": { "kind": "none" },
+                "row_identity": { "kind": "stream_keys" },
+                "columns": []
+            },
+            {
+                "source_table_name": "s00000",
+                "analytics_table_name": "tenant_items",
+                "tenant_selector": { "kind": "none" },
+                "row_identity": { "kind": "stream_keys" },
+                "columns": []
+            }
+        ]
+    }))
+    .expect("manifest");
+    let source = AnalyticsSourceConfig {
+        stream_type: Some(AnalyticsStreamType::AuxStorage),
+        endpoint_url: Some("http://127.0.0.1:39124/storage".to_string()),
+        tables: Vec::new(),
+        ..AnalyticsSourceConfig::default()
+    };
+
+    let plans = table_plans(&source, &manifest).expect("plans");
+
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[0].source_table_name, "sys");
+    assert_eq!(
+        plans[0].analytics_table_names,
+        vec!["sys_tenants", "sys_domains"]
+    );
+    assert_eq!(plans[1].source_table_name, "s00000");
+    assert_eq!(plans[1].analytics_table_names, vec!["tenant_items"]);
 }

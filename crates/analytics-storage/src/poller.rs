@@ -15,6 +15,7 @@ use crate::{
         AnalyticsStorageError, AnalyticsStorageErrorDebug, AnalyticsStorageErrorKind,
         AnalyticsStorageResult,
     },
+    execution::StreamCatchupSource,
     facade::storage_stream_record_from_facade,
     planning::table_plans,
     poller_config::PollerConfig,
@@ -79,7 +80,7 @@ impl SourcePoller {
                         AUX_STORAGE_SHARD_ID,
                     );
                     tables.push(SourceTablePoller::AuxStorage(AuxStorageTablePoller {
-                        client: AuxStorageStreamClient::new(endpoint_url, config.poll_interval)?,
+                        client: AuxStorageStreamClient::new(endpoint_url, config.request_timeout)?,
                         source_table_name: plan.source_table_name,
                         analytics_table_names: plan.analytics_table_names,
                         last_evaluated_key,
@@ -157,6 +158,16 @@ impl SourcePoller {
                 table.commit(checkpoint);
             }
         }
+    }
+}
+
+impl StreamCatchupSource for SourcePoller {
+    async fn poll_stream_catchup(&mut self) -> AnalyticsStorageResult<PollBatch> {
+        self.poll_once().await
+    }
+
+    fn commit_stream_catchup(&mut self, checkpoints: &[SourceCheckpoint]) {
+        self.commit(checkpoints);
     }
 }
 

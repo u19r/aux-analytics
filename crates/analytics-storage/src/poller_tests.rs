@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use analytics_contract::StorageStreamRecord;
 use tokio::{
@@ -7,9 +11,10 @@ use tokio::{
 };
 
 use crate::{
-    SourceCheckpoint,
+    PollBatch, PolledRecord, SnapshotChunk, SnapshotChunkCheckpoint, SourceCheckpoint,
     aux_storage_client::AuxStorageStreamClient,
     aws_stream::AwsShardIteratorState,
+    execution::{BackfillExecutionInputs, SnapshotChunkSource, StreamCatchupSource},
     poller::{
         AUX_STORAGE_SHARD_ID, AuxStorageTablePoller, apply_aws_iterator_checkpoint,
         aws_stream_response_batch, checkpoint_position, expand_records,
@@ -238,6 +243,58 @@ async fn given_terminal_aux_storage_page_when_polled_then_last_record_sequence_i
     assert_eq!(batch.checkpoints[0].position, "seq-2");
 }
 
+#[tokio::test]
+async fn given_local_fixture_when_used_as_execution_inputs_then_snapshot_and_catchup_sources_are_split()
+ {
+    let snapshot_checkpoint = SnapshotChunkCheckpoint {
+        source_table_name: "source_users".to_string(),
+        chunk_id: "chunk-0001".to_string(),
+    };
+    let catchup_checkpoint = SourceCheckpoint {
+        source_table_name: "source_users".to_string(),
+        shard_id: AUX_STORAGE_SHARD_ID.to_string(),
+        position: "seq-2".to_string(),
+    };
+    let snapshot_fixture = LocalExecutionSource::with_snapshot_chunks([SnapshotChunk {
+        checkpoint: snapshot_checkpoint.clone(),
+        records: vec![polled_record("users", "snapshot-1")],
+    }]);
+    let catchup_fixture = LocalExecutionSource::with_stream_batches([PollBatch {
+        records: vec![polled_record("users", "seq-2")],
+        checkpoints: vec![catchup_checkpoint.clone()],
+    }]);
+    let mut inputs = BackfillExecutionInputs::new(snapshot_fixture, catchup_fixture);
+
+    let snapshot = inputs
+        .snapshot_chunks
+        .next_snapshot_chunk()
+        .await
+        .expect("read snapshot chunk")
+        .expect("snapshot chunk");
+    inputs
+        .snapshot_chunks
+        .commit_snapshot_chunk(&snapshot.checkpoint);
+    let catchup = inputs
+        .stream_catchup
+        .poll_stream_catchup()
+        .await
+        .expect("poll catch-up stream");
+    inputs
+        .stream_catchup
+        .commit_stream_catchup(&catchup.checkpoints);
+
+    assert_eq!(snapshot.records[0].record_key, "snapshot-1");
+    assert_eq!(catchup.records[0].record_key, "seq-2");
+    assert_eq!(
+        inputs.snapshot_chunks.committed_snapshot_chunks,
+        vec![snapshot_checkpoint]
+    );
+    assert_eq!(
+        inputs.stream_catchup.committed_stream_checkpoints,
+        vec![catchup_checkpoint]
+    );
+}
+
 async fn serve_once(body: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -262,5 +319,63 @@ fn stream_record(sequence_number: &str) -> StorageStreamRecord {
         keys: HashMap::default(),
         old_image: None,
         new_image: None,
+    }
+}
+
+fn polled_record(analytics_table_name: &str, record_key: &str) -> PolledRecord {
+    PolledRecord {
+        analytics_table_name: analytics_table_name.to_string(),
+        record_key: record_key.to_string(),
+        record: stream_record(record_key),
+    }
+}
+
+#[derive(Debug, Default)]
+struct LocalExecutionSource {
+    snapshot_chunks: VecDeque<SnapshotChunk>,
+    stream_batches: VecDeque<PollBatch>,
+    committed_snapshot_chunks: Vec<SnapshotChunkCheckpoint>,
+    committed_stream_checkpoints: Vec<SourceCheckpoint>,
+}
+
+impl LocalExecutionSource {
+    fn with_snapshot_chunks(chunks: impl IntoIterator<Item = SnapshotChunk>) -> Self {
+        Self {
+            snapshot_chunks: chunks.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
+    fn with_stream_batches(batches: impl IntoIterator<Item = PollBatch>) -> Self {
+        Self {
+            stream_batches: batches.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+}
+
+impl SnapshotChunkSource for LocalExecutionSource {
+    async fn next_snapshot_chunk(
+        &mut self,
+    ) -> crate::AnalyticsStorageResult<Option<SnapshotChunk>> {
+        Ok(self.snapshot_chunks.pop_front())
+    }
+
+    fn commit_snapshot_chunk(&mut self, checkpoint: &SnapshotChunkCheckpoint) {
+        self.committed_snapshot_chunks.push(checkpoint.clone());
+    }
+}
+
+impl StreamCatchupSource for LocalExecutionSource {
+    async fn poll_stream_catchup(&mut self) -> crate::AnalyticsStorageResult<PollBatch> {
+        Ok(self.stream_batches.pop_front().unwrap_or(PollBatch {
+            records: Vec::new(),
+            checkpoints: Vec::new(),
+        }))
+    }
+
+    fn commit_stream_catchup(&mut self, checkpoints: &[SourceCheckpoint]) {
+        self.committed_stream_checkpoints
+            .extend(checkpoints.iter().cloned());
     }
 }

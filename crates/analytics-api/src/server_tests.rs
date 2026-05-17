@@ -1,10 +1,14 @@
 use std::time::Duration;
 
 use config::{MetricsConfig, RootConfig, Tracing};
+use serde_json::json;
 
-use crate::server::{
-    CorsOrigins, FilterSource, cors_origins, endpoint_config, metrics_endpoint_config,
-    parse_shutdown_grace_period, resolve_filter,
+use crate::{
+    runtime_config::load_privacy_policy,
+    server::{
+        CorsOrigins, FilterSource, cors_origins, endpoint_config, metrics_endpoint_config,
+        parse_shutdown_grace_period, resolve_filter,
+    },
 };
 
 #[test]
@@ -87,6 +91,38 @@ fn given_ingest_endpoint_disabled_when_endpoint_config_is_built_then_ingest_rout
     let config = endpoint_config(&root);
 
     assert!(!config.ingest_enabled);
+}
+
+#[test]
+fn given_invalid_regex_privacy_policy_when_loaded_then_startup_fails_closed() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let policy_path = tempdir.path().join("privacy.json");
+    std::fs::write(
+        policy_path.as_path(),
+        json!({
+            "version": "privacy-v1",
+            "denied_key_names": [],
+            "denied_key_prefixes": [],
+            "denied_key_suffixes": [],
+            "denied_exact_paths": [],
+            "denied_path_regexes": [],
+            "denied_value_regexes": ["["]
+        })
+        .to_string(),
+    )
+    .expect("policy file");
+    let mut root = RootConfig::default();
+    root.analytics.privacy.policy_path = Some(policy_path.to_string_lossy().into_owned());
+
+    let error = load_privacy_policy(&root).expect_err("invalid policy should fail");
+
+    assert!(
+        error.to_string().contains("analytics configuration failed")
+            || error
+                .to_string()
+                .contains("privacy policy regex is invalid"),
+        "{error}"
+    );
 }
 
 #[test]

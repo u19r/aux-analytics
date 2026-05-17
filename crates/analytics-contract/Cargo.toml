@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 jsonschema = { workspace = true }
+regex = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

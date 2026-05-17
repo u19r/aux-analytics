@@ -1,18 +1,27 @@
 use analytics_contract::{AnalyticsManifest, read_manifest};
 use analytics_engine::AnalyticsEngine;
 use analytics_storage::RetentionPolicyLookup;
+use clap::CommandFactory as _;
+use clap_complete::{Shell, generate};
 use config::RootConfig;
 
 use crate::{
+    backfill::run_backfill_command,
+    check::run_check_command,
     cli::{Cli, Command},
     error::CliResult,
+    fix::run_fix_command,
+    operations::run_operations_command,
+    privacy_fix::run_privacy_fix_command,
+    raw_backup::run_raw_backup_command,
     runtime_config::{
         load_config, read_structured_query, resolve_manifest_path, validate_source_config,
     },
+    trim::run_trim_command,
 };
 
 #[allow(clippy::too_many_lines)]
-pub(crate) async fn run(cli: Cli) -> CliResult<Option<String>> {
+pub async fn run(cli: Cli) -> CliResult<Option<String>> {
     match cli.command {
         Command::Schema => pretty_json_value(serde_json::to_value(schemars::schema_for!(
             AnalyticsManifest
@@ -151,10 +160,25 @@ pub(crate) async fn run(cli: Cli) -> CliResult<Option<String>> {
             }))
             .map(Some)
         }
+        Command::Operations(command) => run_operations_command(command).map(Some),
+        Command::Backfill(command) => run_backfill_command(command).map(Some),
+        Command::Check(command) => run_check_command(command).map(Some),
+        Command::RawBackup(command) => run_raw_backup_command(command).map(Some),
+        Command::Fix(command) => run_fix_command(command).map(Some),
+        Command::PrivacyFix(command) => run_privacy_fix_command(command).map(Some),
+        Command::Trim(command) => run_trim_command(command).map(Some),
+        Command::Completions { shell } => Ok(Some(generate_completions(shell))),
     }
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn pretty_json_value(value: serde_json::Value) -> CliResult<String> {
     Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn generate_completions(shell: Shell) -> String {
+    let mut command = Cli::command();
+    let mut output = Vec::new();
+    generate(shell, &mut command, "aux-analytics", &mut output);
+    String::from_utf8_lossy(&output).into_owned()
 }

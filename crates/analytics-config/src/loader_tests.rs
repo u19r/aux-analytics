@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use crate::loader::{
-    apply_override, load_optional_with_overrides, merge_json, parse_override_value,
+    apply_override, expand_env_placeholders, load_optional_with_overrides, merge_json,
+    parse_override_value,
 };
 
 #[test]
@@ -75,6 +76,16 @@ fn given_override_value_when_it_is_json_then_type_is_preserved() {
     assert_eq!(parse_override_value("42"), json!(42));
     assert_eq!(parse_override_value("false"), json!(false));
     assert_eq!(parse_override_value("plain"), json!("plain"));
+}
+
+#[test]
+fn given_runtime_secret_placeholder_when_env_exists_then_value_is_expanded() {
+    let home = std::env::var("HOME").expect("HOME should be set in test environment");
+
+    assert_eq!(
+        expand_env_placeholders("host=db password=${HOME}"),
+        format!("host=db password={home}")
+    );
 }
 
 #[test]

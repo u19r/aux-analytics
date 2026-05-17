@@ -1,0 +1,47 @@
+{
+  "$schema": "../../../../schemas/config.schema.json",
+  "description": "Production Kubernetes aux-analytics profile using DuckLake with a Postgres catalog and S3-compatible object storage.",
+  "http": {
+    "bind_addr": "0.0.0.0:39090"
+  },
+  "analytics": {
+    "manifest_path": "/etc/aux-analytics/analytics-manifest.json",
+    "http": {
+      "ingest_endpoint_enabled": false
+    },
+    "source": {
+      "stream_type": "aux_storage",
+      "endpoint_url": "${AUX_ANALYTICS_SOURCE_ENDPOINT_URL}",
+      "poll_interval_ms": 100,
+      "poll_request_timeout_ms": 5000,
+      "poll_max_shards": 16,
+      "poll_max_responses_per_interval": 160
+    },
+    "catalog": {
+      "backend": "ducklake_postgres",
+      "connection_string": "${AUX_ANALYTICS_CATALOG_URI}"
+    },
+    "object_storage": {
+      "provider": "generic",
+      "scheme": "s3",
+      "bucket": "${AUX_ANALYTICS_OBJECT_BUCKET}",
+      "path": "${AUX_ANALYTICS_OBJECT_PREFIX}",
+      "endpoint_url": "${AUX_ANALYTICS_OBJECT_ENDPOINT_URL}",
+      "region": "${AUX_ANALYTICS_OBJECT_REGION}",
+      "credentials": {
+        "static": {
+          "access_key": "${AWS_ACCESS_KEY_ID}",
+          "secret_key": "${AWS_SECRET_ACCESS_KEY}"
+        }
+      }
+    }
+  },
+  "features": {
+    "metrics": {
+      "enabled": true
+    }
+  },
+  "tracing": {
+    "log_level": "${AUX_LOG_LEVEL}"
+  }
+}

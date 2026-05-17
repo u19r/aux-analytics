@@ -1,6 +1,8 @@
 mod aux_storage_client;
 mod aws_stream;
+mod current_row;
 mod error;
+mod execution;
 mod facade;
 pub(crate) mod planning;
 mod poller;
@@ -8,16 +10,30 @@ mod poller_config;
 mod retention;
 mod types;
 
+pub use current_row::{
+    AuxStorageCurrentRowClient, AuxStorageCurrentRowPageReader, AuxStorageCurrentRowScanRequest,
+    DynamoDbCurrentRowClient, DynamoDbCurrentRowPageReader, DynamoDbCurrentRowScanRequest,
+    DynamoDbCurrentRowScanResponse,
+};
 pub use error::{AnalyticsStorageError, AnalyticsStorageResult};
+pub use execution::{BackfillExecutionInputs, SnapshotChunkSource, StreamCatchupSource};
 pub use poller::SourcePoller;
 pub use poller_config::{PollRequest, PollerConfig};
 pub use retention::RetentionPolicyLookup;
-pub use types::{PollBatch, PolledRecord, SourceCheckpoint};
+pub use types::{
+    PollBatch, PolledRecord, SnapshotChunk, SnapshotChunkCheckpoint, SourceCheckpoint,
+};
 
 #[cfg(test)]
 mod aux_storage_client_tests;
 #[cfg(test)]
 mod aws_stream_tests;
+#[cfg(test)]
+mod current_row_aux_storage_tests;
+#[cfg(test)]
+mod current_row_dynamodb_tests;
+#[cfg(test)]
+mod current_row_test_support;
 #[cfg(test)]
 mod error_tests;
 #[cfg(test)]

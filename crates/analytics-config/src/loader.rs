@@ -25,8 +25,50 @@ pub fn load_optional_with_overrides(
     for (path, raw) in overrides {
         apply_override(&mut value, path, raw)?;
     }
-    let root = serde_json::from_value(value).map_err(|source| ConfigError::json(None, source))?;
+    expand_env_placeholders_in_value(&mut value);
+    let root: RootConfig =
+        serde_json::from_value(value).map_err(|source| ConfigError::json(None, source))?;
     Ok(Arc::new(Config { root }))
+}
+
+fn expand_env_placeholders_in_value(value: &mut Value) {
+    match value {
+        Value::String(raw) => *raw = expand_env_placeholders(raw),
+        Value::Array(values) => {
+            for value in values {
+                expand_env_placeholders_in_value(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                expand_env_placeholders_in_value(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+pub(crate) fn expand_env_placeholders(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some((before, after_start)) = rest.split_once("${") {
+        output.push_str(before);
+        let Some((name, after_end)) = after_start.split_once('}') else {
+            output.push_str("${");
+            output.push_str(after_start);
+            return output;
+        };
+        if let Ok(env_value) = std::env::var(name) {
+            output.push_str(&env_value);
+        } else {
+            output.push_str("${");
+            output.push_str(name);
+            output.push('}');
+        }
+        rest = after_end;
+    }
+    output.push_str(rest);
+    output
 }
 
 pub(crate) fn merge_json(base: &mut Value, overlay: Value) {

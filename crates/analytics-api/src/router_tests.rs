@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
-use analytics_contract::{QueryExpression, QueryPredicate, QuerySelect, StructuredQuery};
+use analytics_contract::{
+    PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
+};
 use analytics_engine::AnalyticsEngine;
 use analytics_fixtures::{storage_key, user_item, users_manifest};
+use analytics_operations::{
+    OperationActor, OperationId, OperationKind, OperationRequest, OperationStore, RateLimitPolicy,
+};
 use axum::{
     Router,
     body::Body,
@@ -49,6 +54,86 @@ async fn tenant_query_endpoint_returns_rows_after_minimal_ingest() {
     assert_eq!(response.status(), StatusCode::OK);
 
     assert_query_email(router, "a@example.com").await;
+}
+
+#[tokio::test]
+async fn operations_endpoints_return_status_audit_and_accept_cancel() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let operation_id = OperationId::new("op_api_1").expect("operation id");
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    store
+        .create_operation(&OperationRequest {
+            operation_id: operation_id.clone(),
+            kind: OperationKind::Backfill,
+            actor: OperationActor::new("operator").expect("actor"),
+            target_tables: vec!["users".to_string()],
+            dry_run: true,
+            rate_limit: RateLimitPolicy::default(),
+            payload: json!({"mode": "test"}),
+        })
+        .expect("operation");
+    drop(store);
+
+    let router = test_router_with_operation_store(operation_store_path);
+
+    let response = get(router.clone(), "/operations").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["operations"][0]["operation_id"], "op_api_1");
+
+    let response = get(router.clone(), "/operations/op_api_1").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "submitted");
+
+    let response = get(router.clone(), "/operations/op_api_1/audit").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["events"][0]["kind"], "submitted");
+
+    let response = post_json(router.clone(), "/operations/op_api_1/cancel", json!({})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["cancellation_requested"], true);
+
+    let response = get(router, "/operations/op_api_1").await;
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "cancelling");
+}
+
+#[tokio::test]
+async fn diagnostics_endpoint_summarizes_operations_without_payloads() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let operation_id = OperationId::new("op_diag_1").expect("operation id");
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    store
+        .create_operation(&OperationRequest {
+            operation_id,
+            kind: OperationKind::Backfill,
+            actor: OperationActor::new("operator").expect("actor"),
+            target_tables: vec!["users".to_string()],
+            dry_run: true,
+            rate_limit: RateLimitPolicy::default(),
+            payload: json!({"raw_sql": "select secret from users", "token": "not-for-diagnostics"}),
+        })
+        .expect("operation");
+    drop(store);
+
+    let response = get(
+        test_router_with_operation_store(operation_store_path),
+        "/diagnostics",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+
+    assert_eq!(body["operations"]["configured"], true);
+    assert_eq!(body["operations"]["reachable"], true);
+    assert_eq!(body["operations"]["operation_count"], 1);
+    assert!(!body.to_string().contains("not-for-diagnostics"));
+    assert!(!body.to_string().contains("raw_sql"));
 }
 
 #[tokio::test]
@@ -122,6 +207,55 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
     let body = response_json(response).await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
     assert_eq!(body["rows"].as_array().map(Vec::len), Some(0));
+}
+
+#[tokio::test]
+async fn ingest_endpoint_applies_configured_privacy_policy() {
+    let router = test_router_with_privacy_policy(
+        PrivacyPolicy::new("privacy-v1")
+            .expect("policy")
+            .with_denied_key_name("email"),
+    );
+
+    let response = post_json(
+        router.clone(),
+        "/ingest/users",
+        json!({
+            "record_key": "user-1",
+            "record": {
+                "Keys": storage_key("USER", "user-1"),
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", "private@example.com", "org-a"),
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["privacy_policy_version"], "privacy-v1");
+    assert_eq!(body["privacy_dropped_fields"], 1);
+
+    let response = post_json(
+        router,
+        "/tenant-query",
+        json!({
+            "target_tenant_id": "tenant_01",
+            "query": StructuredQuery {
+                analytics_table_name: "users".to_string(),
+                select: vec![QuerySelect::Column {
+                    column_name: "email".to_string(),
+                    alias: None,
+                }],
+                filters: Vec::new(),
+                group_by: Vec::new(),
+                order_by: Vec::new(),
+                limit: Some(1),
+            }
+        }),
+    )
+    .await;
+    let body = response_json(response).await;
+    assert!(body["rows"][0]["email"].is_null(), "{body:?}");
 }
 
 #[tokio::test]
@@ -275,6 +409,50 @@ async fn ingest_endpoint_rejects_requests_that_fail_generated_schema() {
 }
 
 #[tokio::test]
+async fn ingest_batch_endpoint_ingests_records_in_one_request() {
+    let router = test_router();
+    let response = post_json(
+        router.clone(),
+        "/ingest-batch/users",
+        json!({
+            "records": [
+                {
+                    "record_key": "user-1",
+                    "record": {
+                        "Keys": {},
+                        "SequenceNumber": "1",
+                        "NewImage": {
+                            "tenant_id": {"S": "tenant_01"},
+                            "user_id": {"S": "user-1"},
+                            "profile": {"M": {"email": {"S": "first@example.com"}}}
+                        }
+                    }
+                },
+                {
+                    "record_key": "user-2",
+                    "record": {
+                        "Keys": {},
+                        "SequenceNumber": "2",
+                        "NewImage": {
+                            "tenant_id": {"S": "tenant_01"},
+                            "user_id": {"S": "user-2"},
+                            "profile": {"M": {"email": {"S": "second@example.com"}}}
+                        }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["record_count"], 2);
+    assert_eq!(body["outcomes"][0]["outcome"], "inserted");
+    assert_query_email(router, "first@example.com").await;
+}
+
+#[tokio::test]
 async fn ingest_endpoint_can_be_disabled() {
     let manifest = users_manifest();
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
@@ -333,11 +511,17 @@ async fn openapi_endpoint_describes_analytics_routes() {
         body["paths"]["/ingest/{analytics_table_name}"]["post"]["tags"][0],
         "Analytics"
     );
+    assert_eq!(
+        body["paths"]["/ingest-batch/{analytics_table_name}"]["post"]["tags"][0],
+        "Analytics"
+    );
     assert!(body["components"]["schemas"]["UnscopedSqlQueryRequest"].is_object());
     assert!(body["components"]["schemas"]["UnscopedStructuredQueryRequest"].is_object());
     assert!(body["components"]["schemas"]["TenantQueryRequest"].is_object());
     assert!(body["components"]["schemas"]["StructuredQuery"].is_object());
     assert!(body["components"]["schemas"]["IngestStreamRecordRequest"].is_object());
+    assert!(body["components"]["schemas"]["IngestStreamRecordBatchRequest"].is_object());
+    assert!(body["components"]["schemas"]["IngestBatchResponse"].is_object());
     assert!(body["components"]["schemas"]["AnalyticsManifest"].is_object());
 }
 
@@ -346,6 +530,24 @@ fn test_router() -> Router {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     engine.ensure_manifest(&manifest).expect("ensure manifest");
     server_router(Arc::new(AppState::new(engine, manifest)))
+}
+
+fn test_router_with_privacy_policy(policy: PrivacyPolicy) -> Router {
+    let manifest = users_manifest();
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    server_router(Arc::new(
+        AppState::new(engine, manifest).with_privacy_policy(Some(Arc::new(policy))),
+    ))
+}
+
+fn test_router_with_operation_store(path: std::path::PathBuf) -> Router {
+    let manifest = users_manifest();
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    server_router(Arc::new(
+        AppState::new(engine, manifest).with_operation_store_path(path),
+    ))
 }
 
 async fn assert_query_email(router: Router, expected_email: &str) {
@@ -385,6 +587,13 @@ async fn post_json(
                 .body(Body::from(body.to_string()))
                 .expect("request"),
         )
+        .await
+        .expect("response")
+}
+
+async fn get(router: Router, path: &str) -> axum::response::Response {
+    router
+        .oneshot(Request::get(path).body(Body::empty()).expect("request"))
         .await
         .expect("response")
 }

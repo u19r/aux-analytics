@@ -1,7 +1,10 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use analytics_contract::{AnalyticsManifest, StorageItem, StorageStreamRecord, StructuredQuery};
+use analytics_contract::{
+    AnalyticsManifest, PrivacyPolicy, StorageItem, StorageStreamRecord, StructuredQuery,
+};
 use analytics_engine::AnalyticsEngine;
+use analytics_operations::{OperationEvent, StoredOperation};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
@@ -13,7 +16,100 @@ pub struct AppState {
     pub manifest: Arc<AnalyticsManifest>,
     pub source_health: Arc<RwLock<SourceHealth>>,
     pub retention: Option<Arc<crate::retention::RetentionRuntime>>,
+    pub privacy_policy: Option<Arc<PrivacyPolicy>>,
     pub retention_health: Arc<RwLock<RetentionHealth>>,
+    pub operation_store_path: Option<Arc<PathBuf>>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationListResponse {
+    pub(crate) operations: Vec<OperationStatusResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationStatusResponse {
+    pub(crate) operation_id: String,
+    pub(crate) kind: String,
+    pub(crate) actor: String,
+    pub(crate) target_tables: Vec<String>,
+    pub(crate) dry_run: bool,
+    pub(crate) phase: String,
+    pub(crate) status: String,
+    pub(crate) cancellation_state: String,
+    pub(crate) cursor: Option<OperationCursorResponse>,
+    pub(crate) created_at_ms: i64,
+    pub(crate) updated_at_ms: i64,
+}
+
+impl From<StoredOperation> for OperationStatusResponse {
+    fn from(operation: StoredOperation) -> Self {
+        Self {
+            operation_id: operation.operation_id.to_string(),
+            kind: operation.kind.to_string(),
+            actor: operation.actor,
+            target_tables: operation.target_tables,
+            dry_run: operation.dry_run,
+            phase: operation.phase.to_string(),
+            status: operation.status.to_string(),
+            cancellation_state: operation.cancellation_state.to_string(),
+            cursor: operation.cursor.map(Into::into),
+            created_at_ms: operation.created_at_ms,
+            updated_at_ms: operation.updated_at_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationAuditResponse {
+    pub(crate) events: Vec<OperationAuditEventResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationAuditEventResponse {
+    pub(crate) operation_id: String,
+    pub(crate) event_id: u64,
+    pub(crate) occurred_at_ms: i64,
+    pub(crate) kind: String,
+    pub(crate) phase: String,
+    pub(crate) status: String,
+    pub(crate) cursor: Option<OperationCursorResponse>,
+    pub(crate) message: Option<String>,
+}
+
+impl From<OperationEvent> for OperationAuditEventResponse {
+    fn from(event: OperationEvent) -> Self {
+        Self {
+            operation_id: event.operation_id.to_string(),
+            event_id: event.event_id,
+            occurred_at_ms: event.occurred_at_ms,
+            kind: event.kind.to_string(),
+            phase: event.phase.to_string(),
+            status: event.status.to_string(),
+            cursor: event.cursor.map(Into::into),
+            message: event.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationCancelResponse {
+    pub(crate) operation_id: String,
+    pub(crate) cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct OperationCursorResponse {
+    pub(crate) label: String,
+    pub(crate) position: u64,
+}
+
+impl From<analytics_operations::OperationCursor> for OperationCursorResponse {
+    fn from(cursor: analytics_operations::OperationCursor) -> Self {
+        Self {
+            label: cursor.label,
+            position: cursor.position,
+        }
+    }
 }
 
 impl AppState {
@@ -24,7 +120,9 @@ impl AppState {
             manifest: Arc::new(manifest),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention: None,
+            privacy_policy: None,
             retention_health: Arc::new(RwLock::new(RetentionHealth::disabled())),
+            operation_store_path: None,
         }
     }
 
@@ -39,8 +137,22 @@ impl AppState {
             manifest: Arc::new(manifest),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention,
+            privacy_policy: None,
             retention_health: Arc::new(RwLock::new(RetentionHealth::disabled())),
+            operation_store_path: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_privacy_policy(mut self, policy: Option<Arc<PrivacyPolicy>>) -> Self {
+        self.privacy_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_operation_store_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.operation_store_path = Some(Arc::new(path.into()));
+        self
     }
 }
 
@@ -276,6 +388,27 @@ pub(crate) struct DiagnosticsResponse {
     pub source: SourceHealth,
     /// Retention sweeper health details.
     pub retention: RetentionHealth,
+    /// Durable operation store summary without operation payloads.
+    pub operations: OperationDiagnostics,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "configured": true,
+    "reachable": true,
+    "operation_count": 3,
+    "running_operations": 1,
+    "degraded_operations": 0,
+    "oldest_running_updated_at_ms": 1_778_670_000_200_u64
+}))]
+pub(crate) struct OperationDiagnostics {
+    pub configured: bool,
+    pub reachable: bool,
+    pub operation_count: usize,
+    pub running_operations: usize,
+    pub degraded_operations: usize,
+    #[serde(default)]
+    pub oldest_running_updated_at_ms: Option<i64>,
 }
 
 /// Explicitly unscoped raw SQL query request. The HTTP API validates this shape
@@ -421,6 +554,40 @@ impl IngestStreamRecordRequest {
     }
 }
 
+/// Batch stream ingestion request.
+#[derive(Debug, Clone, Deserialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "records": [{
+        "record_key": "user-1",
+        "record": {
+            "Keys": {"pk": {"S": "USER#user-1"}},
+            "SequenceNumber": "49668899999999999999999999999999999999999999999999999999",
+            "NewImage": {
+                "pk": {"S": "USER#user-1"},
+                "profile": {"M": {"email": {"S": "ada@example.com"}}},
+                "org_id": {"S": "org-a"}
+            }
+        }
+    }]
+}))]
+pub(crate) struct IngestStreamRecordBatchRequest {
+    /// Stream records from one source poll response. Keep payloads within the
+    /// source service response limit, such as `DynamoDB` Streams' 1 MiB page
+    /// cap.
+    #[schema(min_items = 1)]
+    pub(crate) records: Vec<IngestStreamRecordRequest>,
+}
+
+/// Batch stream ingestion outcome.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[schema(example = json!({"record_count": 2, "outcomes": [{"outcome": "inserted"}, {"outcome": "updated"}]}))]
+pub(crate) struct IngestBatchResponse {
+    /// Number of records accepted by the engine transaction.
+    pub(crate) record_count: usize,
+    /// Per-record ingest outcomes in request order.
+    pub(crate) outcomes: Vec<IngestResponse>,
+}
+
 /// Accepted ingestion payload shapes.
 #[derive(Debug, Clone, Deserialize, JsonSchema, ToSchema)]
 #[serde(untagged)]
@@ -530,4 +697,12 @@ pub(crate) struct IngestResponse {
     /// Final ingestion action performed by the engine.
     #[schema(example = "inserted")]
     pub outcome: String,
+    /// Active privacy policy version, when privacy mode filtered this request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = "privacy-v1")]
+    pub privacy_policy_version: Option<String>,
+    /// Count of fields or scalar values removed by the privacy policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = 2)]
+    pub privacy_dropped_fields: Option<u64>,
 }

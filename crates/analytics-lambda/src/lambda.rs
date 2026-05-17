@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use analytics_api::IngestStreamRecordRequest;
-use analytics_contract::{AnalyticsManifest, StructuredQuery};
+use analytics_contract::{AnalyticsManifest, PrivacyPolicy, StructuredQuery};
 use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
 use config::{AnalyticsCatalogBackend, RootConfig, load_optional_with_overrides};
 use schemars::JsonSchema;
@@ -29,6 +29,8 @@ pub enum AnalyticsLambdaError {
     Json(#[from] serde_json::Error),
     #[error("schema error: {0}")]
     Schema(String),
+    #[error("privacy policy error: {0}")]
+    PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("validation error: {0}")]
     Validation(String),
 }
@@ -46,6 +48,7 @@ impl AnalyticsLambdaError {
 pub struct AnalyticsLambdaHandler {
     manifest: Arc<AnalyticsManifest>,
     engine: Arc<Mutex<AnalyticsEngine>>,
+    privacy_policy: Option<Arc<PrivacyPolicy>>,
 }
 
 impl AnalyticsLambdaHandler {
@@ -56,8 +59,9 @@ impl AnalyticsLambdaHandler {
         let manifest_path =
             resolve_manifest_path(optional_env(ENV_MANIFEST_PATH).as_deref(), &root)?;
         let manifest = read_manifest(manifest_path.as_str())?;
+        let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
         let backend = resolve_storage_backend_from_env(&root)?;
-        Self::new(manifest, &backend)
+        Self::new_with_privacy_policy(manifest, &backend, privacy_policy)
     }
 
     pub fn new(
@@ -69,6 +73,21 @@ impl AnalyticsLambdaHandler {
         Ok(Self {
             manifest: Arc::new(manifest),
             engine: Arc::new(Mutex::new(engine)),
+            privacy_policy: None,
+        })
+    }
+
+    pub fn new_with_privacy_policy(
+        manifest: AnalyticsManifest,
+        backend: &StorageBackend,
+        privacy_policy: Option<Arc<PrivacyPolicy>>,
+    ) -> Result<Self, AnalyticsLambdaError> {
+        let engine = AnalyticsEngine::connect(backend)?;
+        engine.ensure_manifest(&manifest)?;
+        Ok(Self {
+            manifest: Arc::new(manifest),
+            engine: Arc::new(Mutex::new(engine)),
+            privacy_policy,
         })
     }
 
@@ -138,6 +157,17 @@ impl AnalyticsLambdaHandler {
     ) -> Result<IngestOutcome, AnalyticsLambdaError> {
         let (record_key, record) = request.into_contract_record();
         let engine = self.engine.lock().await;
+        if let Some(policy) = self.privacy_policy.as_ref() {
+            return Ok(engine
+                .ingest_stream_record_with_privacy_policy(
+                    self.manifest.as_ref(),
+                    analytics_table_name,
+                    record_key.as_bytes(),
+                    record,
+                    policy,
+                )?
+                .outcome);
+        }
         Ok(engine.ingest_stream_record(
             self.manifest.as_ref(),
             analytics_table_name,
@@ -145,6 +175,15 @@ impl AnalyticsLambdaHandler {
             record,
         )?)
     }
+}
+
+fn load_privacy_policy(root: &RootConfig) -> Result<Option<PrivacyPolicy>, AnalyticsLambdaError> {
+    let Some(path) = root.analytics.privacy.policy_path.as_deref() else {
+        return Ok(None);
+    };
+    let policy: PrivacyPolicy = serde_json::from_str(fs::read_to_string(path)?.as_str())?;
+    policy.validate()?;
+    Ok(Some(policy))
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

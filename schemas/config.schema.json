@@ -56,6 +56,10 @@
             "scheme": "s3"
           }
         },
+        "privacy": {
+          "$ref": "#/$defs/AnalyticsPrivacyConfig",
+          "default": {}
+        },
         "retention": {
           "$ref": "#/$defs/AnalyticsRetentionConfig",
           "default": {
@@ -72,6 +76,7 @@
             "poll_interval_ms": 100,
             "poll_max_responses_per_interval": 160,
             "poll_max_shards": 16,
+            "poll_request_timeout_ms": 5000,
             "tables": []
           }
         }
@@ -143,6 +148,18 @@
         "generic"
       ],
       "type": "string"
+    },
+    "AnalyticsPrivacyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "policy_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
     "AnalyticsRetentionConfig": {
       "additionalProperties": false,
@@ -243,6 +260,12 @@
         "poll_max_shards": {
           "default": 16,
           "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_request_timeout_ms": {
+          "default": 5000,
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
@@ -674,6 +697,7 @@
           "provider": "s3",
           "scheme": "s3"
         },
+        "privacy": {},
         "retention": {
           "delete_batch_pause_ms": 250,
           "delete_batch_size": 500,
@@ -685,6 +709,7 @@
           "poll_interval_ms": 100,
           "poll_max_responses_per_interval": 160,
           "poll_max_shards": 16,
+          "poll_request_timeout_ms": 5000,
           "tables": []
         }
       }

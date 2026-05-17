@@ -1,4 +1,8 @@
-use analytics_contract::{QueryExpression, QueryPredicate, QuerySelect, StructuredQuery};
+use std::sync::Arc;
+
+use analytics_contract::{
+    PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
+};
 use analytics_fixtures::{user_item, users_manifest};
 use config::{AnalyticsCatalogBackend, RootConfig};
 
@@ -31,6 +35,38 @@ async fn lambda_ingests_and_queries_rows() {
         .await
         .expect("query");
     assert_eq!(query_response["rows"][0]["email"], "a@example.com");
+}
+
+#[tokio::test]
+async fn lambda_ingest_applies_configured_privacy_policy() {
+    let handler = test_handler_with_privacy_policy(
+        PrivacyPolicy::new("privacy-v1")
+            .expect("policy")
+            .with_denied_key_name("email"),
+    );
+
+    handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", "private@example.com", "org-a"),
+            }
+        }))
+        .await
+        .expect("ingest");
+
+    let query_response = handler
+        .handle_event(json!({
+            "operation": "unscoped_sql_query",
+            "sql": "select email from users",
+        }))
+        .await
+        .expect("query");
+    assert!(query_response["rows"][0]["email"].is_null());
 }
 
 #[tokio::test]
@@ -208,6 +244,17 @@ fn test_handler() -> AnalyticsLambdaHandler {
         &StorageBackend::DuckDb {
             path: ":memory:".to_string(),
         },
+    )
+    .expect("handler")
+}
+
+fn test_handler_with_privacy_policy(policy: PrivacyPolicy) -> AnalyticsLambdaHandler {
+    AnalyticsLambdaHandler::new_with_privacy_policy(
+        users_manifest(),
+        &StorageBackend::DuckDb {
+            path: ":memory:".to_string(),
+        },
+        Some(Arc::new(policy)),
     )
     .expect("handler")
 }

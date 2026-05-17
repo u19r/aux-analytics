@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{fs, path::Path, sync::Arc};
 
+use analytics_contract::PrivacyPolicy;
 use config::{
     ConfigError, load_optional_with_overrides, parse_override_args,
     resolve_manifest_path as config_resolve_manifest_path,
@@ -10,6 +11,8 @@ use crate::{
     cli::ApiCli,
     error::{ApiError, ApiResult},
 };
+
+const PRIVACY_POLICY_LOAD_FAILURES_METRIC: &str = "analytics.privacy.policy_load_failures_total";
 
 pub(crate) fn load_serve_config(args: &ApiCli) -> Result<Arc<config::Config>, ConfigError> {
     let mut overrides = Vec::new();
@@ -29,4 +32,21 @@ pub(crate) fn resolve_manifest_path(
 
 pub(crate) fn validate_source_config(source: &config::AnalyticsSourceConfig) -> ApiResult<()> {
     config_validate_source_config(source).map_err(ApiError::from)
+}
+
+pub(crate) fn load_privacy_policy(root: &config::RootConfig) -> ApiResult<Option<PrivacyPolicy>> {
+    let Some(path) = root.analytics.privacy.policy_path.as_deref() else {
+        return Ok(None);
+    };
+    read_privacy_policy(Path::new(path))
+        .map(Some)
+        .inspect_err(|_| {
+            metrics::counter!(PRIVACY_POLICY_LOAD_FAILURES_METRIC).increment(1);
+        })
+}
+
+fn read_privacy_policy(path: &Path) -> ApiResult<PrivacyPolicy> {
+    let policy: PrivacyPolicy = serde_json::from_str(fs::read_to_string(path)?.as_str())?;
+    policy.validate()?;
+    Ok(policy)
 }

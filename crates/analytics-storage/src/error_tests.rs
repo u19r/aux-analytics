@@ -103,3 +103,16 @@ fn given_aws_sdk_debug_when_formatted_then_sdk_message_is_visible_to_operator() 
         "aws stream polling failed: expired iterator"
     );
 }
+
+#[test]
+fn given_http_debug_when_formatted_then_transport_message_is_visible_to_operator() {
+    let error = AnalyticsStorageError::with_debug(
+        AnalyticsStorageErrorKind::Http,
+        AnalyticsStorageErrorDebug::Message("operation timed out".to_string()),
+    );
+
+    assert_eq!(
+        error.to_string(),
+        "analytics source http request failed: operation timed out"
+    );
+}

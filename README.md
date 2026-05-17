@@ -189,14 +189,19 @@ Prometheus renders dots as underscores, for example
 
 See `configuration.md` for the full option table and schema commands.
 See `observability.md` for the metrics endpoint and stdout/stderr logging behavior.
+See `docs/CLI_REFERENCE.md` for the local operator command surface.
+See `docs/OPERATIONS.md` for long-running operation state, audit, recovery, and CLI surfaces.
+See `docs/BACKFILL_PLANNING.md` for existing-table adoption planning and safety tradeoffs.
+See `docs/RAW_BACKUP.md`, `docs/TABLE_FIX.md`, `docs/PRIVACY_FIX.md`, and `docs/TRIM.md` for
+operation-specific runbooks.
 See `examples/` for local DuckDB and DuckLake configurations.
 
 ## Boundaries
 
-`analytics-contract` is the integration boundary. Aux-fn should export manifests and, when pushing
-records over HTTP, use the contract JSON shape. Static integrations that already link the storage
-facade can use `analytics-storage` to convert storage records into contract records, but
-`analytics-engine` and `analytics-api` do not depend on the storage facade or aux-fn crates.
+`analytics-contract` is the integration boundary. Application services should export manifests and,
+when pushing records over HTTP, use the contract JSON shape. Static integrations that already link
+the storage facade can use `analytics-storage` to convert storage records into contract records, but
+`analytics-engine` and `analytics-api` do not depend on the storage facade or application crates.
 
 DuckLake connections use a catalog and data path:
 

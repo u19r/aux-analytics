@@ -1,14 +1,18 @@
 use std::fmt;
 
 use analytics_engine::AnalyticsEngineError;
+use analytics_operations::{
+    BackfillExecutionError, BackfillPlanError, CheckError, OperationStoreError, OperationTypeError,
+    PrivacyFixError, RawBackupError, TableFixError, TrimError,
+};
 use config::ConfigError;
 use thiserror::Error;
 
-pub(crate) type CliResult<T> = Result<T, CliError>;
+pub type CliResult<T> = Result<T, CliError>;
 
 #[derive(Debug, Error)]
 #[error("{kind}{debug}")]
-pub(crate) struct CliError {
+pub struct CliError {
     kind: CliErrorKind,
     debug: CliErrorDebug,
     #[source]
@@ -44,6 +48,7 @@ pub(crate) enum CliErrorKind {
     ManifestValidation,
     StructuredQueryValidation,
     Engine,
+    Operations,
     Storage,
 }
 
@@ -56,6 +61,7 @@ impl fmt::Display for CliErrorKind {
             Self::ManifestValidation => write!(f, "analytics manifest validation failed"),
             Self::StructuredQueryValidation => write!(f, "structured query validation failed"),
             Self::Engine => write!(f, "analytics engine operation failed"),
+            Self::Operations => write!(f, "analytics operation control failed"),
             Self::Storage => write!(f, "analytics storage operation failed"),
         }
     }
@@ -111,6 +117,12 @@ impl From<analytics_contract::StructuredQueryValidationError> for CliError {
     }
 }
 
+impl From<analytics_contract::PrivacyPolicyError> for CliError {
+    fn from(source: analytics_contract::PrivacyPolicyError) -> Self {
+        Self::with_source(CliErrorKind::Config, source)
+    }
+}
+
 impl From<analytics_contract::ManifestLoadError> for CliError {
     fn from(source: analytics_contract::ManifestLoadError) -> Self {
         let message = source.to_string();
@@ -125,6 +137,95 @@ impl From<analytics_contract::ManifestLoadError> for CliError {
 impl From<AnalyticsEngineError> for CliError {
     fn from(source: AnalyticsEngineError) -> Self {
         Self::with_source(CliErrorKind::Engine, source)
+    }
+}
+
+impl From<OperationStoreError> for CliError {
+    fn from(source: OperationStoreError) -> Self {
+        Self::with_source(CliErrorKind::Operations, source)
+    }
+}
+
+impl From<OperationTypeError> for CliError {
+    fn from(source: OperationTypeError) -> Self {
+        Self::with_source(CliErrorKind::Operations, source)
+    }
+}
+
+impl From<BackfillPlanError> for CliError {
+    fn from(source: BackfillPlanError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<BackfillExecutionError> for CliError {
+    fn from(source: BackfillExecutionError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<CheckError> for CliError {
+    fn from(source: CheckError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<RawBackupError> for CliError {
+    fn from(source: RawBackupError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<PrivacyFixError> for CliError {
+    fn from(source: PrivacyFixError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<TableFixError> for CliError {
+    fn from(source: TableFixError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+
+impl From<TrimError> for CliError {
+    fn from(source: TrimError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
     }
 }
 

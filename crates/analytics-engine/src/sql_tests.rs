@@ -4,8 +4,8 @@ use analytics_contract::{
 use config::CatalogType;
 
 use crate::sql::{
-    alter_table_partitioned_by, alter_table_sorted_by, attach_ducklake, create_table,
-    quote_identifier,
+    SOURCE_POSITION_COLUMN, alter_table_partitioned_by, alter_table_sorted_by, attach_ducklake,
+    create_table, quote_identifier,
 };
 
 #[test]
@@ -36,13 +36,19 @@ fn given_reserved_columns_when_table_sql_is_created_then_reserved_columns_are_no
                     primitive: PrimitiveColumnType::VarChar,
                 },
             },
+            AnalyticsColumn {
+                column_name: SOURCE_POSITION_COLUMN.to_string(),
+                column_type: AnalyticsColumnType::Primitive {
+                    primitive: PrimitiveColumnType::Json,
+                },
+            },
         ],
     );
 
     assert_eq!(
         sql,
         "CREATE TABLE IF NOT EXISTS \"users\" (tenant_id VARCHAR, __id VARCHAR, table_name \
-         VARCHAR, \"email\" VARCHAR);"
+         VARCHAR, \"__source_position\" JSON, \"email\" VARCHAR);"
     );
 }
 

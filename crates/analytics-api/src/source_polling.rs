@@ -14,6 +14,7 @@ const SOURCE_POLL_ERRORS_TOTAL_METRIC: &str = "analytics.source.poll_errors_tota
 const SOURCE_RECORDS_PER_POLL_METRIC: &str = "analytics.source.records_per_poll";
 const SOURCE_RECORDS_INGESTED_TOTAL_METRIC: &str = "analytics.source.records_ingested_total";
 const SOURCE_INGEST_ERRORS_TOTAL_METRIC: &str = "analytics.source.ingest_errors_total";
+const SOURCE_PRIVACY_DROPS_TOTAL_METRIC: &str = "analytics.source.privacy_dropped_fields_total";
 const SOURCE_CHECKPOINTS_SAVED_TOTAL_METRIC: &str = "analytics.source.checkpoints_saved_total";
 const SOURCE_CHECKPOINT_ERRORS_TOTAL_METRIC: &str = "analytics.source.checkpoint_errors_total";
 const SOURCE_CHECKPOINTS_METRIC: &str = "analytics.source.checkpoints";
@@ -22,21 +23,32 @@ pub(crate) async fn spawn_source_polling(
     source: &AnalyticsSourceConfig,
     app_state: Arc<AppState>,
 ) -> ApiResult<()> {
-    if source_polling_startup(source.tables.len(), false) == SourcePollingStartup::Disabled {
+    let source_table_count = source_table_count(source, app_state.manifest.as_ref());
+    if source_polling_startup(source_table_count, false) == SourcePollingStartup::Disabled {
         *app_state.source_health.write().await = SourceHealth::disabled();
         tracing::info!("analytics source polling disabled: no source tables configured");
         return Ok(());
     }
-    *app_state.source_health.write().await = SourceHealth::starting(source.tables.len());
+    *app_state.source_health.write().await = SourceHealth::starting(source_table_count);
+    tracing::info!("analytics source checkpoint load starting");
     let checkpoints = {
         let engine = app_state.engine.lock().await;
         engine.load_source_checkpoints()?
     };
+    tracing::info!(
+        checkpoint_count = checkpoints.len(),
+        "analytics source checkpoint load complete"
+    );
     let storage_checkpoints = storage_checkpoints_from_engine(checkpoints);
+    tracing::info!("analytics source poller construction starting");
     let poller =
         SourcePoller::from_config(source, app_state.manifest.as_ref(), &storage_checkpoints)
             .await?;
-    if source_polling_startup(source.tables.len(), poller.is_empty())
+    tracing::info!(
+        poller_is_empty = poller.is_empty(),
+        "analytics source poller constructed"
+    );
+    if source_polling_startup(source_table_count, poller.is_empty())
         == SourcePollingStartup::Disabled
     {
         *app_state.source_health.write().await = SourceHealth::disabled();
@@ -45,6 +57,20 @@ pub(crate) async fn spawn_source_polling(
     }
     tokio::spawn(run_source_poller(poller, app_state));
     Ok(())
+}
+
+fn source_table_count(
+    source: &AnalyticsSourceConfig,
+    manifest: &analytics_contract::AnalyticsManifest,
+) -> usize {
+    if !source.tables.is_empty() {
+        return source.tables.len();
+    }
+    let mut source_tables = std::collections::BTreeSet::new();
+    for table in &manifest.tables {
+        source_tables.insert(table.source_table_name.as_str());
+    }
+    source_tables.len()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,13 +172,35 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
             None
         };
         let engine = app_state.engine.lock().await;
-        if let Err(error) = engine.ingest_stream_record_with_retention(
-            app_state.manifest.as_ref(),
-            record.analytics_table_name.as_str(),
-            record.record_key.as_bytes(),
-            record.record.clone(),
-            retention.as_ref(),
-        ) {
+        let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
+            engine
+                .ingest_stream_record_with_privacy_policy_and_retention(
+                    app_state.manifest.as_ref(),
+                    record.analytics_table_name.as_str(),
+                    record.record_key.as_bytes(),
+                    record.record.clone(),
+                    policy,
+                    retention.as_ref(),
+                )
+                .map(|outcome| {
+                    metrics::counter!(
+                        SOURCE_PRIVACY_DROPS_TOTAL_METRIC,
+                        "policy_version" => outcome.policy_version.clone()
+                    )
+                    .increment(outcome.dropped_fields);
+                })
+        } else {
+            engine
+                .ingest_stream_record_with_retention(
+                    app_state.manifest.as_ref(),
+                    record.analytics_table_name.as_str(),
+                    record.record_key.as_bytes(),
+                    record.record.clone(),
+                    retention.as_ref(),
+                )
+                .map(|_| ())
+        };
+        if let Err(error) = ingest_result {
             ingest_results.push(false);
             metrics::counter!(SOURCE_INGEST_ERRORS_TOTAL_METRIC).increment(1);
             tracing::warn!(

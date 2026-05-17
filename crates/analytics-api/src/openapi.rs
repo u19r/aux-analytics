@@ -10,11 +10,16 @@ pub fn build() -> utoipa::openapi::OpenApi {
             crate::router::ready,
             crate::router::health_status,
             crate::router::diagnostics,
+            crate::router::list_operations,
+            crate::router::operation_status,
+            crate::router::operation_audit,
+            crate::router::cancel_operation,
             crate::router::manifest,
             crate::router::unscoped_sql_query,
             crate::router::unscoped_structured_query,
             crate::router::tenant_query,
             crate::router::ingest_stream_record,
+            crate::router::ingest_stream_record_batch,
             crate::router::openapi_json,
         ),
         components(schemas(
@@ -42,8 +47,16 @@ pub fn build() -> utoipa::openapi::OpenApi {
             crate::types::UnscopedSqlQueryRequest,
             crate::types::UnscopedStructuredQueryRequest,
             crate::types::IngestResponse,
+            crate::types::IngestBatchResponse,
+            crate::types::IngestStreamRecordBatchRequest,
             crate::types::IngestStreamRecordRequest,
             crate::types::IngestStreamRecordPayload,
+            crate::types::OperationAuditEventResponse,
+            crate::types::OperationAuditResponse,
+            crate::types::OperationCancelResponse,
+            crate::types::OperationCursorResponse,
+            crate::types::OperationListResponse,
+            crate::types::OperationStatusResponse,
             crate::types::StandardStreamEventRecord,
             crate::types::StandardStreamStorageRecord,
             crate::types::DiagnosticsResponse,
@@ -59,6 +72,7 @@ pub fn build() -> utoipa::openapi::OpenApi {
         tags(
             (name = "Health", description = "Service health and readiness"),
             (name = "Analytics", description = "Analytics manifest, ingestion, and query API"),
+            (name = "Operations", description = "Durable operation status, audit, and control API"),
             (name = "OpenAPI", description = "OpenAPI document")
         )
     )]

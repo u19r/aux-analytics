@@ -212,6 +212,10 @@
           "status": "ok"
         },
         "properties": {
+          "operations": {
+            "$ref": "#/components/schemas/OperationDiagnostics",
+            "description": "Durable operation store summary without operation payloads."
+          },
           "retention": {
             "$ref": "#/components/schemas/RetentionHealth",
             "description": "Retention sweeper health details."
@@ -229,7 +233,8 @@
         "required": [
           "status",
           "source",
-          "retention"
+          "retention",
+          "operations"
         ],
         "type": "object"
       },
@@ -293,6 +298,39 @@
         ],
         "type": "object"
       },
+      "IngestBatchResponse": {
+        "description": "Batch stream ingestion outcome.",
+        "example": {
+          "outcomes": [
+            {
+              "outcome": "inserted"
+            },
+            {
+              "outcome": "updated"
+            }
+          ],
+          "record_count": 2
+        },
+        "properties": {
+          "outcomes": {
+            "description": "Per-record ingest outcomes in request order.",
+            "items": {
+              "$ref": "#/components/schemas/IngestResponse"
+            },
+            "type": "array"
+          },
+          "record_count": {
+            "description": "Number of records accepted by the engine transaction.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "record_count",
+          "outcomes"
+        ],
+        "type": "object"
+      },
       "IngestResponse": {
         "description": "Stream ingestion outcome.",
         "example": {
@@ -303,10 +341,77 @@
             "description": "Final ingestion action performed by the engine.",
             "example": "inserted",
             "type": "string"
+          },
+          "privacy_dropped_fields": {
+            "default": null,
+            "description": "Count of fields or scalar values removed by the privacy policy.",
+            "example": 2,
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "privacy_policy_version": {
+            "default": null,
+            "description": "Active privacy policy version, when privacy mode filtered this request.",
+            "example": "privacy-v1",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "outcome"
+        ],
+        "type": "object"
+      },
+      "IngestStreamRecordBatchRequest": {
+        "description": "Batch stream ingestion request.",
+        "example": {
+          "records": [
+            {
+              "record": {
+                "Keys": {
+                  "pk": {
+                    "S": "USER#user-1"
+                  }
+                },
+                "NewImage": {
+                  "org_id": {
+                    "S": "org-a"
+                  },
+                  "pk": {
+                    "S": "USER#user-1"
+                  },
+                  "profile": {
+                    "M": {
+                      "email": {
+                        "S": "ada@example.com"
+                      }
+                    }
+                  }
+                },
+                "SequenceNumber": "49668899999999999999999999999999999999999999999999999999"
+              },
+              "record_key": "user-1"
+            }
+          ]
+        },
+        "properties": {
+          "records": {
+            "description": "Stream records from one source poll response. Keep payloads within the\nsource service response limit, such as `DynamoDB` Streams' 1 MiB page\ncap.",
+            "items": {
+              "$ref": "#/components/schemas/IngestStreamRecordRequest"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
         ],
         "type": "object"
       },
@@ -370,6 +475,223 @@
         },
         "required": [
           "record"
+        ],
+        "type": "object"
+      },
+      "OperationAuditEventResponse": {
+        "properties": {
+          "cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationCursorResponse"
+              }
+            ]
+          },
+          "event_id": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "occurred_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "event_id",
+          "occurred_at_ms",
+          "kind",
+          "phase",
+          "status"
+        ],
+        "type": "object"
+      },
+      "OperationAuditResponse": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/OperationAuditEventResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "events"
+        ],
+        "type": "object"
+      },
+      "OperationCancelResponse": {
+        "properties": {
+          "cancellation_requested": {
+            "type": "boolean"
+          },
+          "operation_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "cancellation_requested"
+        ],
+        "type": "object"
+      },
+      "OperationCursorResponse": {
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "position": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "position"
+        ],
+        "type": "object"
+      },
+      "OperationDiagnostics": {
+        "example": {
+          "configured": true,
+          "degraded_operations": 0,
+          "oldest_running_updated_at_ms": 1778670000200,
+          "operation_count": 3,
+          "reachable": true,
+          "running_operations": 1
+        },
+        "properties": {
+          "configured": {
+            "type": "boolean"
+          },
+          "degraded_operations": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "oldest_running_updated_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reachable": {
+            "type": "boolean"
+          },
+          "running_operations": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "configured",
+          "reachable",
+          "operation_count",
+          "running_operations",
+          "degraded_operations"
+        ],
+        "type": "object"
+      },
+      "OperationListResponse": {
+        "properties": {
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationStatusResponse"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "operations"
+        ],
+        "type": "object"
+      },
+      "OperationStatusResponse": {
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "cancellation_state": {
+            "type": "string"
+          },
+          "created_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "cursor": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationCursorResponse"
+              }
+            ]
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "phase": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "target_tables": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "updated_at_ms": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation_id",
+          "kind",
+          "actor",
+          "target_tables",
+          "dry_run",
+          "phase",
+          "status",
+          "cancellation_state",
+          "created_at_ms",
+          "updated_at_ms"
         ],
         "type": "object"
       },
@@ -2274,6 +2596,57 @@
         ]
       }
     },
+    "/ingest-batch/{analytics_table_name}": {
+      "post": {
+        "operationId": "ingest_stream_record_batch",
+        "parameters": [
+          {
+            "description": "Registered analytics table name",
+            "in": "path",
+            "name": "analytics_table_name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestStreamRecordBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestBatchResponse"
+                }
+              }
+            },
+            "description": "Batch ingest outcomes"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or batch ingest failure"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
     "/ingest/{analytics_table_name}": {
       "post": {
         "operationId": "ingest_stream_record",
@@ -2360,6 +2733,189 @@
         },
         "tags": [
           "OpenAPI"
+        ]
+      }
+    },
+    "/operations": {
+      "get": {
+        "operationId": "list_operations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationListResponse"
+                }
+              }
+            },
+            "description": "Durable operation list"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation store is not configured"
+          }
+        },
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
+    "/operations/{operation_id}": {
+      "get": {
+        "operationId": "operation_status",
+        "parameters": [
+          {
+            "description": "Operation id",
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationStatusResponse"
+                }
+              }
+            },
+            "description": "Durable operation status"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation not found"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation store is not configured"
+          }
+        },
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
+    "/operations/{operation_id}/audit": {
+      "get": {
+        "operationId": "operation_audit",
+        "parameters": [
+          {
+            "description": "Operation id",
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationAuditResponse"
+                }
+              }
+            },
+            "description": "Durable operation audit events"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation not found"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation store is not configured"
+          }
+        },
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
+    "/operations/{operation_id}/cancel": {
+      "post": {
+        "operationId": "cancel_operation",
+        "parameters": [
+          {
+            "description": "Operation id",
+            "in": "path",
+            "name": "operation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationCancelResponse"
+                }
+              }
+            },
+            "description": "Cancellation request accepted"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation not found"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation store is not configured"
+          }
+        },
+        "tags": [
+          "Operations"
         ]
       }
     },
@@ -2525,6 +3081,10 @@
     {
       "description": "Analytics manifest, ingestion, and query API",
       "name": "Analytics"
+    },
+    {
+      "description": "Durable operation status, audit, and control API",
+      "name": "Operations"
     },
     {
       "description": "OpenAPI document",

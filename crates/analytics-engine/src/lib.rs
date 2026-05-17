@@ -9,7 +9,8 @@ mod structured_query;
 pub use config::{CatalogType, StorageBackend};
 pub use engine::{
     AnalyticsEngine, AnalyticsEngineError, AnalyticsEngineResult, IngestOutcome, IngestRetention,
-    SourceCheckpoint,
+    PrivacyIngestOutcome, PrivacyTableRemediationMode, PrivacyTableRemediationReport,
+    PrivacyTableScrubReport, SourceCheckpoint, StreamRecordBatchItem,
 };
 
 #[cfg(test)]
@@ -18,6 +19,8 @@ mod cache_tests;
 mod condition_tests;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(test)]
+mod performance_tests;
 #[cfg(test)]
 mod projection_tests;
 #[cfg(test)]

@@ -122,6 +122,12 @@ impl From<analytics_contract::ManifestLoadError> for ApiError {
     }
 }
 
+impl From<analytics_contract::PrivacyPolicyError> for ApiError {
+    fn from(source: analytics_contract::PrivacyPolicyError) -> Self {
+        Self::with_source(ApiErrorKind::Config, source)
+    }
+}
+
 impl From<AnalyticsEngineError> for ApiError {
     fn from(source: AnalyticsEngineError) -> Self {
         Self::with_source(ApiErrorKind::Engine, source)

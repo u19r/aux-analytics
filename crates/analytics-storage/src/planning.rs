@@ -18,11 +18,43 @@ pub(crate) fn table_plans(
     source: &AnalyticsSourceConfig,
     manifest: &AnalyticsManifest,
 ) -> AnalyticsStorageResult<Vec<SourceTablePlan>> {
+    if source.tables.is_empty() {
+        return Ok(manifest_table_plans(source, manifest));
+    }
     source
         .tables
         .iter()
         .map(|table| table_plan(source, manifest, table))
         .collect()
+}
+
+fn manifest_table_plans(
+    source: &AnalyticsSourceConfig,
+    manifest: &AnalyticsManifest,
+) -> Vec<SourceTablePlan> {
+    let mut plans = Vec::new();
+    for table in &manifest.tables {
+        if plans
+            .iter()
+            .any(|plan: &SourceTablePlan| plan.source_table_name == table.source_table_name)
+        {
+            continue;
+        }
+        plans.push(SourceTablePlan {
+            source_table_name: table.source_table_name.clone(),
+            analytics_table_names: manifest
+                .tables
+                .iter()
+                .filter(|candidate| candidate.source_table_name == table.source_table_name)
+                .map(|candidate| candidate.analytics_table_name.clone())
+                .collect(),
+            stream_type: source
+                .stream_type
+                .unwrap_or(AnalyticsStreamType::AuxStorage),
+            stream_identifier: None,
+        });
+    }
+    plans
 }
 
 fn table_plan(

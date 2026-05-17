@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use analytics_api::{AppState, server_router};
 use analytics_contract::{
@@ -232,17 +236,7 @@ impl QuerySecurityDriver {
     }
 
     fn apply_timeout_rejection(&mut self) -> Result {
-        let engine = AnalyticsEngine::connect_duckdb(":memory:")?;
-        let result = engine.query_unscoped_sql_json_with_timeout(
-            "select sum(i * j) as total from range(100000000) a(i), range(100000000) b(j)",
-            Duration::from_millis(1),
-        );
-        if !matches!(
-            result,
-            Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 1 })
-        ) {
-            return Err(anyhow::anyhow!("long-running query was not timed out"));
-        }
+        ensure_long_running_query_times_out()?;
         self.accepted = false;
         self.modifies_data = false;
         self.sees_other_tenant = false;
@@ -411,6 +405,30 @@ fn tenant_guard_effective(
         QuerySurface::StructuredJson => structured_tenant_filter_injected,
         QuerySurface::RawSql => raw_sql_sandboxed,
     }
+}
+
+fn ensure_long_running_query_times_out() -> Result {
+    static RESULT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+    RESULT
+        .get_or_init(|| {
+            let engine =
+                AnalyticsEngine::connect_duckdb(":memory:").map_err(|err| err.to_string())?;
+            let result = engine.query_unscoped_sql_json_with_timeout(
+                "select sum(i * j) as total from range(1000000) a(i), range(1000000) b(j)",
+                Duration::from_millis(1),
+            );
+            if matches!(
+                result,
+                Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 1 })
+            ) {
+                Ok(())
+            } else {
+                Err("long-running query was not timed out".to_string())
+            }
+        })
+        .as_ref()
+        .map_err(|message| anyhow::anyhow!(message.clone()))
+        .copied()
 }
 
 fn raw_sql_http_rejected(sql: &str) -> Result<bool> {

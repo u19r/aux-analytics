@@ -92,3 +92,23 @@ events to stdout.
 Runtime failures outside the tracing pipeline, such as process panics or container supervisor
 messages, may still appear on stderr, but they are not part of the Aux Analytics application log
 contract.
+
+## Dashboard And Alert Contract
+
+Shared platform dashboards should put these signals at the top of the
+`aux-analytics` page:
+
+- Query and ingest latency p50, p90, and p99 by request `type` or `outcome`.
+- 5xx/error responses per second for query and ingest routes.
+- 4xx or validation-error responses as a percentage of total requests.
+- CPU and resident memory pressure from process or Kubernetes container metrics.
+- Pod restart count and process health status.
+- Source polling failures, ingest errors, checkpoint errors, and source records
+  ingested per second.
+- Source checkpoint count and ingestion queue depth where configured.
+- Catalog and object-store dependency errors and latency when those emitters are
+  added.
+
+Log dashboards should expose quick filters for `level`, `operation`,
+`analytics_table_name`, and request identifiers. Keep table names bounded and
+avoid putting raw query text or customer payload data into metric labels.

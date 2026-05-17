@@ -219,7 +219,9 @@ fn document_path_sql(
             table.analytics_table_name
         )));
     }
-    let json_path = format!("$.{path}");
+    let mut json_path = String::with_capacity(path.len() + 2);
+    json_path.push_str("$.");
+    json_path.push_str(path);
     Ok(format!(
         "json_extract_string({}, '{}')",
         sql::quote_identifier(document_column),

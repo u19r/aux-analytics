@@ -5,3 +5,4 @@ pub(crate) const DEFAULT_OBJECT_STORAGE_SCHEME: &str = "s3";
 pub(crate) const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
 pub(crate) const DEFAULT_POLL_MAX_SHARDS: usize = 16;
 pub(crate) const DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL: usize = 160;
+pub(crate) const DEFAULT_POLL_REQUEST_TIMEOUT_MS: u64 = 5_000;

@@ -186,10 +186,10 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> CapturedRequest {
 
 fn request_complete(bytes: &[u8]) -> bool {
     let text = String::from_utf8_lossy(bytes);
-    let Some(header_end) = text.find("\r\n\r\n") else {
+    let Some((headers, _body)) = text.split_once("\r\n\r\n") else {
         return false;
     };
-    let content_length = text[..header_end]
+    let content_length = headers
         .lines()
         .find_map(|line| {
             let (name, value) = line.split_once(':')?;
@@ -200,5 +200,5 @@ fn request_complete(bytes: &[u8]) -> bool {
             }
         })
         .unwrap_or(0);
-    bytes.len() >= header_end + 4 + content_length
+    bytes.len() >= headers.len() + 4 + content_length
 }

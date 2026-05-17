@@ -44,6 +44,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-counter"
+version = "0.1.0"
+source = "git+https://github.com/u19r/aux-common?rev=64f4447b0b5532bfb04655060d8892c7c22d33ae#64f4447b0b5532bfb04655060d8892c7c22d33ae"
+dependencies = [
+ "alloc-counter-macros",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "alloc-counter-macros"
+version = "0.1.0"
+source = "git+https://github.com/u19r/aux-common?rev=64f4447b0b5532bfb04655060d8892c7c22d33ae#64f4447b0b5532bfb04655060d8892c7c22d33ae"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -57,6 +76,7 @@ dependencies = [
  "analytics-contract",
  "analytics-engine",
  "analytics-fixtures",
+ "analytics-operations",
  "analytics-quint-test-support",
  "analytics-storage",
  "anyhow",
@@ -70,6 +90,7 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tower 0.5.3",
@@ -87,9 +108,12 @@ dependencies = [
  "analytics-config",
  "analytics-contract",
  "analytics-engine",
+ "analytics-operations",
  "analytics-storage",
  "anyhow",
  "clap",
+ "clap_complete",
+ "duckdb",
  "quint-connect",
  "schemars 1.2.1",
  "serde",
@@ -117,6 +141,7 @@ dependencies = [
  "anyhow",
  "jsonschema",
  "quint-connect",
+ "regex",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -129,6 +154,7 @@ dependencies = [
 name = "analytics-engine"
 version = "0.1.0"
 dependencies = [
+ "alloc-counter",
  "analytics-config",
  "analytics-contract",
  "analytics-fixtures",
@@ -177,6 +203,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "analytics-operations"
+version = "0.1.0"
+dependencies = [
+ "alloc-counter",
+ "analytics-contract",
+ "analytics-quint-test-support",
+ "anyhow",
+ "duckdb",
+ "quint-connect",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "analytics-quint-test-support"
 version = "0.1.0"
 
@@ -186,6 +228,7 @@ version = "0.1.0"
 dependencies = [
  "analytics-config",
  "analytics-contract",
+ "analytics-operations",
  "analytics-quint-test-support",
  "anyhow",
  "aws-config",
@@ -1187,6 +1230,15 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
@@ -4033,6 +4085,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage-condition"
 version = "0.1.0"
+source = "git+https://github.com/u19r/aux-storage?rev=26ba15edefe9b564fa9ff4b27e66377dba38d548#26ba15edefe9b564fa9ff4b27e66377dba38d548"
 dependencies = [
  "serde_json",
  "storage-types",
@@ -4042,6 +4095,7 @@ dependencies = [
 [[package]]
 name = "storage-types"
 version = "0.1.0"
+source = "git+https://github.com/u19r/aux-storage?rev=26ba15edefe9b564fa9ff4b27e66377dba38d548#26ba15edefe9b564fa9ff4b27e66377dba38d548"
 dependencies = [
  "base64",
  "chrono",

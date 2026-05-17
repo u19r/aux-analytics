@@ -4,13 +4,19 @@ use std::{
 };
 
 use analytics_contract::{
-    AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, ProjectionColumn, QueryExpression,
-    QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity,
-    StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration, TenantSelector,
+    AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, PrivacyPolicy, ProjectionColumn,
+    QueryExpression, QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity,
+    SourcePosition, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
+    TenantSelector,
 };
-use analytics_fixtures::{generic_items_manifest, legacy_item, storage_key, users_manifest};
+use analytics_fixtures::{
+    generic_items_manifest, legacy_item, storage_key, user_item, users_manifest,
+};
 
-use super::{AnalyticsEngine, IngestOutcome, SourceCheckpoint};
+use super::{
+    AnalyticsEngine, IngestOutcome, PrivacyTableRemediationMode, SourceCheckpoint,
+    StreamRecordBatchItem,
+};
 
 #[test]
 fn stream_records_are_projected_into_queryable_rows() {
@@ -64,6 +70,113 @@ fn stream_records_are_projected_into_queryable_rows() {
         .expect("query");
     assert_eq!(rows[0]["tenant_id"], "tenant_01");
     assert_eq!(rows[0]["email"], "a@example.com");
+}
+
+#[test]
+fn stream_record_batches_are_ingested_in_one_transaction_boundary() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let outcomes = engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    record_key: b"user-1".to_vec(),
+                    record: email_record("1", "a@example.test"),
+                },
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    record_key: b"user-2".to_vec(),
+                    record: email_record("2", "b@example.test"),
+                },
+            ],
+        )
+        .expect("batch ingest");
+
+    assert_eq!(
+        outcomes,
+        vec![IngestOutcome::Inserted, IngestOutcome::Inserted]
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query");
+    assert_eq!(rows[0]["row_count"], 2);
+}
+
+fn email_record(sequence_number: &str, email: &str) -> StorageStreamRecord {
+    StorageStreamRecord {
+        sequence_number: sequence_number.to_string(),
+        keys: HashMap::new(),
+        old_image: None,
+        new_image: Some(user_item(sequence_number, email, "org-a")),
+    }
+}
+
+#[test]
+fn privacy_policy_removes_denied_field_before_projection() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: analytics_contract::RowIdentity::RecordKey,
+        document_column: None,
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "email".to_string(),
+            attribute_path: "profile.email".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::VarChar,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+    }]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let policy = PrivacyPolicy {
+        version: "privacy-v1".to_string(),
+        denied_exact_paths: vec!["profile.email".to_string()],
+        ..PrivacyPolicy::default()
+    };
+
+    let outcome = engine
+        .ingest_stream_record_with_privacy_policy(
+            &manifest,
+            "users",
+            b"user-1",
+            StorageStreamRecord {
+                sequence_number: "1".to_string(),
+                keys: HashMap::new(),
+                old_image: None,
+                new_image: Some(HashMap::from([(
+                    "profile".to_string(),
+                    StorageValue::M(HashMap::from([(
+                        "email".to_string(),
+                        StorageValue::S("a@example.com".to_string()),
+                    )])),
+                )])),
+            },
+            &policy,
+        )
+        .expect("privacy ingest");
+
+    let rows = engine
+        .query_unscoped_sql_json("select email from users")
+        .expect("query");
+    assert_eq!(outcome.dropped_fields, 1);
+    assert_eq!(outcome.policy_version, "privacy-v1");
+    assert!(rows[0]["email"].is_null());
 }
 
 #[test]
@@ -181,6 +294,28 @@ fn source_checkpoints_are_persisted_in_analytics_database() {
 }
 
 #[test]
+fn source_checkpoints_are_replaced_without_unique_constraints() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut checkpoint = SourceCheckpoint {
+        source_table_name: "tenant_entities".to_string(),
+        shard_id: "shard-0001".to_string(),
+        position: "12345".to_string(),
+    };
+    engine
+        .save_source_checkpoint(&checkpoint)
+        .expect("save initial checkpoint");
+
+    checkpoint.position = "12346".to_string();
+    engine
+        .save_source_checkpoint(&checkpoint)
+        .expect("replace checkpoint");
+
+    let checkpoints = engine.load_source_checkpoints().expect("load checkpoints");
+
+    assert_eq!(checkpoints, vec![checkpoint]);
+}
+
+#[test]
 fn query_unscoped_sql_json_rejects_mutating_statements() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
 
@@ -197,7 +332,7 @@ fn query_unscoped_sql_json_interrupts_queries_that_exceed_timeout() {
 
     let err = engine
         .query_unscoped_sql_json_with_timeout(
-            "select sum(i * j) as total from range(100000000) a(i), range(100000000) b(j)",
+            "select sum(i * j) as total from range(1000000) a(i), range(1000000) b(j)",
             Duration::from_millis(1),
         )
         .expect_err("long query should be interrupted");
@@ -267,6 +402,194 @@ fn generic_document_tables_do_not_require_tenant_or_projection_layout() {
 }
 
 #[test]
+fn privacy_policy_removes_denied_field_before_document_storage() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = generic_items_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .unwrap()
+        .with_denied_key_name("email");
+
+    let outcome = engine
+        .ingest_stream_record_with_privacy_policy(
+            &manifest,
+            "legacy_items",
+            b"ignored",
+            StorageStreamRecord {
+                sequence_number: "1".to_string(),
+                keys: HashMap::from([("pk".to_string(), StorageValue::S("USER#1".to_string()))]),
+                old_image: None,
+                new_image: Some(HashMap::from([
+                    ("pk".to_string(), StorageValue::S("USER#1".to_string())),
+                    (
+                        "email".to_string(),
+                        StorageValue::S("legacy@example.com".to_string()),
+                    ),
+                ])),
+            },
+            &policy,
+        )
+        .expect("privacy ingest");
+
+    let rows = engine
+        .query_unscoped_sql_json("select item->>'email' as email from legacy_items")
+        .expect("query");
+    assert_eq!(outcome.dropped_fields, 1);
+    assert!(rows[0]["email"].is_null());
+}
+
+#[test]
+fn privacy_table_scrub_dry_run_reports_projected_and_document_values_without_mutating() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("manifest");
+    let record = user_record("user-1", "private@example.test");
+    engine
+        .ingest_stream_record(&manifest, "users", b"user-1", record)
+        .expect("ingest");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .expect("policy")
+        .with_denied_key_name("email");
+
+    let report = engine
+        .scrub_table_with_privacy_policy(&manifest.tables[0], &policy, true)
+        .expect("scrub");
+    let rows = engine
+        .query_unscoped_sql_json("select email, item from users")
+        .expect("query");
+
+    assert_eq!(report.scanned_rows, 1);
+    assert_eq!(report.affected_rows, 1);
+    assert_eq!(report.projected_values_scrubbed, 1);
+    assert_eq!(report.document_values_scrubbed, 1);
+    assert!(!report.destination_mutated);
+    assert_eq!(rows[0]["email"], "private@example.test");
+    assert!(rows[0]["item"].to_string().contains("private@example.test"));
+}
+
+#[test]
+fn privacy_table_scrub_apply_removes_projected_and_document_values() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("manifest");
+    let record = user_record("user-1", "private@example.test");
+    engine
+        .ingest_stream_record(&manifest, "users", b"user-1", record)
+        .expect("ingest");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .expect("policy")
+        .with_denied_key_name("email");
+
+    let report = engine
+        .scrub_table_with_privacy_policy(&manifest.tables[0], &policy, false)
+        .expect("scrub");
+    let rows = engine
+        .query_unscoped_sql_json("select email, item from users")
+        .expect("query");
+
+    assert!(report.destination_mutated);
+    assert!(rows[0]["email"].is_null());
+    assert!(rows[0]["item"].get("email").is_none());
+}
+
+#[test]
+fn privacy_table_scrub_projection_only_filters_candidates_in_sql() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut table = users_manifest().tables.remove(0);
+    table.document_column = None;
+    let manifest = AnalyticsManifest::new(vec![table]);
+    engine.ensure_manifest(&manifest).expect("manifest");
+    engine
+        .connection()
+        .execute(
+            "insert into users (tenant_id, __id, table_name, email) values
+             ('tenant_01', 'user-1', 'users', 'private@example.test'),
+             ('tenant_01', 'user-2', 'users', NULL)",
+            [],
+        )
+        .expect("seed rows");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .expect("policy")
+        .with_denied_key_name("email");
+
+    let report = engine
+        .scrub_table_with_privacy_policy(&manifest.tables[0], &policy, true)
+        .expect("scrub");
+
+    assert_eq!(report.scanned_rows, 1);
+    assert_eq!(report.affected_rows, 1);
+    assert_eq!(report.projected_values_scrubbed, 1);
+}
+
+#[test]
+fn privacy_table_delete_dry_run_reports_violating_rows_without_mutating() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("manifest");
+    engine
+        .ingest_stream_record(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("user-1", "private@example.test"),
+        )
+        .expect("ingest");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .expect("policy")
+        .with_denied_key_name("email");
+
+    let report = engine
+        .remediate_table_with_privacy_policy(
+            &manifest.tables[0],
+            &policy,
+            true,
+            PrivacyTableRemediationMode::DeleteRows,
+        )
+        .expect("remediate");
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as count from users")
+        .expect("query");
+
+    assert_eq!(report.mode, PrivacyTableRemediationMode::DeleteRows);
+    assert_eq!(report.affected_rows, 1);
+    assert!(!report.destination_mutated);
+    assert_eq!(rows[0]["count"], 1);
+}
+
+#[test]
+fn privacy_table_delete_apply_removes_violating_rows() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("manifest");
+    engine
+        .ingest_stream_record(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("user-1", "private@example.test"),
+        )
+        .expect("ingest");
+    let policy = PrivacyPolicy::new("privacy-v1")
+        .expect("policy")
+        .with_denied_key_name("email");
+
+    let report = engine
+        .remediate_table_with_privacy_policy(
+            &manifest.tables[0],
+            &policy,
+            false,
+            PrivacyTableRemediationMode::DeleteRows,
+        )
+        .expect("remediate");
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as count from users")
+        .expect("query");
+
+    assert!(report.destination_mutated);
+    assert_eq!(rows[0]["count"], 0);
+}
+
+#[test]
 fn structured_queries_compile_from_registered_manifest_columns() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     let manifest = users_manifest();
@@ -308,6 +631,130 @@ fn structured_queries_compile_from_registered_manifest_columns() {
         .expect("structured query");
 
     assert_eq!(rows[0]["email"], "structured@example.com");
+}
+
+#[test]
+fn stale_source_position_does_not_overwrite_newer_row() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    engine
+        .ingest_stream_record_at_source_position(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("20", "newer@example.com"),
+            source_cursor("20"),
+        )
+        .expect("ingest newer");
+
+    let outcome = engine
+        .ingest_stream_record_at_source_position(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("10", "stale@example.com"),
+            source_cursor("10"),
+        )
+        .expect("ingest stale");
+
+    assert_eq!(outcome, IngestOutcome::Skipped);
+    let rows = engine
+        .query_unscoped_sql_json("select email from users")
+        .expect("query");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["email"], "newer@example.com");
+}
+
+#[test]
+fn repeated_source_position_does_not_duplicate_or_rewrite_row() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let position = source_cursor("10");
+    engine
+        .ingest_stream_record_at_source_position(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("10", "original@example.com"),
+            position.clone(),
+        )
+        .expect("ingest original");
+
+    let outcome = engine
+        .ingest_stream_record_at_source_position(
+            &manifest,
+            "users",
+            b"user-1",
+            user_record("10", "duplicate@example.com"),
+            position,
+        )
+        .expect("ingest duplicate");
+
+    assert_eq!(outcome, IngestOutcome::Skipped);
+    let rows = engine
+        .query_unscoped_sql_json("select email from users")
+        .expect("query");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["email"], "original@example.com");
+}
+
+#[test]
+fn delete_with_replayed_source_position_is_idempotent() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let position = source_cursor("10");
+    let item = analytics_fixtures::user_item("1", "delete@example.com", "org-a");
+    engine
+        .ingest_stream_record_at_source_position(
+            &manifest,
+            "users",
+            b"user-1",
+            StorageStreamRecord {
+                sequence_number: "10".to_string(),
+                keys: storage_key("USER", "1"),
+                old_image: None,
+                new_image: Some(item.clone()),
+            },
+            position.clone(),
+        )
+        .expect("insert");
+    let delete = StorageStreamRecord {
+        sequence_number: "11".to_string(),
+        keys: storage_key("USER", "1"),
+        old_image: Some(item),
+        new_image: None,
+    };
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"user-1",
+                delete.clone(),
+                source_cursor("11"),
+            )
+            .expect("delete"),
+        IngestOutcome::Deleted
+    );
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"user-1",
+                delete,
+                source_cursor("11"),
+            )
+            .expect("replay delete"),
+        IngestOutcome::Skipped
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as count from users")
+        .expect("query");
+    assert_eq!(rows[0]["count"], 0);
 }
 
 #[test]
@@ -622,6 +1069,22 @@ fn entity_record(entity_id: &str, entity_type: &str, email: &str) -> StorageStre
         keys: HashMap::new(),
         old_image: None,
         new_image: Some(entity_item(entity_id, entity_type, email)),
+    }
+}
+
+fn user_record(sequence_number: &str, email: &str) -> StorageStreamRecord {
+    StorageStreamRecord {
+        sequence_number: sequence_number.to_string(),
+        keys: storage_key("USER", "1"),
+        old_image: None,
+        new_image: Some(analytics_fixtures::user_item("1", email, "org-a")),
+    }
+}
+
+fn source_cursor(cursor: &str) -> SourcePosition {
+    SourcePosition::AuxStorageStreamCursor {
+        stream_name: "users".to_string(),
+        cursor: cursor.to_string(),
     }
 }
 

@@ -679,9 +679,9 @@ tenant id supplied by registration, and adds DuckLake layout hints:
 }
 ```
 
-This shape is still domain-agnostic from aux-analytics' point of view: aux-fn
-owns the registration and exports JSON; aux-analytics only validates the
-manifest, creates the table, and ingests contract stream records.
+This shape is still domain-agnostic from aux-analytics' point of view: the application owns table
+registration and exports JSON; aux-analytics only validates the manifest, creates the table, and
+ingests contract stream records.
 
 ## Recommended Adoption Path
 

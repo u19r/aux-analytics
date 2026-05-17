@@ -7,6 +7,7 @@ use crate::constants::{
     DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_LOG_LEVEL,
     DEFAULT_OBJECT_STORAGE_SCHEME, DEFAULT_POLL_INTERVAL_MS,
     DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL, DEFAULT_POLL_MAX_SHARDS,
+    DEFAULT_POLL_REQUEST_TIMEOUT_MS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -175,6 +176,9 @@ pub struct AnalyticsConfig {
     #[serde(default)]
     #[schemars(default)]
     pub retention: AnalyticsRetentionConfig,
+    #[serde(default)]
+    #[schemars(default)]
+    pub privacy: AnalyticsPrivacyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -183,6 +187,14 @@ pub struct AnalyticsHttpConfig {
     #[serde(default = "default_true")]
     #[schemars(default = "default_true")]
     pub ingest_endpoint_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AnalyticsPrivacyConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub policy_path: Option<String>,
 }
 
 impl Default for AnalyticsHttpConfig {
@@ -211,6 +223,9 @@ pub struct AnalyticsSourceConfig {
     #[serde(default = "default_poll_interval_ms")]
     #[schemars(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
+    #[serde(default = "default_poll_request_timeout_ms")]
+    #[schemars(default = "default_poll_request_timeout_ms")]
+    pub poll_request_timeout_ms: u64,
     #[serde(default = "default_poll_max_shards")]
     #[schemars(default = "default_poll_max_shards")]
     pub poll_max_shards: usize,
@@ -230,6 +245,7 @@ impl Default for AnalyticsSourceConfig {
             region: None,
             credentials: None,
             poll_interval_ms: default_poll_interval_ms(),
+            poll_request_timeout_ms: default_poll_request_timeout_ms(),
             poll_max_shards: default_poll_max_shards(),
             poll_max_responses_per_interval: default_poll_max_responses_per_interval(),
             tables: Vec::new(),
@@ -239,6 +255,9 @@ impl Default for AnalyticsSourceConfig {
 
 fn default_poll_interval_ms() -> u64 {
     DEFAULT_POLL_INTERVAL_MS
+}
+fn default_poll_request_timeout_ms() -> u64 {
+    DEFAULT_POLL_REQUEST_TIMEOUT_MS
 }
 fn default_poll_max_shards() -> usize {
     DEFAULT_POLL_MAX_SHARDS

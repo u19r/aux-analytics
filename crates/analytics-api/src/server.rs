@@ -21,7 +21,9 @@ use tracing_subscriber::{
 use crate::{
     cli::ApiCli,
     error::ApiResult,
-    runtime_config::{load_serve_config, resolve_manifest_path, validate_source_config},
+    runtime_config::{
+        load_privacy_policy, load_serve_config, resolve_manifest_path, validate_source_config,
+    },
     source_polling::spawn_source_polling,
 };
 
@@ -38,6 +40,7 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
     let manifest = read_manifest(manifest_path.as_str())?;
     validate_source_config(&root.analytics.source)?;
     config::validate_retention_config(&root.analytics.retention)?;
+    let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
     let (filter, source) = resolve_filter(&root.tracing);
     println!("Using log filter (source: {source}): {filter}");
     init_tracing(filter)?;
@@ -47,21 +50,31 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
         source_table_count = root.analytics.source.tables.len(),
         "analytics source configuration loaded"
     );
+    tracing::info!("analytics engine connecting");
     let engine = AnalyticsEngine::connect(&storage_backend)?;
+    tracing::info!("analytics engine connected");
+    tracing::info!(
+        manifest_table_count = manifest.tables.len(),
+        "analytics manifest initialization starting"
+    );
     engine.ensure_manifest(&manifest)?;
+    tracing::info!("analytics manifest initialized");
     for table in &root.analytics.retention.tables {
         engine.ensure_retention_columns(table.analytics_table_name.as_str())?;
     }
     let retention_runtime = RetentionRuntime::from_config(&root.analytics.retention)
         .await?
         .map(Arc::new);
-    let app_state = Arc::new(AppState::with_retention(
-        engine,
-        manifest,
-        retention_runtime.clone(),
-    ));
+    let app_state = Arc::new(
+        AppState::with_retention(engine, manifest, retention_runtime.clone())
+            .with_privacy_policy(privacy_policy),
+    );
+    tracing::info!("analytics source polling initialization starting");
     spawn_source_polling(&root.analytics.source, app_state.clone()).await?;
+    tracing::info!("analytics source polling initialized");
+    tracing::info!("analytics retention sweeper initialization starting");
     spawn_retention_sweeper(retention_runtime, app_state.clone()).await;
+    tracing::info!("analytics retention sweeper initialized");
     let metrics_config = metrics_endpoint_config(&root.features.metrics)?;
     spawn_prometheus_upkeep(&metrics_config);
 

@@ -1,0 +1,23 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "analytics-operations"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+analytics-contract = { workspace = true }
+duckdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+alloc-counter = { workspace = true }
+analytics-quint-test-support = { workspace = true }
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

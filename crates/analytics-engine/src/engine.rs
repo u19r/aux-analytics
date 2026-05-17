@@ -1,8 +1,8 @@
 //! Domain-agnostic analytics execution engine.
 //!
 //! This crate accepts only `analytics-contract` manifests and contract stream
-//! records. Do not add storage polling, storage subscriptions, aux-fn entity
-//! types, or storage facade dependencies here. Put those integrations in
+//! records. Do not add storage polling, storage subscriptions, application
+//! entity types, or storage facade dependencies here. Put those integrations in
 //! `analytics-storage` or another adapter crate and convert into contract
 //! records before calling the engine.
 
@@ -20,11 +20,13 @@ use std::{
 };
 
 use analytics_contract::{
-    AnalyticsColumn, AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, ProjectionColumn,
-    RetentionPolicy, RetentionTimestamp, StorageStreamRecord, StructuredQuery, TableRegistration,
+    AnalyticsColumn, AnalyticsColumnType, AnalyticsManifest, MergeDecision, PrimitiveColumnType,
+    PrivacyPolicy, ProjectionColumn, RetentionPolicy, RetentionTimestamp, SourceMutation,
+    SourcePosition, SourcePositionError, StorageStreamRecord, StructuredQuery, TableRegistration,
+    merge_decision,
 };
 use config::StorageBackend;
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 use thiserror::Error;
 
 use crate::{
@@ -41,6 +43,8 @@ pub enum AnalyticsEngineError {
     UnsupportedManifestVersion { actual: u32, expected: u32 },
     #[error(transparent)]
     InvalidManifest(#[from] analytics_contract::ManifestValidationError),
+    #[error(transparent)]
+    PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("table registration not found for analytics table {0}")]
     TableNotRegistered(String),
     #[error(transparent)]
@@ -85,6 +89,8 @@ pub enum AnalyticsEngineError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    SourcePosition(#[from] SourcePositionError),
 }
 
 pub type AnalyticsEngineResult<T> = Result<T, AnalyticsEngineError>;
@@ -92,6 +98,7 @@ pub type AnalyticsEngineResult<T> = Result<T, AnalyticsEngineError>;
 pub struct AnalyticsEngine {
     conn: Connection,
     supports_table_layout: bool,
+    supports_persistent_checkpoints: bool,
     pub(crate) caches: RefCell<EngineCaches>,
 }
 
@@ -119,6 +126,7 @@ impl AnalyticsEngine {
         Ok(Self {
             conn,
             supports_table_layout: matches!(backend, StorageBackend::DuckLake { .. }),
+            supports_persistent_checkpoints: !matches!(backend, StorageBackend::DuckLake { .. }),
             caches: RefCell::new(EngineCaches::new()),
         })
     }
@@ -136,7 +144,9 @@ impl AnalyticsEngine {
 
     pub fn ensure_manifest(&self, manifest: &AnalyticsManifest) -> AnalyticsEngineResult<()> {
         manifest.validate()?;
-        self.ensure_runtime_tables()?;
+        if self.supports_persistent_checkpoints {
+            self.ensure_runtime_tables()?;
+        }
 
         for table in &manifest.tables {
             crate::condition::validate_condition(table, &mut self.caches.borrow_mut())?;
@@ -147,12 +157,22 @@ impl AnalyticsEngine {
 
     pub fn ensure_runtime_tables(&self) -> AnalyticsEngineResult<()> {
         self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS __analytics_source_checkpoints (
+            "CREATE TABLE IF NOT EXISTS analytics_checkpoints (
                 source_table_name VARCHAR NOT NULL,
                 shard_id VARCHAR NOT NULL,
                 position VARCHAR NOT NULL,
                 updated_at_ms BIGINT NOT NULL,
                 PRIMARY KEY (source_table_name, shard_id)
+            );
+             CREATE TABLE IF NOT EXISTS __analytics_row_source_positions (
+                analytics_table_name VARCHAR NOT NULL,
+                source_table_name VARCHAR NOT NULL,
+                tenant_id VARCHAR NOT NULL,
+                row_id VARCHAR NOT NULL,
+                source_position_json JSON NOT NULL,
+                row_visible BOOLEAN NOT NULL,
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY (analytics_table_name, source_table_name, tenant_id, row_id)
             );",
             [],
         )?;
@@ -160,29 +180,49 @@ impl AnalyticsEngine {
     }
 
     pub fn load_source_checkpoints(&self) -> AnalyticsEngineResult<Vec<SourceCheckpoint>> {
+        if !self.supports_persistent_checkpoints {
+            return Ok(Vec::new());
+        }
         self.ensure_runtime_tables()?;
         let mut statement = self.conn.prepare(
-            "SELECT source_table_name, shard_id, position FROM __analytics_source_checkpoints",
+            "SELECT source_table_name, shard_id, position
+             FROM analytics_checkpoints
+             ORDER BY updated_at_ms ASC",
         )?;
         let mut rows = statement.query([])?;
-        let mut checkpoints = Vec::new();
+        let mut checkpoints = BTreeMap::new();
         while let Some(row) = rows.next()? {
-            checkpoints.push(SourceCheckpoint {
+            let checkpoint = SourceCheckpoint {
                 source_table_name: row.get(0)?,
                 shard_id: row.get(1)?,
                 position: row.get(2)?,
-            });
+            };
+            checkpoints.insert(
+                (
+                    checkpoint.source_table_name.clone(),
+                    checkpoint.shard_id.clone(),
+                ),
+                checkpoint,
+            );
         }
-        Ok(checkpoints)
+        Ok(checkpoints.into_values().collect())
     }
 
     pub fn save_source_checkpoint(
         &self,
         checkpoint: &SourceCheckpoint,
     ) -> AnalyticsEngineResult<()> {
+        if !self.supports_persistent_checkpoints {
+            return Ok(());
+        }
         self.ensure_runtime_tables()?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO __analytics_source_checkpoints
+            "DELETE FROM analytics_checkpoints
+             WHERE source_table_name = ? AND shard_id = ?",
+            duckdb::params![checkpoint.source_table_name, checkpoint.shard_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO analytics_checkpoints
                 (source_table_name, shard_id, position, updated_at_ms)
              VALUES (?, ?, ?, ?)",
             duckdb::params![
@@ -199,6 +239,10 @@ impl AnalyticsEngine {
         let columns = columns_for_registration(table);
         self.conn.execute(
             sql::create_table(table.analytics_table_name.as_str(), &columns).as_str(),
+            [],
+        )?;
+        self.conn.execute(
+            sql::source_position_column_statement(table.analytics_table_name.as_str()).as_str(),
             [],
         )?;
         if table.retention.is_some() {
@@ -244,6 +288,185 @@ impl AnalyticsEngine {
         )
     }
 
+    pub fn ingest_stream_record_batch(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+    ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let mut outcomes = Vec::with_capacity(records.len());
+        let mut batch = BatchSqlExecutor::new(&self.conn);
+        for item in records {
+            match self.ingest_stream_record_batch_item(manifest, item, &mut batch) {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(error) => return rollback_batch(&self.conn, error),
+            }
+        }
+        self.conn.execute_batch("COMMIT")?;
+        Ok(outcomes)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn ingest_stream_record_batch_item(
+        &self,
+        manifest: &AnalyticsManifest,
+        item: StreamRecordBatchItem,
+        batch: &mut BatchSqlExecutor<'_>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let table = manifest
+            .tables
+            .iter()
+            .find(|table| table.analytics_table_name == item.analytics_table_name)
+            .ok_or_else(|| {
+                AnalyticsEngineError::TableNotRegistered(item.analytics_table_name.clone())
+            })?;
+
+        let record_keys = item.record.keys;
+        let ingested_at_ms = current_time_millis();
+        let manifest_retention = static_retention(table);
+        match (item.record.old_image, item.record.new_image) {
+            (None, Some(new_image)) => {
+                if !crate::condition::item_matches_registration(
+                    table,
+                    &new_image,
+                    &mut self.caches.borrow_mut(),
+                )? {
+                    return Ok(IngestOutcome::Skipped);
+                }
+                let row = self.row_from_item(
+                    table,
+                    item.record_key.as_slice(),
+                    &record_keys,
+                    new_image,
+                    ingested_at_ms,
+                    manifest_retention.as_ref(),
+                )?;
+                batch.apply_upsert(table.analytics_table_name.as_str(), &row)
+            }
+            (Some(old_image), Some(new_image)) => {
+                let old_matches = crate::condition::item_matches_registration(
+                    table,
+                    &old_image,
+                    &mut self.caches.borrow_mut(),
+                )?;
+                let new_matches = crate::condition::item_matches_registration(
+                    table,
+                    &new_image,
+                    &mut self.caches.borrow_mut(),
+                )?;
+                if !old_matches && !new_matches {
+                    return Ok(IngestOutcome::Skipped);
+                }
+                if old_matches && !new_matches {
+                    if table.skip_delete {
+                        return Ok(IngestOutcome::Skipped);
+                    }
+                    let row = self.row_from_item(
+                        table,
+                        item.record_key.as_slice(),
+                        &record_keys,
+                        old_image,
+                        ingested_at_ms,
+                        None,
+                    )?;
+                    return batch.apply_delete(table.analytics_table_name.as_str(), &row);
+                }
+                let row = self.row_from_item(
+                    table,
+                    item.record_key.as_slice(),
+                    &record_keys,
+                    new_image,
+                    ingested_at_ms,
+                    manifest_retention.as_ref(),
+                )?;
+                batch.apply_upsert(table.analytics_table_name.as_str(), &row)
+            }
+            (Some(old_image), None) => {
+                if table.skip_delete {
+                    return Ok(IngestOutcome::Skipped);
+                }
+                if !crate::condition::item_matches_registration(
+                    table,
+                    &old_image,
+                    &mut self.caches.borrow_mut(),
+                )? {
+                    return Ok(IngestOutcome::Skipped);
+                }
+                let row = self.row_from_item(
+                    table,
+                    item.record_key.as_slice(),
+                    &record_keys,
+                    old_image,
+                    ingested_at_ms,
+                    None,
+                )?;
+                batch.apply_delete(table.analytics_table_name.as_str(), &row)
+            }
+            (None, None) => Ok(IngestOutcome::Skipped),
+        }
+    }
+
+    pub fn ingest_stream_record_with_privacy_policy(
+        &self,
+        manifest: &AnalyticsManifest,
+        analytics_table_name: &str,
+        record_key: &[u8],
+        record: StorageStreamRecord,
+        policy: &PrivacyPolicy,
+    ) -> AnalyticsEngineResult<PrivacyIngestOutcome> {
+        self.ingest_stream_record_with_privacy_policy_and_retention(
+            manifest,
+            analytics_table_name,
+            record_key,
+            record,
+            policy,
+            None,
+        )
+    }
+
+    pub fn ingest_stream_record_with_privacy_policy_and_retention(
+        &self,
+        manifest: &AnalyticsManifest,
+        analytics_table_name: &str,
+        record_key: &[u8],
+        record: StorageStreamRecord,
+        policy: &PrivacyPolicy,
+        resolved_retention: Option<&IngestRetention>,
+    ) -> AnalyticsEngineResult<PrivacyIngestOutcome> {
+        let filtered = filter_stream_record(record, policy)?;
+        let outcome = self.ingest_stream_record_with_retention(
+            manifest,
+            analytics_table_name,
+            record_key,
+            filtered.record,
+            resolved_retention,
+        )?;
+        Ok(PrivacyIngestOutcome {
+            outcome,
+            dropped_fields: filtered.dropped_fields,
+            policy_version: policy.version.clone(),
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn ingest_stream_record_at_source_position(
+        &self,
+        manifest: &AnalyticsManifest,
+        analytics_table_name: &str,
+        record_key: &[u8],
+        record: StorageStreamRecord,
+        source_position: SourcePosition,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        self.ingest_stream_record_internal(
+            manifest,
+            analytics_table_name,
+            record_key,
+            record,
+            None,
+            Some(&source_position),
+        )
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn ingest_stream_record_with_retention(
         &self,
@@ -253,6 +476,29 @@ impl AnalyticsEngine {
         record: StorageStreamRecord,
         resolved_retention: Option<&IngestRetention>,
     ) -> AnalyticsEngineResult<IngestOutcome> {
+        self.ingest_stream_record_internal(
+            manifest,
+            analytics_table_name,
+            record_key,
+            record,
+            resolved_retention,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn ingest_stream_record_internal(
+        &self,
+        manifest: &AnalyticsManifest,
+        analytics_table_name: &str,
+        record_key: &[u8],
+        record: StorageStreamRecord,
+        resolved_retention: Option<&IngestRetention>,
+        source_position: Option<&SourcePosition>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        if let Some(source_position) = source_position {
+            source_position.validate()?;
+        }
         let table = manifest
             .tables
             .iter()
@@ -287,11 +533,7 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     effective_retention,
                 )?;
-                if self.update_row(table.analytics_table_name.as_str(), &row)? {
-                    return Ok(IngestOutcome::Updated);
-                }
-                self.insert_row(table.analytics_table_name.as_str(), &row)?;
-                Ok(IngestOutcome::Inserted)
+                self.apply_upsert(table, row, source_position)
             }
             (Some(old_image), Some(new_image)) => {
                 let old_matches = crate::condition::item_matches_registration(
@@ -319,8 +561,7 @@ impl AnalyticsEngine {
                         ingested_at_ms,
                         None,
                     )?;
-                    self.delete_row(table.analytics_table_name.as_str(), &row)?;
-                    return Ok(IngestOutcome::Deleted);
+                    return self.apply_delete(table, &row, source_position);
                 }
                 let row = self.row_from_item(
                     table,
@@ -330,13 +571,7 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     effective_retention,
                 )?;
-                let updated = self.update_row(table.analytics_table_name.as_str(), &row)?;
-                if updated {
-                    Ok(IngestOutcome::Updated)
-                } else {
-                    self.insert_row(table.analytics_table_name.as_str(), &row)?;
-                    Ok(IngestOutcome::Inserted)
-                }
+                self.apply_upsert(table, row, source_position)
             }
             (Some(old_image), None) => {
                 if table.skip_delete {
@@ -357,8 +592,7 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     None,
                 )?;
-                self.delete_row(table.analytics_table_name.as_str(), &row)?;
-                Ok(IngestOutcome::Deleted)
+                self.apply_delete(table, &row, source_position)
             }
             (None, None) => Ok(IngestOutcome::Skipped),
         }
@@ -505,13 +739,118 @@ impl AnalyticsEngine {
         self.query_unscoped_sql_json(sql.as_str())
     }
 
+    pub fn scrub_table_with_privacy_policy(
+        &self,
+        table: &TableRegistration,
+        policy: &PrivacyPolicy,
+        dry_run: bool,
+    ) -> AnalyticsEngineResult<PrivacyTableRemediationReport> {
+        self.remediate_table_with_privacy_policy(
+            table,
+            policy,
+            dry_run,
+            PrivacyTableRemediationMode::Scrub,
+        )
+    }
+
+    pub fn remediate_table_with_privacy_policy(
+        &self,
+        table: &TableRegistration,
+        policy: &PrivacyPolicy,
+        dry_run: bool,
+        mode: PrivacyTableRemediationMode,
+    ) -> AnalyticsEngineResult<PrivacyTableRemediationReport> {
+        policy.validate()?;
+        let projection_columns = privacy_scrubbable_projection_columns(table, policy)?;
+        let mut selected_columns = vec!["__id".to_string()];
+        for column in &projection_columns {
+            selected_columns.push(column.clone());
+        }
+        if let Some(document_column) = table.document_column.as_ref() {
+            selected_columns.push(document_column.clone());
+        }
+        let sql = privacy_remediation_scan_sql(
+            table.analytics_table_name.as_str(),
+            &selected_columns,
+            &projection_columns,
+            table.document_column.is_some(),
+        );
+        let rows = self.query_unscoped_sql_json(sql.as_str())?;
+        let scanned_rows = rows.len() as u64;
+        let mut affected_rows = 0_u64;
+        let mut projected_values_scrubbed = 0_u64;
+        let mut document_values_scrubbed = 0_u64;
+
+        for row in rows {
+            let Some(row_id) = row.get("__id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let mut assignments = BTreeMap::new();
+            for column in &projection_columns {
+                if row
+                    .get(column.as_str())
+                    .is_some_and(|value| !value.is_null())
+                {
+                    assignments.insert(column.clone(), serde_json::Value::Null);
+                    projected_values_scrubbed += 1;
+                }
+            }
+            if let Some(document_column) = table.document_column.as_ref()
+                && let Some(document) = row.get(document_column)
+            {
+                let mut dropped = 0_u64;
+                let filtered = filter_json_value(document.clone(), "", policy, &mut dropped)?;
+                if dropped > 0 {
+                    assignments.insert(document_column.clone(), filtered);
+                    document_values_scrubbed += dropped;
+                }
+            }
+            if assignments.is_empty() {
+                continue;
+            }
+            affected_rows += 1;
+            if !dry_run {
+                match mode {
+                    PrivacyTableRemediationMode::Scrub => {
+                        self.update_privacy_scrubbed_row(
+                            table.analytics_table_name.as_str(),
+                            row_id,
+                            &assignments,
+                        )?;
+                    }
+                    PrivacyTableRemediationMode::DeleteRows => {
+                        self.delete_privacy_violating_row(
+                            table.analytics_table_name.as_str(),
+                            row_id,
+                        )?;
+                    }
+                }
+            }
+        }
+
+        Ok(PrivacyTableRemediationReport {
+            table_name: table.analytics_table_name.clone(),
+            dry_run,
+            scanned_rows,
+            affected_rows,
+            projected_values_scrubbed,
+            document_values_scrubbed,
+            destination_mutated: !dry_run && affected_rows > 0,
+            policy_version: policy.version.clone(),
+            mode,
+        })
+    }
+
     fn insert_row(
         &self,
         table_name: &str,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<()> {
-        let columns = row.keys().cloned().collect::<Vec<_>>();
-        let placeholders = vec!["?"; columns.len()].join(", ");
+        // Online ingestion fallback. Backfill and replay writers should use chunk-sized
+        // batch append/merge paths once the operations layer owns a
+        // destination-writer boundary.
+        let columns = row.keys().map(String::as_str).collect::<Vec<_>>();
+        let placeholders = placeholder_list(columns.len());
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({placeholders})",
             sql::quote_identifier(table_name),
@@ -524,12 +863,209 @@ impl AnalyticsEngine {
         let values = columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value(row.get(*column).unwrap_or(&serde_json::Value::Null))
             })
             .collect::<Vec<_>>();
         self.conn
             .prepare(sql.as_str())?
             .execute(duckdb::params_from_iter(values))?;
+        Ok(())
+    }
+
+    fn apply_upsert(
+        &self,
+        table: &TableRegistration,
+        mut row: BTreeMap<String, serde_json::Value>,
+        source_position: Option<&SourcePosition>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        row.insert(
+            sql::SOURCE_POSITION_COLUMN.to_string(),
+            source_position.map_or(Ok(serde_json::Value::Null), serde_json::to_value)?,
+        );
+        let Some(source_position) = source_position else {
+            return if self.update_row(table.analytics_table_name.as_str(), &row)? {
+                Ok(IngestOutcome::Updated)
+            } else {
+                self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                Ok(IngestOutcome::Inserted)
+            };
+        };
+        let existing_position =
+            self.load_row_source_position(table.analytics_table_name.as_str(), &row)?;
+        match merge_decision(
+            existing_position.as_ref(),
+            source_position,
+            SourceMutation::Update,
+            table.skip_delete,
+        )? {
+            MergeDecision::Insert | MergeDecision::Append => {
+                self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                self.save_row_source_position(table, &row, source_position, true)?;
+                Ok(IngestOutcome::Inserted)
+            }
+            MergeDecision::Replace => {
+                if self.update_row(table.analytics_table_name.as_str(), &row)? {
+                    self.save_row_source_position(table, &row, source_position, true)?;
+                    Ok(IngestOutcome::Updated)
+                } else {
+                    self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                    self.save_row_source_position(table, &row, source_position, true)?;
+                    Ok(IngestOutcome::Inserted)
+                }
+            }
+            MergeDecision::IgnoreDuplicate
+            | MergeDecision::IgnoreStale
+            | MergeDecision::RequiresValidation
+            | MergeDecision::Delete => Ok(IngestOutcome::Skipped),
+        }
+    }
+
+    fn apply_delete(
+        &self,
+        table: &TableRegistration,
+        row: &BTreeMap<String, serde_json::Value>,
+        source_position: Option<&SourcePosition>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let Some(source_position) = source_position else {
+            self.delete_row(table.analytics_table_name.as_str(), row)?;
+            return Ok(IngestOutcome::Deleted);
+        };
+        let existing_position =
+            self.load_row_source_position(table.analytics_table_name.as_str(), row)?;
+        match merge_decision(
+            existing_position.as_ref(),
+            source_position,
+            SourceMutation::Delete,
+            table.skip_delete,
+        )? {
+            MergeDecision::Delete => {
+                self.delete_row(table.analytics_table_name.as_str(), row)?;
+                self.save_row_source_position(table, row, source_position, false)?;
+                Ok(IngestOutcome::Deleted)
+            }
+            MergeDecision::IgnoreDuplicate
+            | MergeDecision::IgnoreStale
+            | MergeDecision::RequiresValidation
+            | MergeDecision::Insert
+            | MergeDecision::Replace
+            | MergeDecision::Append => Ok(IngestOutcome::Skipped),
+        }
+    }
+
+    fn load_row_source_position(
+        &self,
+        table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<Option<SourcePosition>> {
+        let tenant_id = row
+            .get("tenant_id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
+        let row_id = row
+            .get("__id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
+        let table_value = row
+            .get("table_name")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
+        let metadata = self.load_metadata_source_position(table_name, row)?;
+        if metadata.is_some() {
+            return Ok(metadata);
+        }
+        let sql = format!(
+            "SELECT {} FROM {} WHERE table_name = ? AND tenant_id = ? AND __id = ? LIMIT 1",
+            sql::quote_identifier(sql::SOURCE_POSITION_COLUMN),
+            sql::quote_identifier(table_name)
+        );
+        let value = self
+            .conn
+            .prepare(sql.as_str())?
+            .query_row(
+                duckdb::params_from_iter(vec![
+                    json_value_to_duckdb_value(table_value),
+                    json_value_to_duckdb_value(tenant_id),
+                    json_value_to_duckdb_value(row_id),
+                ]),
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        value
+            .map(|value| serde_json::from_str(value.as_str()))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn load_metadata_source_position(
+        &self,
+        analytics_table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<Option<SourcePosition>> {
+        let tenant_id = row
+            .get("tenant_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
+        let row_id = row
+            .get("__id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
+        let source_table_name = row
+            .get("table_name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
+        let value = self
+            .conn
+            .prepare(
+                "SELECT source_position_json FROM __analytics_row_source_positions
+                 WHERE analytics_table_name = ?
+                   AND source_table_name = ?
+                   AND tenant_id = ?
+                   AND row_id = ?
+                 LIMIT 1",
+            )?
+            .query_row(
+                duckdb::params![analytics_table_name, source_table_name, tenant_id, row_id,],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        value
+            .map(|value| serde_json::from_str(value.as_str()))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    fn save_row_source_position(
+        &self,
+        table: &TableRegistration,
+        row: &BTreeMap<String, serde_json::Value>,
+        source_position: &SourcePosition,
+        row_visible: bool,
+    ) -> AnalyticsEngineResult<()> {
+        let tenant_id = row
+            .get("tenant_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
+        let row_id = row
+            .get("__id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
+        let source_table_name = row
+            .get("table_name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO __analytics_row_source_positions
+                (analytics_table_name, source_table_name, tenant_id, row_id,
+                 source_position_json, row_visible, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            duckdb::params![
+                table.analytics_table_name.as_str(),
+                source_table_name,
+                tenant_id,
+                row_id,
+                serde_json::to_string(source_position)?,
+                row_visible,
+                current_time_millis(),
+            ],
+        )?;
         Ok(())
     }
 
@@ -551,17 +1087,13 @@ impl AnalyticsEngine {
         let update_columns = row
             .keys()
             .filter(|column| !matches!(column.as_str(), "tenant_id" | "__id" | "table_name"))
-            .cloned()
+            .map(String::as_str)
             .collect::<Vec<_>>();
         if update_columns.is_empty() {
             return Ok(false);
         }
 
-        let set_clause = update_columns
-            .iter()
-            .map(|column| format!("{} = ?", sql::quote_identifier(column)))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let set_clause = assignment_set_clause(update_columns.iter().copied());
         let sql = format!(
             "UPDATE {} SET {set_clause} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
             sql::quote_identifier(table_name)
@@ -569,7 +1101,7 @@ impl AnalyticsEngine {
         let mut values = update_columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value(row.get(*column).unwrap_or(&serde_json::Value::Null))
             })
             .collect::<Vec<_>>();
         values.push(json_value_to_duckdb_value(table_value));
@@ -580,6 +1112,47 @@ impl AnalyticsEngine {
             .prepare(sql.as_str())?
             .execute(duckdb::params_from_iter(values))?;
         Ok(changed > 0)
+    }
+
+    fn update_privacy_scrubbed_row(
+        &self,
+        table_name: &str,
+        row_id: &str,
+        assignments: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<()> {
+        let set_clause = assignment_set_clause(assignments.keys().map(String::as_str));
+        let sql = format!(
+            "UPDATE {} SET {set_clause} WHERE {} = ?",
+            sql::quote_identifier(table_name),
+            sql::quote_identifier("__id")
+        );
+        let mut values = assignments
+            .values()
+            .map(json_value_to_duckdb_value)
+            .collect::<Vec<_>>();
+        values.push(json_value_to_duckdb_value(&serde_json::Value::String(
+            row_id.to_string(),
+        )));
+        self.conn
+            .prepare(sql.as_str())?
+            .execute(duckdb::params_from_iter(values))?;
+        Ok(())
+    }
+
+    fn delete_privacy_violating_row(
+        &self,
+        table_name: &str,
+        row_id: &str,
+    ) -> AnalyticsEngineResult<()> {
+        let sql = format!(
+            "DELETE FROM {} WHERE {} = ?",
+            sql::quote_identifier(table_name),
+            sql::quote_identifier("__id")
+        );
+        self.conn
+            .prepare(sql.as_str())?
+            .execute(duckdb::params![row_id])?;
+        Ok(())
     }
 
     fn delete_row(
@@ -617,6 +1190,342 @@ pub enum IngestOutcome {
     Updated,
     Deleted,
     Skipped,
+}
+
+#[derive(Debug)]
+pub struct StreamRecordBatchItem {
+    pub analytics_table_name: String,
+    pub record_key: Vec<u8>,
+    pub record: StorageStreamRecord,
+}
+
+struct BatchSqlExecutor<'conn> {
+    conn: &'conn Connection,
+    inserts: BTreeMap<BatchStatementKey, duckdb::Statement<'conn>>,
+    updates: BTreeMap<BatchStatementKey, duckdb::Statement<'conn>>,
+    deletes: BTreeMap<String, duckdb::Statement<'conn>>,
+}
+
+impl<'conn> BatchSqlExecutor<'conn> {
+    fn new(conn: &'conn Connection) -> Self {
+        Self {
+            conn,
+            inserts: BTreeMap::new(),
+            updates: BTreeMap::new(),
+            deletes: BTreeMap::new(),
+        }
+    }
+
+    fn apply_upsert(
+        &mut self,
+        table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        if self.update_row(table_name, row)? {
+            Ok(IngestOutcome::Updated)
+        } else {
+            self.insert_row(table_name, row)?;
+            Ok(IngestOutcome::Inserted)
+        }
+    }
+
+    fn insert_row(
+        &mut self,
+        table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<()> {
+        let columns = row.keys().cloned().collect::<Vec<_>>();
+        let key = BatchStatementKey {
+            table_name: table_name.to_string(),
+            columns,
+        };
+        if !self.inserts.contains_key(&key) {
+            let placeholders = placeholder_list(key.columns.len());
+            let sql = format!(
+                "INSERT INTO {} ({}) VALUES ({placeholders})",
+                sql::quote_identifier(table_name),
+                key.columns
+                    .iter()
+                    .map(|column| sql::quote_identifier(column))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            self.inserts
+                .insert(key.clone(), self.conn.prepare(sql.as_str())?);
+        }
+        let values = key
+            .columns
+            .iter()
+            .map(|column| {
+                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+            })
+            .collect::<Vec<_>>();
+        self.inserts
+            .get_mut(&key)
+            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
+            .execute(duckdb::params_from_iter(values))?;
+        Ok(())
+    }
+
+    fn update_row(
+        &mut self,
+        table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<bool> {
+        let tenant_id = row
+            .get("tenant_id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
+        let row_id = row
+            .get("__id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
+        let table_value = row
+            .get("table_name")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
+
+        let columns = row
+            .keys()
+            .filter(|column| !matches!(column.as_str(), "tenant_id" | "__id" | "table_name"))
+            .cloned()
+            .collect::<Vec<_>>();
+        if columns.is_empty() {
+            return Ok(false);
+        }
+
+        let key = BatchStatementKey {
+            table_name: table_name.to_string(),
+            columns,
+        };
+        if !self.updates.contains_key(&key) {
+            let set_clause = assignment_set_clause(key.columns.iter().map(String::as_str));
+            let sql = format!(
+                "UPDATE {} SET {set_clause} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
+                sql::quote_identifier(table_name)
+            );
+            self.updates
+                .insert(key.clone(), self.conn.prepare(sql.as_str())?);
+        }
+        let mut values = key
+            .columns
+            .iter()
+            .map(|column| {
+                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+            })
+            .collect::<Vec<_>>();
+        values.push(json_value_to_duckdb_value(table_value));
+        values.push(json_value_to_duckdb_value(tenant_id));
+        values.push(json_value_to_duckdb_value(row_id));
+        let changed = self
+            .updates
+            .get_mut(&key)
+            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
+            .execute(duckdb::params_from_iter(values))?;
+        Ok(changed > 0)
+    }
+
+    fn apply_delete(
+        &mut self,
+        table_name: &str,
+        row: &BTreeMap<String, serde_json::Value>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let tenant_id = row
+            .get("tenant_id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
+        let row_id = row
+            .get("__id")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
+        let table_value = row
+            .get("table_name")
+            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
+        if !self.deletes.contains_key(table_name) {
+            let sql = format!(
+                "DELETE FROM {} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
+                sql::quote_identifier(table_name)
+            );
+            self.deletes
+                .insert(table_name.to_string(), self.conn.prepare(sql.as_str())?);
+        }
+        self.deletes
+            .get_mut(table_name)
+            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
+            .execute(duckdb::params_from_iter(vec![
+                json_value_to_duckdb_value(table_value),
+                json_value_to_duckdb_value(tenant_id),
+                json_value_to_duckdb_value(row_id),
+            ]))?;
+        Ok(IngestOutcome::Deleted)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct BatchStatementKey {
+    table_name: String,
+    columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivacyIngestOutcome {
+    pub outcome: IngestOutcome,
+    pub dropped_fields: u64,
+    pub policy_version: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivacyTableRemediationReport {
+    pub table_name: String,
+    pub dry_run: bool,
+    pub mode: PrivacyTableRemediationMode,
+    pub scanned_rows: u64,
+    pub affected_rows: u64,
+    pub projected_values_scrubbed: u64,
+    pub document_values_scrubbed: u64,
+    pub destination_mutated: bool,
+    pub policy_version: String,
+}
+
+pub type PrivacyTableScrubReport = PrivacyTableRemediationReport;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrivacyTableRemediationMode {
+    Scrub,
+    DeleteRows,
+}
+
+struct FilteredStreamRecord {
+    record: StorageStreamRecord,
+    dropped_fields: u64,
+}
+
+fn filter_stream_record(
+    mut record: StorageStreamRecord,
+    policy: &PrivacyPolicy,
+) -> AnalyticsEngineResult<FilteredStreamRecord> {
+    let mut dropped_fields = 0_u64;
+    let keys = policy.filter_item(&record.keys)?;
+    dropped_fields += keys.dropped_fields;
+    record.keys = keys.item;
+    if let Some(old_image) = &record.old_image {
+        let filtered = policy.filter_item(old_image)?;
+        dropped_fields += filtered.dropped_fields;
+        record.old_image = Some(filtered.item);
+    }
+    if let Some(new_image) = &record.new_image {
+        let filtered = policy.filter_item(new_image)?;
+        dropped_fields += filtered.dropped_fields;
+        record.new_image = Some(filtered.item);
+    }
+    Ok(FilteredStreamRecord {
+        record,
+        dropped_fields,
+    })
+}
+
+fn privacy_scrubbable_projection_columns(
+    table: &TableRegistration,
+    policy: &PrivacyPolicy,
+) -> AnalyticsEngineResult<Vec<String>> {
+    let mut columns = Vec::new();
+    if let Some(projection_columns) = table.projection_columns.as_ref() {
+        for column in projection_columns {
+            if policy.denies_key(column.column_name.as_str())?
+                || policy.denies_path(column.attribute_path.as_str())?
+            {
+                columns.push(column.column_name.clone());
+            }
+        }
+    }
+    if let Some(attribute_names) = table.projection_attribute_names.as_ref() {
+        for column in attribute_names {
+            if policy.denies_key(column.as_str())? {
+                columns.push(column.clone());
+            }
+        }
+    }
+    Ok(columns)
+}
+
+fn privacy_remediation_scan_sql(
+    table_name: &str,
+    selected_columns: &[String],
+    projection_columns: &[String],
+    has_document_column: bool,
+) -> String {
+    let select_columns = selected_columns
+        .iter()
+        .map(|column| sql::quote_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = format!(
+        "SELECT {select_columns} FROM {}",
+        sql::quote_identifier(table_name)
+    );
+    if !has_document_column && !projection_columns.is_empty() {
+        let predicate = projection_columns
+            .iter()
+            .map(|column| format!("{} IS NOT NULL", sql::quote_identifier(column)))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        statement.push_str(" WHERE ");
+        statement.push_str(predicate.as_str());
+    }
+    statement
+}
+
+fn filter_json_value(
+    value: serde_json::Value,
+    path: &str,
+    policy: &PrivacyPolicy,
+    dropped_fields: &mut u64,
+) -> AnalyticsEngineResult<serde_json::Value> {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut filtered = serde_json::Map::new();
+            for (key, value) in object {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                if policy.denies_key(key.as_str())? || policy.denies_path(child_path.as_str())? {
+                    *dropped_fields += 1;
+                    continue;
+                }
+                let before = *dropped_fields;
+                let value = filter_json_value(value, child_path.as_str(), policy, dropped_fields)?;
+                if value.is_null() && *dropped_fields > before {
+                    continue;
+                }
+                filtered.insert(key, value);
+            }
+            Ok(serde_json::Value::Object(filtered))
+        }
+        serde_json::Value::Array(values) => {
+            let mut filtered = Vec::with_capacity(values.len());
+            for value in values {
+                let before = *dropped_fields;
+                let value = filter_json_value(value, path, policy, dropped_fields)?;
+                if !(value.is_null() && *dropped_fields > before) {
+                    filtered.push(value);
+                }
+            }
+            Ok(serde_json::Value::Array(filtered))
+        }
+        value if value_removed_by_policy(&value, policy)? => {
+            *dropped_fields += 1;
+            Ok(serde_json::Value::Null)
+        }
+        value => Ok(value),
+    }
+}
+
+fn value_removed_by_policy(
+    value: &serde_json::Value,
+    policy: &PrivacyPolicy,
+) -> AnalyticsEngineResult<bool> {
+    Ok(value
+        .as_str()
+        .map(|value| policy.denies_value(value))
+        .transpose()?
+        .unwrap_or(false))
 }
 
 fn validate_read_only_query(sql: &str) -> AnalyticsEngineResult<()> {
@@ -679,8 +1588,16 @@ fn current_time_millis() -> i64 {
         })
 }
 
+fn rollback_batch<T>(
+    conn: &Connection,
+    error: AnalyticsEngineError,
+) -> AnalyticsEngineResult<Vec<T>> {
+    let _ = conn.execute_batch("ROLLBACK");
+    Err(error)
+}
+
 pub(crate) fn columns_for_registration(table: &TableRegistration) -> Vec<AnalyticsColumn> {
-    let mut columns = Vec::new();
+    let mut columns = Vec::with_capacity(registration_column_capacity(table));
     if let Some(document_column) = table.document_column.as_ref() {
         columns.push(AnalyticsColumn {
             column_name: document_column.clone(),
@@ -712,6 +1629,23 @@ pub(crate) fn columns_for_registration(table: &TableRegistration) -> Vec<Analyti
             }),
     );
     columns
+}
+
+fn registration_column_capacity(table: &TableRegistration) -> usize {
+    usize::from(table.document_column.is_some())
+        + if table.columns.is_empty() {
+            table.projection_columns.as_ref().map_or_else(
+                || {
+                    table
+                        .projection_attribute_names
+                        .as_ref()
+                        .map_or(0, Vec::len)
+                },
+                Vec::len,
+            )
+        } else {
+            table.columns.len()
+        }
 }
 
 fn projection_column_type(column: &ProjectionColumn) -> AnalyticsColumnType {
@@ -749,4 +1683,27 @@ fn json_value_to_duckdb_value(value: &serde_json::Value) -> duckdb::types::Value
             duckdb::types::Value::Text(value.to_string())
         }
     }
+}
+
+fn assignment_set_clause<'a>(columns: impl IntoIterator<Item = &'a str>) -> String {
+    let mut clause = String::new();
+    for (index, column) in columns.into_iter().enumerate() {
+        if index > 0 {
+            clause.push_str(", ");
+        }
+        clause.push_str(sql::quote_identifier(column).as_str());
+        clause.push_str(" = ?");
+    }
+    clause
+}
+
+fn placeholder_list(count: usize) -> String {
+    let mut placeholders = String::with_capacity(count.saturating_mul(3).saturating_sub(2));
+    for index in 0..count {
+        if index > 0 {
+            placeholders.push_str(", ");
+        }
+        placeholders.push('?');
+    }
+    placeholders
 }

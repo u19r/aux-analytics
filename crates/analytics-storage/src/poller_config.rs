@@ -5,6 +5,7 @@ use config::AnalyticsSourceConfig;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollerConfig {
     pub poll_interval: Duration,
+    pub request_timeout: Duration,
     pub max_shards: usize,
     pub max_responses_per_interval: usize,
 }
@@ -19,6 +20,7 @@ impl Default for PollerConfig {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_millis(100),
+            request_timeout: Duration::from_millis(5_000),
             max_shards: 16,
             max_responses_per_interval: 160,
         }
@@ -30,6 +32,7 @@ impl PollerConfig {
     pub fn from_source_config(source: &AnalyticsSourceConfig) -> Self {
         Self {
             poll_interval: Duration::from_millis(source.poll_interval_ms),
+            request_timeout: Duration::from_millis(source.poll_request_timeout_ms),
             max_shards: source.poll_max_shards,
             max_responses_per_interval: source.poll_max_responses_per_interval,
         }
