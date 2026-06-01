@@ -57,6 +57,29 @@ async fn tenant_query_endpoint_returns_rows_after_minimal_ingest() {
 }
 
 #[tokio::test]
+async fn tables_endpoint_registers_table_and_updates_active_manifest() {
+    let router = test_router();
+    let mut table = users_manifest().tables[0].clone();
+    table.analytics_table_name = "registered_users".to_string();
+
+    let response = post_json(router.clone(), "/tables", json!(table)).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["analytics_table_name"], "registered_users");
+
+    let response = get(router, "/manifest").await;
+    let body = response_json(response).await;
+    let tables = body["tables"].as_array().expect("manifest tables");
+    assert!(
+        tables
+            .iter()
+            .any(|table| table["analytics_table_name"] == "registered_users"),
+        "registered table missing from manifest: {tables:?}"
+    );
+}
+
+#[tokio::test]
 async fn operations_endpoints_return_status_audit_and_accept_cancel() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let operation_store_path = tempdir.path().join("operations.duckdb");
@@ -507,6 +530,7 @@ async fn openapi_endpoint_describes_analytics_routes() {
         body["paths"]["/tenant-query"]["post"]["tags"][0],
         "Analytics"
     );
+    assert_eq!(body["paths"]["/tables"]["post"]["tags"][0], "Analytics");
     assert_eq!(
         body["paths"]["/ingest/{analytics_table_name}"]["post"]["tags"][0],
         "Analytics"

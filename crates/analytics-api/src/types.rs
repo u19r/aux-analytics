@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 #[derive(Clone)]
 pub struct AppState {
     pub engine: Arc<Mutex<AnalyticsEngine>>,
-    pub manifest: Arc<AnalyticsManifest>,
+    pub manifest: Arc<RwLock<AnalyticsManifest>>,
     pub source_health: Arc<RwLock<SourceHealth>>,
     pub retention: Option<Arc<crate::retention::RetentionRuntime>>,
     pub privacy_policy: Option<Arc<PrivacyPolicy>>,
@@ -117,7 +117,7 @@ impl AppState {
     pub fn new(engine: AnalyticsEngine, manifest: AnalyticsManifest) -> Self {
         Self {
             engine: Arc::new(Mutex::new(engine)),
-            manifest: Arc::new(manifest),
+            manifest: Arc::new(RwLock::new(manifest)),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention: None,
             privacy_policy: None,
@@ -134,7 +134,7 @@ impl AppState {
     ) -> Self {
         Self {
             engine: Arc::new(Mutex::new(engine)),
-            manifest: Arc::new(manifest),
+            manifest: Arc::new(RwLock::new(manifest)),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention,
             privacy_policy: None,

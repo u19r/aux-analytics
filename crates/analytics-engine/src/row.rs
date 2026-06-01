@@ -156,15 +156,23 @@ fn resolve_tenant_id(
             let Some(StorageValue::S(value)) = item.get(attribute_name) else {
                 return Err(AnalyticsEngineError::MissingTenant);
             };
-            value
-                .split('#')
-                .nth(1)
-                .map(ToString::to_string)
+            tenant_id_from_partition_key_prefix(value)
                 .map(Some)
                 .ok_or(AnalyticsEngineError::MissingTenant)
         }
         TenantSelector::TableName => Err(AnalyticsEngineError::MissingTenant),
     }
+}
+
+fn tenant_id_from_partition_key_prefix(value: &str) -> Option<String> {
+    let prefix = value.split('#').next()?.trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(prefix.strip_prefix("ns_").map_or_else(
+        || prefix.to_string(),
+        |storage_key| format!("t_{storage_key}"),
+    ))
 }
 
 fn string_attribute<'a>(

@@ -2949,6 +2949,46 @@
         ]
       }
     },
+    "/tables": {
+      "post": {
+        "operationId": "register_table",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TableRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TableRegistration"
+                }
+              }
+            },
+            "description": "Registered analytics table"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid table registration"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
     "/tenant-query": {
       "post": {
         "operationId": "tenant_query",

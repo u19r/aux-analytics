@@ -23,7 +23,8 @@ pub(crate) async fn spawn_source_polling(
     source: &AnalyticsSourceConfig,
     app_state: Arc<AppState>,
 ) -> ApiResult<()> {
-    let source_table_count = source_table_count(source, app_state.manifest.as_ref());
+    let manifest = app_state.manifest.read().await.clone();
+    let source_table_count = source_table_count(source, &manifest);
     if source_polling_startup(source_table_count, false) == SourcePollingStartup::Disabled {
         *app_state.source_health.write().await = SourceHealth::disabled();
         tracing::info!("analytics source polling disabled: no source tables configured");
@@ -41,9 +42,7 @@ pub(crate) async fn spawn_source_polling(
     );
     let storage_checkpoints = storage_checkpoints_from_engine(checkpoints);
     tracing::info!("analytics source poller construction starting");
-    let poller =
-        SourcePoller::from_config(source, app_state.manifest.as_ref(), &storage_checkpoints)
-            .await?;
+    let poller = SourcePoller::from_config(source, &manifest, &storage_checkpoints).await?;
     tracing::info!(
         poller_is_empty = poller.is_empty(),
         "analytics source poller constructed"
@@ -160,10 +159,11 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
     metrics::histogram!(SOURCE_RECORDS_PER_POLL_METRIC).record(usize_to_f64(batch.records.len()));
     let mut ingest_results = Vec::with_capacity(batch.records.len());
     for record in &batch.records {
+        let manifest = app_state.manifest.read().await.clone();
         let retention = if let Some(runtime) = app_state.retention.as_ref() {
             runtime
                 .retention_for_record(
-                    app_state.manifest.as_ref(),
+                    &manifest,
                     record.analytics_table_name.as_str(),
                     &record.record,
                 )
@@ -175,7 +175,7 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
         let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
             engine
                 .ingest_stream_record_with_privacy_policy_and_retention(
-                    app_state.manifest.as_ref(),
+                    &manifest,
                     record.analytics_table_name.as_str(),
                     record.record_key.as_bytes(),
                     record.record.clone(),
@@ -192,7 +192,7 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
         } else {
             engine
                 .ingest_stream_record_with_retention(
-                    app_state.manifest.as_ref(),
+                    &manifest,
                     record.analytics_table_name.as_str(),
                     record.record_key.as_bytes(),
                     record.record.clone(),

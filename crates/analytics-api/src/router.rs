@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
+use analytics_contract::{AnalyticsManifest, TableRegistration};
 use analytics_engine::{IngestOutcome, StreamRecordBatchItem};
 use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
@@ -86,6 +87,7 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
         .route("/operations/{operation_id}/audit", get(operation_audit))
         .route("/operations/{operation_id}/cancel", post(cancel_operation))
         .route("/manifest", get(manifest))
+        .route("/tables", post(register_table))
         .route("/analytics/health", get(health_status))
         .route("/analytics/diagnostics", get(diagnostics))
         .route("/analytics/manifest", get(manifest))
@@ -364,7 +366,51 @@ pub(crate) async fn cancel_operation(
     tag = "Analytics"
 )]
 pub(crate) async fn manifest(State(app_state): State<Arc<AppState>>) -> Json<Value> {
-    Json(serde_json::to_value(app_state.manifest.as_ref()).unwrap_or_else(|_| json!({})))
+    let manifest = app_state.manifest.read().await.clone();
+    Json(serde_json::to_value(manifest).unwrap_or_else(|_| json!({})))
+}
+
+#[utoipa::path(
+    post,
+    path = "/tables",
+    request_body = analytics_contract::TableRegistration,
+    responses(
+        (status = 200, body = analytics_contract::TableRegistration, description = "Registered analytics table"),
+        (status = 400, body = ErrorResponse, description = "Invalid table registration")
+    ),
+    tag = "Analytics"
+)]
+pub(crate) async fn register_table(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let table = match validate_json::<TableRegistration>(payload) {
+        Ok(table) => table,
+        Err(err) => return err.into_response(),
+    };
+    let mut candidate_manifest = app_state.manifest.read().await.clone();
+    upsert_manifest_table(&mut candidate_manifest, table.clone());
+    if let Err(err) = candidate_manifest.validate() {
+        return error_response(StatusCode::BAD_REQUEST, &err.to_string());
+    }
+    let engine = app_state.engine.lock().await;
+    if let Err(err) = engine.ensure_table(&table) {
+        return error_response(StatusCode::BAD_REQUEST, &err.to_string());
+    }
+    *app_state.manifest.write().await = candidate_manifest;
+    Json(table).into_response()
+}
+
+fn upsert_manifest_table(manifest: &mut AnalyticsManifest, table: TableRegistration) {
+    if let Some(existing) = manifest
+        .tables
+        .iter_mut()
+        .find(|registered| registered.analytics_table_name == table.analytics_table_name)
+    {
+        *existing = table;
+    } else {
+        manifest.tables.push(table);
+    }
 }
 
 #[utoipa::path(
@@ -419,8 +465,9 @@ pub(crate) async fn unscoped_structured_query(
             return err.into_response();
         }
     };
+    let manifest = app_state.manifest.read().await.clone();
     let engine = app_state.engine.lock().await;
-    match engine.query_unscoped_structured_json(app_state.manifest.as_ref(), &request.query) {
+    match engine.query_unscoped_structured_json(&manifest, &request.query) {
         Ok(rows) => {
             record_query_metrics("unscoped_structured", "success", started);
             Json(QueryResponse { rows }).into_response()
@@ -454,9 +501,10 @@ pub(crate) async fn tenant_query(
             return err.into_response();
         }
     };
+    let manifest = app_state.manifest.read().await.clone();
     let engine = app_state.engine.lock().await;
     match engine.query_tenant_structured_json(
-        app_state.manifest.as_ref(),
+        &manifest,
         &request.query,
         request.target_tenant_id.as_str(),
     ) {
@@ -496,13 +544,10 @@ pub(crate) async fn ingest_stream_record(
         }
     };
     let (record_key, record) = request.into_contract_record();
+    let manifest = app_state.manifest.read().await.clone();
     let retention = if let Some(runtime) = app_state.retention.as_ref() {
         runtime
-            .retention_for_record(
-                app_state.manifest.as_ref(),
-                analytics_table_name.as_str(),
-                &record,
-            )
+            .retention_for_record(&manifest, analytics_table_name.as_str(), &record)
             .await
     } else {
         None
@@ -511,7 +556,7 @@ pub(crate) async fn ingest_stream_record(
     let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
         engine
             .ingest_stream_record_with_privacy_policy_and_retention(
-                app_state.manifest.as_ref(),
+                &manifest,
                 analytics_table_name.as_str(),
                 record_key.as_bytes(),
                 record,
@@ -533,7 +578,7 @@ pub(crate) async fn ingest_stream_record(
     } else {
         engine
             .ingest_stream_record_with_retention(
-                app_state.manifest.as_ref(),
+                &manifest,
                 analytics_table_name.as_str(),
                 record_key.as_bytes(),
                 record,
@@ -610,8 +655,9 @@ pub(crate) async fn ingest_stream_record_batch(
             }
         })
         .collect();
+    let manifest = app_state.manifest.read().await.clone();
     let engine = app_state.engine.lock().await;
-    match engine.ingest_stream_record_batch(app_state.manifest.as_ref(), records) {
+    match engine.ingest_stream_record_batch(&manifest, records) {
         Ok(outcomes) => {
             record_ingest_metrics("success", started);
             Json(IngestBatchResponse {

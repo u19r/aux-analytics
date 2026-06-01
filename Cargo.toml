@@ -9,7 +9,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "64f4447b0b5532bfb04655060d8892c7c22d33ae" }
+alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "02585330401d91ac7ef296f49192aabd6cbf500e" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }

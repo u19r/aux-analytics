@@ -15,6 +15,7 @@ pub fn build() -> utoipa::openapi::OpenApi {
             crate::router::operation_audit,
             crate::router::cancel_operation,
             crate::router::manifest,
+            crate::router::register_table,
             crate::router::unscoped_sql_query,
             crate::router::unscoped_structured_query,
             crate::router::tenant_query,

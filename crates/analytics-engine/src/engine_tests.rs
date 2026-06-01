@@ -849,6 +849,85 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
 }
 
 #[test]
+fn partition_key_prefix_selector_maps_aux_storage_namespace_prefix_to_tenant_id() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "s00000".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        tenant_id: None,
+        tenant_selector: TenantSelector::PartitionKeyPrefix {
+            attribute_name: "pk".to_string(),
+        },
+        row_identity: RowIdentity::Attribute {
+            attribute_name: "user_id".to_string(),
+        },
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "email".to_string(),
+            attribute_path: "profile.email".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::VarChar,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+    }]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let record = StorageStreamRecord {
+        sequence_number: "user-a".to_string(),
+        keys: HashMap::new(),
+        old_image: None,
+        new_image: Some(HashMap::from([
+            (
+                "pk".to_string(),
+                StorageValue::S("ns_2X6Z455H5ZBWSRK6D51ASR0#USER#user-a".to_string()),
+            ),
+            ("user_id".to_string(), StorageValue::S("user-a".to_string())),
+            (
+                "profile".to_string(),
+                StorageValue::M(HashMap::from([(
+                    "email".to_string(),
+                    StorageValue::S("a@example.com".to_string()),
+                )])),
+            ),
+        ])),
+    };
+    engine
+        .ingest_stream_record(&manifest, "users", b"user-a", record)
+        .expect("ingest");
+
+    let rows = engine
+        .query_tenant_structured_json(
+            &manifest,
+            &StructuredQuery {
+                analytics_table_name: "users".to_string(),
+                select: vec![QuerySelect::Column {
+                    column_name: "email".to_string(),
+                    alias: None,
+                }],
+                filters: Vec::new(),
+                group_by: Vec::new(),
+                order_by: Vec::new(),
+                limit: None,
+            },
+            "t_2X6Z455H5ZBWSRK6D51ASR0",
+        )
+        .expect("tenant-scoped structured query");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["email"], "a@example.com");
+}
+
+#[test]
 fn structured_queries_read_document_paths_from_generic_tables() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     let manifest = generic_items_manifest();
