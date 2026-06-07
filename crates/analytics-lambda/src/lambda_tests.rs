@@ -186,6 +186,69 @@ async fn lambda_runs_tenant_scoped_queries() {
 }
 
 #[tokio::test]
+async fn lambda_tenant_query_batch_returns_named_results() {
+    let handler = test_handler();
+    handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", "tenant-a@example.com", "org-a"),
+            }
+        }))
+        .await
+        .expect("ingest");
+
+    let query_response = handler
+        .handle_event(json!({
+            "operation": "tenant_query_batch",
+            "target_tenant_id": "tenant_01",
+            "queries": [
+                {
+                    "name": "total_users",
+                    "query": StructuredQuery {
+                        analytics_table_name: "users".to_string(),
+                        select: vec![QuerySelect::Count {
+                            alias: "count".to_string(),
+                        }],
+                        filters: Vec::new(),
+                        group_by: Vec::new(),
+                        order_by: Vec::new(),
+                        limit: Some(1),
+                    },
+                },
+                {
+                    "name": "matching_users",
+                    "query": StructuredQuery {
+                        analytics_table_name: "users".to_string(),
+                        select: vec![QuerySelect::Column {
+                            column_name: "email".to_string(),
+                            alias: None,
+                        }],
+                        filters: Vec::new(),
+                        group_by: Vec::new(),
+                        order_by: Vec::new(),
+                        limit: Some(1),
+                    },
+                },
+            ],
+        }))
+        .await
+        .expect("tenant query batch");
+
+    assert_eq!(query_response["results"][0]["name"], "total_users");
+    assert_eq!(query_response["results"][0]["rows"][0]["count"], 1);
+    assert_eq!(query_response["results"][1]["name"], "matching_users");
+    assert_eq!(
+        query_response["results"][1]["rows"][0]["email"],
+        "tenant-a@example.com"
+    );
+}
+
+#[tokio::test]
 async fn lambda_rejects_events_that_fail_generated_schema() {
     let handler = test_handler();
 

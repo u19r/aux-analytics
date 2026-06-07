@@ -46,7 +46,6 @@ dependencies = [
 [[package]]
 name = "alloc-counter"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-common?rev=02585330401d91ac7ef296f49192aabd6cbf500e#02585330401d91ac7ef296f49192aabd6cbf500e"
 dependencies = [
  "alloc-counter-macros",
  "serde",
@@ -56,7 +55,6 @@ dependencies = [
 [[package]]
 name = "alloc-counter-macros"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-common?rev=02585330401d91ac7ef296f49192aabd6cbf500e#02585330401d91ac7ef296f49192aabd6cbf500e"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -4085,7 +4083,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage-condition"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=26ba15edefe9b564fa9ff4b27e66377dba38d548#26ba15edefe9b564fa9ff4b27e66377dba38d548"
 dependencies = [
  "serde_json",
  "storage-types",
@@ -4095,7 +4092,6 @@ dependencies = [
 [[package]]
 name = "storage-types"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=26ba15edefe9b564fa9ff4b27e66377dba38d548#26ba15edefe9b564fa9ff4b27e66377dba38d548"
 dependencies = [
  "base64",
  "chrono",

@@ -1,5 +1,6 @@
 use std::{fmt, net::AddrParseError};
 
+use analytics_api::AnalyticsEngineAccessError;
 use analytics_engine::AnalyticsEngineError;
 use config::ConfigError;
 use thiserror::Error;
@@ -130,6 +131,12 @@ impl From<analytics_contract::PrivacyPolicyError> for ApiError {
 
 impl From<AnalyticsEngineError> for ApiError {
     fn from(source: AnalyticsEngineError) -> Self {
+        Self::with_source(ApiErrorKind::Engine, source)
+    }
+}
+
+impl From<AnalyticsEngineAccessError> for ApiError {
+    fn from(source: AnalyticsEngineAccessError) -> Self {
         Self::with_source(ApiErrorKind::Engine, source)
     }
 }

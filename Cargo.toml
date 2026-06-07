@@ -9,7 +9,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "02585330401d91ac7ef296f49192aabd6cbf500e" }
+alloc-counter = { path = "../aux-common/crates/alloc-counter" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }
@@ -43,9 +43,9 @@ rust_decimal = "1.42.0"
 schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "26ba15edefe9b564fa9ff4b27e66377dba38d548", default-features = false }
-storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "26ba15edefe9b564fa9ff4b27e66377dba38d548" }
-storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "26ba15edefe9b564fa9ff4b27e66377dba38d548", default-features = false }
+storage = { path = "../aux-storage/crates/storage", default-features = false }
+storage-condition = { path = "../aux-storage/crates/storage-condition" }
+storage-types = { path = "../aux-storage/crates/storage-types", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full", "tracing"] }
@@ -55,6 +55,20 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 url = "2.5.7"
 utoipa = { version = "5.5.0", features = ["axum_extras"] }
+
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+overflow-checks = true
+panic = "unwind"
+lto = "fat"
+strip = "symbols"
+
+[profile.fast-release]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+lto = false
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

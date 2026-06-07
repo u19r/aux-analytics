@@ -66,8 +66,14 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
         .await?
         .map(Arc::new);
     let app_state = Arc::new(
-        AppState::with_retention(engine, manifest, retention_runtime.clone())
-            .with_privacy_policy(privacy_policy),
+        AppState::with_retention_backend_and_max_read_connections(
+            engine,
+            manifest,
+            retention_runtime.clone(),
+            storage_backend,
+            root.analytics.query.max_read_connections,
+        )
+        .with_privacy_policy(privacy_policy),
     );
     tracing::info!("analytics source polling initialization starting");
     spawn_source_polling(&root.analytics.source, app_state.clone()).await?;

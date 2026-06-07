@@ -1,7 +1,7 @@
-use std::{sync::Arc, time::Instant};
+use std::{fmt, sync::Arc, time::Instant};
 
 use analytics_contract::{AnalyticsManifest, TableRegistration};
-use analytics_engine::{IngestOutcome, StreamRecordBatchItem};
+use analytics_engine::{AnalyticsEngineError, IngestOutcome, StreamRecordBatchItem};
 use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
     Json, Router,
@@ -14,15 +14,19 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tokio::task::JoinSet;
 
 use crate::{
+    AnalyticsEngineAccess, AnalyticsEngineAccessError,
     request_validation::openapi_request_validator,
     types::{
         AppState, DiagnosticsResponse, ErrorResponse, HealthResponse, IngestBatchResponse,
         IngestResponse, IngestStreamRecordBatchRequest, IngestStreamRecordRequest,
         OperationAuditEventResponse, OperationAuditResponse, OperationCancelResponse,
-        OperationDiagnostics, OperationListResponse, OperationStatusResponse, QueryResponse,
-        ReadyResponse, TenantQueryRequest, UnscopedSqlQueryRequest, UnscopedStructuredQueryRequest,
+        OperationDiagnostics, OperationListResponse, OperationStatusResponse, QueryBatchResponse,
+        QueryBatchResult, QueryResponse, ReadyResponse, TenantQueryBatchItem,
+        TenantQueryBatchRequest, TenantQueryRequest, UnscopedSqlQueryRequest,
+        UnscopedStructuredQueryRequest,
     },
 };
 
@@ -97,7 +101,8 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
             "/unscoped-structured-query",
             post(unscoped_structured_query),
         )
-        .route("/tenant-query", post(tenant_query));
+        .route("/tenant-query", post(tenant_query))
+        .route("/tenant-query-batch", post(tenant_query_batch));
     if endpoint_config.ingest_enabled {
         router = router
             .route("/ingest/{analytics_table_name}", post(ingest_stream_record))
@@ -156,12 +161,16 @@ pub(crate) async fn up() -> StatusCode {
     tag = "Health"
 )]
 pub(crate) async fn ready(State(app_state): State<Arc<AppState>>) -> Response {
-    let engine = app_state.engine.lock().await;
-    match engine.query_unscoped_sql_json("select 1 as ready") {
-        Ok(_) => Json(ReadyResponse {
+    match app_state
+        .engine
+        .with_read(|engine| engine.query_unscoped_sql_json("select 1 as ready"))
+        .await
+    {
+        Ok(Ok(_)) => Json(ReadyResponse {
             status: "ready".to_string(),
         })
         .into_response(),
+        Ok(Err(err)) => error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
         Err(err) => error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string()),
     }
 }
@@ -393,8 +402,11 @@ pub(crate) async fn register_table(
     if let Err(err) = candidate_manifest.validate() {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
     }
-    let engine = app_state.engine.lock().await;
-    if let Err(err) = engine.ensure_table(&table) {
+    if let Err(err) = app_state
+        .engine
+        .with_write(|engine| engine.ensure_table(&table))
+        .await
+    {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
     }
     *app_state.manifest.write().await = candidate_manifest;
@@ -466,15 +478,22 @@ pub(crate) async fn unscoped_structured_query(
         }
     };
     let manifest = app_state.manifest.read().await.clone();
-    let engine = app_state.engine.lock().await;
-    match engine.query_unscoped_structured_json(&manifest, &request.query) {
-        Ok(rows) => {
+    match app_state
+        .engine
+        .with_read(|engine| engine.query_unscoped_structured_json(&manifest, &request.query))
+        .await
+    {
+        Ok(Ok(rows)) => {
             record_query_metrics("unscoped_structured", "success", started);
             Json(QueryResponse { rows }).into_response()
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             record_query_metrics("unscoped_structured", "error", started);
             error_response(StatusCode::BAD_REQUEST, &err.to_string())
+        }
+        Err(err) => {
+            record_query_metrics("unscoped_structured", "error", started);
+            error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string())
         }
     }
 }
@@ -502,19 +521,78 @@ pub(crate) async fn tenant_query(
         }
     };
     let manifest = app_state.manifest.read().await.clone();
-    let engine = app_state.engine.lock().await;
-    match engine.query_tenant_structured_json(
-        &manifest,
-        &request.query,
-        request.target_tenant_id.as_str(),
-    ) {
-        Ok(rows) => {
+    match app_state
+        .engine
+        .with_read(|engine| {
+            engine.query_tenant_structured_json(
+                &manifest,
+                &request.query,
+                request.target_tenant_id.as_str(),
+            )
+        })
+        .await
+    {
+        Ok(Ok(rows)) => {
             record_query_metrics("tenant_structured", "success", started);
             Json(QueryResponse { rows }).into_response()
         }
-        Err(err) => {
+        Ok(Err(err)) => {
             record_query_metrics("tenant_structured", "error", started);
             error_response(StatusCode::BAD_REQUEST, &err.to_string())
+        }
+        Err(err) => {
+            record_query_metrics("tenant_structured", "error", started);
+            error_response(StatusCode::SERVICE_UNAVAILABLE, &err.to_string())
+        }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/tenant-query-batch",
+    request_body = TenantQueryBatchRequest,
+    responses(
+        (status = 200, body = QueryBatchResponse, description = "Query tenant-scoped rows for multiple named structured queries"),
+        (status = 400, body = ErrorResponse, description = "Invalid request or query")
+    ),
+    tag = "Analytics"
+)]
+pub(crate) async fn tenant_query_batch(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let started = Instant::now();
+    let request = match validate_json::<TenantQueryBatchRequest>(payload) {
+        Ok(request) => request,
+        Err(err) => {
+            record_query_metrics("tenant_structured_batch", "validation_error", started);
+            return err.into_response();
+        }
+    };
+    if request.queries.is_empty() {
+        record_query_metrics("tenant_structured_batch", "validation_error", started);
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "queries must contain at least one structured query",
+        );
+    }
+
+    let manifest = Arc::new(app_state.manifest.read().await.clone());
+    match execute_tenant_query_batch(
+        app_state.engine.clone(),
+        manifest,
+        request.target_tenant_id,
+        request.queries,
+    )
+    .await
+    {
+        Ok(results) => {
+            record_query_metrics("tenant_structured_batch", "success", started);
+            Json(QueryBatchResponse { results }).into_response()
+        }
+        Err(err) => {
+            record_query_metrics("tenant_structured_batch", "error", started);
+            error_response(err.status_code(), &err.to_string())
         }
     }
 }
@@ -552,17 +630,20 @@ pub(crate) async fn ingest_stream_record(
     } else {
         None
     };
-    let engine = app_state.engine.lock().await;
     let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
-        engine
-            .ingest_stream_record_with_privacy_policy_and_retention(
-                &manifest,
-                analytics_table_name.as_str(),
-                record_key.as_bytes(),
-                record,
-                policy,
-                retention.as_ref(),
-            )
+        app_state
+            .engine
+            .with_write(|engine| {
+                engine.ingest_stream_record_with_privacy_policy_and_retention(
+                    &manifest,
+                    analytics_table_name.as_str(),
+                    record_key.as_bytes(),
+                    record,
+                    policy,
+                    retention.as_ref(),
+                )
+            })
+            .await
             .map(|outcome| {
                 metrics::counter!(
                     INGEST_PRIVACY_DROPS_METRIC,
@@ -576,14 +657,18 @@ pub(crate) async fn ingest_stream_record(
                 )
             })
     } else {
-        engine
-            .ingest_stream_record_with_retention(
-                &manifest,
-                analytics_table_name.as_str(),
-                record_key.as_bytes(),
-                record,
-                retention.as_ref(),
-            )
+        app_state
+            .engine
+            .with_write(|engine| {
+                engine.ingest_stream_record_with_retention(
+                    &manifest,
+                    analytics_table_name.as_str(),
+                    record_key.as_bytes(),
+                    record,
+                    retention.as_ref(),
+                )
+            })
+            .await
             .map(|outcome| (outcome, None, None))
     };
     match ingest_result {
@@ -656,8 +741,11 @@ pub(crate) async fn ingest_stream_record_batch(
         })
         .collect();
     let manifest = app_state.manifest.read().await.clone();
-    let engine = app_state.engine.lock().await;
-    match engine.ingest_stream_record_batch(&manifest, records) {
+    match app_state
+        .engine
+        .with_write(|engine| engine.ingest_stream_record_batch(&manifest, records))
+        .await
+    {
         Ok(outcomes) => {
             record_ingest_metrics("success", started);
             Json(IngestBatchResponse {
@@ -677,6 +765,90 @@ pub(crate) async fn ingest_stream_record_batch(
             record_ingest_metrics("error", started);
             error_response(StatusCode::BAD_REQUEST, &err.to_string())
         }
+    }
+}
+
+async fn execute_tenant_query_batch(
+    engine: AnalyticsEngineAccess,
+    manifest: Arc<AnalyticsManifest>,
+    target_tenant_id: String,
+    queries: Vec<TenantQueryBatchItem>,
+) -> Result<Vec<QueryBatchResult>, TenantQueryBatchExecutionError> {
+    let mut tasks = JoinSet::new();
+    for (index, item) in queries.into_iter().enumerate() {
+        let engine = engine.clone();
+        let manifest = Arc::clone(&manifest);
+        let target_tenant_id = target_tenant_id.clone();
+        tasks.spawn(async move {
+            let rows = engine
+                .with_read(|engine| {
+                    engine.query_tenant_structured_json(
+                        manifest.as_ref(),
+                        &item.query,
+                        target_tenant_id.as_str(),
+                    )
+                })
+                .await??;
+            Ok::<_, TenantQueryBatchExecutionError>((
+                index,
+                QueryBatchResult {
+                    name: item.name,
+                    rows,
+                },
+            ))
+        });
+    }
+
+    let mut results = Vec::with_capacity(tasks.len());
+    while let Some(joined) = tasks.join_next().await {
+        results.push(joined??);
+    }
+    results.sort_by_key(|(index, _)| *index);
+    Ok(results.into_iter().map(|(_, result)| result).collect())
+}
+
+#[derive(Debug)]
+enum TenantQueryBatchExecutionError {
+    Query(AnalyticsEngineError),
+    Access(AnalyticsEngineAccessError),
+    Join(tokio::task::JoinError),
+}
+
+impl TenantQueryBatchExecutionError {
+    const fn status_code(&self) -> StatusCode {
+        match self {
+            Self::Query(_) => StatusCode::BAD_REQUEST,
+            Self::Access(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Join(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl fmt::Display for TenantQueryBatchExecutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Query(error) => write!(formatter, "{error}"),
+            Self::Access(error) => write!(formatter, "{error}"),
+            Self::Join(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl From<AnalyticsEngineError> for TenantQueryBatchExecutionError {
+    fn from(error: AnalyticsEngineError) -> Self {
+        Self::Query(error)
+    }
+}
+
+impl From<AnalyticsEngineAccessError> for TenantQueryBatchExecutionError {
+    fn from(error: AnalyticsEngineAccessError) -> Self {
+        Self::Access(error)
+    }
+}
+
+impl From<tokio::task::JoinError> for TenantQueryBatchExecutionError {
+    fn from(error: tokio::task::JoinError) -> Self {
+        Self::Join(error)
     }
 }
 

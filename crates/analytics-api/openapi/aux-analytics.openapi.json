@@ -840,6 +840,69 @@
         ],
         "type": "object"
       },
+      "QueryBatchResponse": {
+        "description": "Batch query result rows as JSON objects.",
+        "example": {
+          "results": [
+            {
+              "name": "total_users",
+              "rows": [
+                {
+                  "count": 42
+                }
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "results": {
+            "description": "Results in request order.",
+            "items": {
+              "$ref": "#/components/schemas/QueryBatchResult"
+            },
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "type": "object"
+      },
+      "QueryBatchResult": {
+        "description": "Named query result rows.",
+        "example": {
+          "name": "total_users",
+          "rows": [
+            {
+              "count": 42
+            }
+          ]
+        },
+        "properties": {
+          "name": {
+            "description": "Caller-owned stable name from the batch request.",
+            "example": "total_users",
+            "type": "string"
+          },
+          "rows": {
+            "description": "Result rows returned by `DuckDB`.",
+            "example": [
+              {
+                "count": 42
+              }
+            ],
+            "items": {},
+            "minItems": 0,
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "rows"
+        ],
+        "type": "object"
+      },
       "QueryExpression": {
         "description": "Structured expression used by filters, grouping, and ordering.",
         "oneOf": [
@@ -2286,6 +2349,89 @@
         ],
         "type": "object"
       },
+      "TenantQueryBatchItem": {
+        "description": "Named tenant-scoped structured query for batch execution.",
+        "example": {
+          "name": "total_users",
+          "query": {
+            "analytics_table_name": "users",
+            "filters": [],
+            "group_by": [],
+            "limit": 1,
+            "order_by": [],
+            "select": [
+              {
+                "alias": "count",
+                "kind": "count"
+              }
+            ]
+          }
+        },
+        "properties": {
+          "name": {
+            "description": "Caller-owned stable name used to correlate results.",
+            "example": "total_users",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "query": {
+            "$ref": "#/components/schemas/StructuredQuery",
+            "description": "Structured query tree compiled by the analytics engine."
+          }
+        },
+        "required": [
+          "name",
+          "query"
+        ],
+        "type": "object"
+      },
+      "TenantQueryBatchRequest": {
+        "description": "Tenant-scoped structured query batch request.",
+        "example": {
+          "queries": [
+            {
+              "name": "total_users",
+              "query": {
+                "analytics_table_name": "users",
+                "filters": [],
+                "group_by": [],
+                "limit": 1,
+                "order_by": [],
+                "select": [
+                  {
+                    "alias": "count",
+                    "kind": "count"
+                  }
+                ]
+              }
+            }
+          ],
+          "target_tenant_id": "tenant_01"
+        },
+        "properties": {
+          "queries": {
+            "description": "Named structured queries to execute against the same tenant scope.",
+            "items": {
+              "$ref": "#/components/schemas/TenantQueryBatchItem"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "target_tenant_id": {
+            "description": "Tenant id that each query is authorized to read. The API injects this as\nan engine-owned tenant predicate.",
+            "example": "tenant_01",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_tenant_id",
+          "queries"
+        ],
+        "type": "object"
+      },
       "TenantQueryRequest": {
         "description": "Tenant-scoped structured query request for callers that should not\nconstruct SQL.",
         "example": {
@@ -3012,6 +3158,46 @@
               }
             },
             "description": "Query tenant-scoped rows as JSON objects"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request or query"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/tenant-query-batch": {
+      "post": {
+        "operationId": "tenant_query_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantQueryBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryBatchResponse"
+                }
+              }
+            },
+            "description": "Query tenant-scoped rows for multiple named structured queries"
           },
           "400": {
             "content": {

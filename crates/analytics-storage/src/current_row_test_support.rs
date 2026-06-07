@@ -5,7 +5,7 @@ use std::{
 
 use analytics_operations::{CheckError, CheckRowProjection};
 use aws_sdk_dynamodb::types::AttributeValue as DynamoDbAttributeValue;
-use storage_types::{AttributeMap, AttributeValue, ScanResponse};
+use storage_types::{AttributeMap, AttributeValue, KeyAttributes, ScanResponse};
 
 use crate::{
     AuxStorageCurrentRowClient, AuxStorageCurrentRowScanRequest, DynamoDbCurrentRowClient,
@@ -103,9 +103,13 @@ pub(crate) fn scan_response(items: Vec<AttributeMap>, cursor: Option<&str>) -> S
         count,
         scanned_count: count,
         items: Some(items),
-        last_evaluated_key: cursor.map(str::to_string),
+        last_evaluated_key: cursor.map(key_attributes),
         consumed_capacity: None,
     }
+}
+
+pub(crate) fn key_attributes(key: &str) -> KeyAttributes {
+    KeyAttributes::from([("user_id".to_string(), AttributeValue::S(key.to_string()))])
 }
 
 pub(crate) fn item(

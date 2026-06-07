@@ -6,14 +6,17 @@ use analytics_operations::{
 };
 use aws_sdk_dynamodb::types::AttributeValue as DynamoDbAttributeValue;
 use serde::{Deserialize, Serialize};
-use storage_types::{AttributeMap, AttributeValue, ScanRequest, ScanResponse, TableName};
+use storage_types::{
+    AttributeMap, AttributeValue, ExclusiveStartKey, KeyAttributes, ScanRequest, ScanResponse,
+    TableName,
+};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuxStorageCurrentRowScanRequest {
     pub table_name: String,
     pub projection_expression: String,
     pub limit: u32,
-    pub exclusive_start_key: Option<String>,
+    pub exclusive_start_key: Option<ExclusiveStartKey>,
 }
 
 pub trait AuxStorageCurrentRowClient {
@@ -137,7 +140,11 @@ where Client: AuxStorageCurrentRowClient
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ProjectedCurrentRowPage {
             rows,
-            next_cursor: response.last_evaluated_key,
+            next_cursor: response
+                .last_evaluated_key
+                .as_ref()
+                .map(aux_storage_cursor_from_key)
+                .transpose()?,
             partition,
         })
     }
@@ -203,7 +210,10 @@ fn aux_storage_scan_request(
         table_name: scan_request.table_name.to_string(),
         projection_expression: projection_expression(request, partition_column),
         limit,
-        exclusive_start_key: scan_request.exclusive_start_key,
+        exclusive_start_key: request
+            .cursor
+            .as_deref()
+            .map(aux_storage_cursor_to_exclusive_start_key),
     })
 }
 
@@ -488,6 +498,20 @@ fn dynamodb_cursor_from_key(
             .collect::<Result<BTreeMap<_, _>, CheckError>>()?,
     )
     .map_err(CheckError::from)
+}
+
+fn aux_storage_cursor_from_key(key: &KeyAttributes) -> Result<String, CheckError> {
+    key.canonical_dynamo_json().map_err(|error| {
+        CheckError::InvalidBackendConfiguration(format!(
+            "aux-storage current-row cursor cannot encode key attributes: {error}"
+        ))
+    })
+}
+
+fn aux_storage_cursor_to_exclusive_start_key(cursor: &str) -> ExclusiveStartKey {
+    serde_json::from_str::<KeyAttributes>(cursor)
+        .map(ExclusiveStartKey::Key)
+        .unwrap_or_else(|_| ExclusiveStartKey::Token(cursor.to_string()))
 }
 
 fn dynamodb_cursor_to_key(

@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
-use analytics_api::IngestStreamRecordRequest;
+use analytics_api::{AnalyticsEngineAccess, IngestStreamRecordRequest};
 use analytics_contract::{AnalyticsManifest, PrivacyPolicy, StructuredQuery};
 use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
 use config::{AnalyticsCatalogBackend, RootConfig, load_optional_with_overrides};
@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 
 const ENV_CONFIG_PATH: &str = "AUX_ANALYTICS_CONFIG";
 const ENV_MANIFEST_PATH: &str = "AUX_ANALYTICS_MANIFEST";
@@ -21,6 +21,8 @@ const ENV_DUCKLAKE_DATA_PATH: &str = "AUX_ANALYTICS_DUCKLAKE_DATA_PATH";
 pub enum AnalyticsLambdaError {
     #[error("analytics engine error: {0}")]
     Engine(#[from] analytics_engine::AnalyticsEngineError),
+    #[error("analytics engine access error: {0}")]
+    EngineAccess(#[from] analytics_api::AnalyticsEngineAccessError),
     #[error("config error: {0}")]
     Config(#[from] config::ConfigError),
     #[error("io error: {0}")]
@@ -31,6 +33,8 @@ pub enum AnalyticsLambdaError {
     Schema(String),
     #[error("privacy policy error: {0}")]
     PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
+    #[error("query task failed: {0}")]
+    QueryTaskJoin(#[from] tokio::task::JoinError),
     #[error("validation error: {0}")]
     Validation(String),
 }
@@ -47,7 +51,7 @@ impl AnalyticsLambdaError {
 
 pub struct AnalyticsLambdaHandler {
     manifest: Arc<AnalyticsManifest>,
-    engine: Arc<Mutex<AnalyticsEngine>>,
+    engine: AnalyticsEngineAccess,
     privacy_policy: Option<Arc<PrivacyPolicy>>,
 }
 
@@ -61,7 +65,12 @@ impl AnalyticsLambdaHandler {
         let manifest = read_manifest(manifest_path.as_str())?;
         let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
         let backend = resolve_storage_backend_from_env(&root)?;
-        Self::new_with_privacy_policy(manifest, &backend, privacy_policy)
+        Self::new_with_privacy_policy_and_max_read_connections(
+            manifest,
+            &backend,
+            privacy_policy,
+            root.analytics.query.max_read_connections,
+        )
     }
 
     pub fn new(
@@ -72,7 +81,7 @@ impl AnalyticsLambdaHandler {
         engine.ensure_manifest(&manifest)?;
         Ok(Self {
             manifest: Arc::new(manifest),
-            engine: Arc::new(Mutex::new(engine)),
+            engine: AnalyticsEngineAccess::backend_aware(engine, backend.clone()),
             privacy_policy: None,
         })
     }
@@ -82,11 +91,29 @@ impl AnalyticsLambdaHandler {
         backend: &StorageBackend,
         privacy_policy: Option<Arc<PrivacyPolicy>>,
     ) -> Result<Self, AnalyticsLambdaError> {
+        Self::new_with_privacy_policy_and_max_read_connections(
+            manifest,
+            backend,
+            privacy_policy,
+            config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+        )
+    }
+
+    pub fn new_with_privacy_policy_and_max_read_connections(
+        manifest: AnalyticsManifest,
+        backend: &StorageBackend,
+        privacy_policy: Option<Arc<PrivacyPolicy>>,
+        max_read_connections: usize,
+    ) -> Result<Self, AnalyticsLambdaError> {
         let engine = AnalyticsEngine::connect(backend)?;
         engine.ensure_manifest(&manifest)?;
         Ok(Self {
             manifest: Arc::new(manifest),
-            engine: Arc::new(Mutex::new(engine)),
+            engine: AnalyticsEngineAccess::backend_aware_with_max_read_connections(
+                engine,
+                backend.clone(),
+                max_read_connections,
+            ),
             privacy_policy,
         })
     }
@@ -99,26 +126,43 @@ impl AnalyticsLambdaHandler {
                 table_count: self.manifest.tables.len(),
             })),
             AnalyticsLambdaEvent::UnscopedSqlQuery { sql } => {
-                let engine = self.engine.lock().await;
-                let rows = engine.query_unscoped_sql_json(sql.as_str())?;
+                let rows = self
+                    .engine
+                    .with_read(|engine| engine.query_unscoped_sql_json(sql.as_str()))
+                    .await??;
                 Ok(json!(QueryLambdaResponse { rows }))
             }
             AnalyticsLambdaEvent::UnscopedStructuredQuery { query } => {
-                let engine = self.engine.lock().await;
-                let rows = engine.query_unscoped_structured_json(self.manifest.as_ref(), &query)?;
+                let rows = self
+                    .engine
+                    .with_read(|engine| {
+                        engine.query_unscoped_structured_json(self.manifest.as_ref(), &query)
+                    })
+                    .await??;
                 Ok(json!(QueryLambdaResponse { rows }))
             }
             AnalyticsLambdaEvent::TenantQuery {
                 target_tenant_id,
                 query,
             } => {
-                let engine = self.engine.lock().await;
-                let rows = engine.query_tenant_structured_json(
-                    self.manifest.as_ref(),
-                    &query,
-                    target_tenant_id.as_str(),
-                )?;
+                let rows = self
+                    .engine
+                    .with_read(|engine| {
+                        engine.query_tenant_structured_json(
+                            self.manifest.as_ref(),
+                            &query,
+                            target_tenant_id.as_str(),
+                        )
+                    })
+                    .await??;
                 Ok(json!(QueryLambdaResponse { rows }))
+            }
+            AnalyticsLambdaEvent::TenantQueryBatch {
+                target_tenant_id,
+                queries,
+            } => {
+                let results = self.query_tenant_batch(target_tenant_id, queries).await?;
+                Ok(json!(QueryBatchLambdaResponse { results }))
             }
             AnalyticsLambdaEvent::Ingest {
                 analytics_table_name,
@@ -156,24 +200,70 @@ impl AnalyticsLambdaHandler {
         request: IngestStreamRecordRequest,
     ) -> Result<IngestOutcome, AnalyticsLambdaError> {
         let (record_key, record) = request.into_contract_record();
-        let engine = self.engine.lock().await;
         if let Some(policy) = self.privacy_policy.as_ref() {
-            return Ok(engine
-                .ingest_stream_record_with_privacy_policy(
+            return Ok(self
+                .engine
+                .with_write(|engine| {
+                    engine.ingest_stream_record_with_privacy_policy(
+                        self.manifest.as_ref(),
+                        analytics_table_name,
+                        record_key.as_bytes(),
+                        record,
+                        policy,
+                    )
+                })
+                .await?
+                .outcome);
+        }
+        Ok(self
+            .engine
+            .with_write(|engine| {
+                engine.ingest_stream_record(
                     self.manifest.as_ref(),
                     analytics_table_name,
                     record_key.as_bytes(),
                     record,
-                    policy,
-                )?
-                .outcome);
+                )
+            })
+            .await?)
+    }
+
+    async fn query_tenant_batch(
+        &self,
+        target_tenant_id: String,
+        queries: Vec<TenantQueryBatchItem>,
+    ) -> Result<Vec<QueryBatchLambdaResult>, AnalyticsLambdaError> {
+        let mut tasks = JoinSet::new();
+        for (index, query) in queries.into_iter().enumerate() {
+            let engine = self.engine.clone();
+            let manifest = Arc::clone(&self.manifest);
+            let target_tenant_id = target_tenant_id.clone();
+            tasks.spawn(async move {
+                let rows = engine
+                    .with_read(|engine| {
+                        engine.query_tenant_structured_json(
+                            manifest.as_ref(),
+                            &query.query,
+                            target_tenant_id.as_str(),
+                        )
+                    })
+                    .await??;
+                Ok::<_, AnalyticsLambdaError>((
+                    index,
+                    QueryBatchLambdaResult {
+                        name: query.name,
+                        rows,
+                    },
+                ))
+            });
         }
-        Ok(engine.ingest_stream_record(
-            self.manifest.as_ref(),
-            analytics_table_name,
-            record_key.as_bytes(),
-            record,
-        )?)
+
+        let mut results = Vec::with_capacity(tasks.len());
+        while let Some(joined) = tasks.join_next().await {
+            results.push(joined??);
+        }
+        results.sort_by_key(|(index, _)| *index);
+        Ok(results.into_iter().map(|(_, result)| result).collect())
     }
 }
 
@@ -200,6 +290,10 @@ pub enum AnalyticsLambdaEvent {
         target_tenant_id: String,
         query: StructuredQuery,
     },
+    TenantQueryBatch {
+        target_tenant_id: String,
+        queries: Vec<TenantQueryBatchItem>,
+    },
     Ingest {
         analytics_table_name: String,
         #[serde(flatten)]
@@ -220,6 +314,23 @@ pub struct InitResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct QueryLambdaResponse {
     pub rows: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TenantQueryBatchItem {
+    pub name: String,
+    pub query: StructuredQuery,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryBatchLambdaResult {
+    pub name: String,
+    pub rows: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryBatchLambdaResponse {
+    pub results: Vec<QueryBatchLambdaResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]

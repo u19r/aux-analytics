@@ -7,7 +7,7 @@ use crate::constants::{
     DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_LOG_LEVEL,
     DEFAULT_OBJECT_STORAGE_SCHEME, DEFAULT_POLL_INTERVAL_MS,
     DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL, DEFAULT_POLL_MAX_SHARDS,
-    DEFAULT_POLL_REQUEST_TIMEOUT_MS,
+    DEFAULT_POLL_REQUEST_TIMEOUT_MS, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -166,6 +166,9 @@ pub struct AnalyticsConfig {
     pub http: AnalyticsHttpConfig,
     #[serde(default)]
     #[schemars(default)]
+    pub query: AnalyticsQueryConfig,
+    #[serde(default)]
+    #[schemars(default)]
     pub source: AnalyticsSourceConfig,
     #[serde(default)]
     #[schemars(default)]
@@ -187,6 +190,26 @@ pub struct AnalyticsHttpConfig {
     #[serde(default = "default_true")]
     #[schemars(default = "default_true")]
     pub ingest_endpoint_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AnalyticsQueryConfig {
+    #[serde(default = "default_query_max_read_connections")]
+    #[schemars(default = "default_query_max_read_connections")]
+    pub max_read_connections: usize,
+}
+
+impl Default for AnalyticsQueryConfig {
+    fn default() -> Self {
+        Self {
+            max_read_connections: default_query_max_read_connections(),
+        }
+    }
+}
+
+fn default_query_max_read_connections() -> usize {
+    DEFAULT_QUERY_MAX_READ_CONNECTIONS
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

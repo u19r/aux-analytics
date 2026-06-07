@@ -205,12 +205,17 @@ async fn sweep_table(retention: &RetentionRuntime, app_state: &Arc<AppState>, ta
     loop {
         let batch_started = Instant::now();
         let deleted = {
-            let engine = app_state.engine.lock().await;
-            match engine.delete_expired_rows(
-                table_name,
-                i64::try_from(now_ms()).unwrap_or(i64::MAX),
-                retention.config.delete_batch_size,
-            ) {
+            match app_state
+                .engine
+                .with_write(|engine| {
+                    engine.delete_expired_rows(
+                        table_name,
+                        i64::try_from(now_ms()).unwrap_or(i64::MAX),
+                        retention.config.delete_batch_size,
+                    )
+                })
+                .await
+            {
                 Ok(deleted) => deleted,
                 Err(error) => {
                     outcome = "error";
@@ -232,10 +237,13 @@ async fn sweep_table(retention: &RetentionRuntime, app_state: &Arc<AppState>, ta
         ))
         .await;
     }
-    let missing = {
-        let engine = app_state.engine.lock().await;
-        engine.missing_retention_count(table_name).unwrap_or(0)
-    };
+    let missing = app_state
+        .engine
+        .with_read(|engine| engine.missing_retention_count(table_name))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(0);
     metrics::gauge!(RETENTION_MISSING_ROWS_METRIC, "table" => table_name.to_string())
         .set(u64_to_f64(missing));
     metrics::counter!(RETENTION_SWEEPS_TOTAL_METRIC, "table" => table_name.to_string(), "outcome" => outcome).increment(1);

@@ -8,6 +8,7 @@ use crate::{PollerConfig, facade::storage_stream_record_from_facade, planning::t
 #[test]
 fn storage_facade_record_converts_to_contract_record() {
     let record = storage_types::StreamRecord {
+        cursor: None,
         keys: HashMap::new(),
         sequence_number: "1".to_string(),
         old_image: None,

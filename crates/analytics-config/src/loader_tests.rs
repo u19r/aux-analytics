@@ -1,8 +1,11 @@
 use serde_json::json;
 
-use crate::loader::{
-    apply_override, expand_env_placeholders, load_optional_with_overrides, merge_json,
-    parse_override_value,
+use crate::{
+    DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+    loader::{
+        apply_override, expand_env_placeholders, load_optional_with_overrides, merge_json,
+        parse_override_value,
+    },
 };
 
 #[test]
@@ -56,6 +59,30 @@ fn given_override_path_when_applied_then_nested_config_value_is_replaced() {
         root["analytics"]["http"]["ingest_endpoint_enabled"],
         json!(false)
     );
+}
+
+#[test]
+fn given_no_query_config_when_loaded_then_read_connection_default_is_used() {
+    let config = load_optional_with_overrides(None, &[]).expect("config");
+
+    assert_eq!(
+        config.root.analytics.query.max_read_connections,
+        DEFAULT_QUERY_MAX_READ_CONNECTIONS
+    );
+}
+
+#[test]
+fn given_query_read_connection_override_when_loaded_then_value_is_used() {
+    let config = load_optional_with_overrides(
+        None,
+        &[(
+            "analytics.query.max_read_connections".to_string(),
+            "128".to_string(),
+        )],
+    )
+    .expect("config");
+
+    assert_eq!(config.root.analytics.query.max_read_connections, 128);
 }
 
 #[test]

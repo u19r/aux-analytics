@@ -2,7 +2,7 @@ use analytics_operations::{
     CheckRowSource, CurrentRowPageRequest, CurrentRowStreamOrder, ProductionCurrentRowPageReader,
     ProjectionBackedCheckRows,
 };
-use storage_types::AttributeValue;
+use storage_types::{AttributeValue, ExclusiveStartKey};
 
 use crate::{
     AuxStorageCurrentRowPageReader,
@@ -29,11 +29,17 @@ fn given_aux_storage_current_row_reader_when_page_requested_then_scan_shape_is_p
 
     assert_eq!(page.rows[0].key, "u1");
     assert_eq!(page.rows[0].source_position, 9);
-    assert_eq!(page.next_cursor, Some("next-page".to_string()));
+    assert_eq!(
+        page.next_cursor,
+        Some(r#"{"user_id":{"S":"next-page"}}"#.to_string())
+    );
     let request = &client.requests.borrow()[0];
     assert_eq!(request.table_name, "users");
     assert_eq!(request.limit, 25);
-    assert_eq!(request.exclusive_start_key, Some("start-page".to_string()));
+    assert!(matches!(
+        request.exclusive_start_key.as_ref(),
+        Some(ExclusiveStartKey::Token(cursor)) if cursor == "start-page"
+    ));
     assert_eq!(
         request.projection_expression,
         "__source_position, contains_private_data, email, org_id, user_id"
@@ -61,6 +67,32 @@ fn given_aux_storage_current_row_reader_when_private_string_flag_returned_then_b
         .unwrap();
 
     assert!(page.rows[0].contains_private_data);
+}
+
+#[test]
+fn given_aux_storage_current_row_reader_when_key_cursor_supplied_then_request_uses_key_boundary() {
+    let client = RecordingClient::new(vec![scan_response(
+        vec![item("u1", "a@example.test", "org-a", "9", false)],
+        None,
+    )]);
+    let reader = AuxStorageCurrentRowPageReader::new(&client);
+
+    reader
+        .current_row_page(&CurrentRowPageRequest {
+            projection: projection(),
+            cursor: Some(r#"{"user_id":{"S":"start-page"}}"#.to_string()),
+            page_size: 25,
+        })
+        .unwrap();
+
+    let request = &client.requests.borrow()[0];
+    let Some(ExclusiveStartKey::Key(key)) = request.exclusive_start_key.as_ref() else {
+        panic!("expected aux-storage key cursor");
+    };
+    assert_eq!(
+        key.get("user_id"),
+        Some(&AttributeValue::S("start-page".to_string()))
+    );
 }
 
 #[test]

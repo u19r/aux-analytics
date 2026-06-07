@@ -4,6 +4,7 @@ mod loader;
 mod model;
 mod resolved;
 
+pub use constants::DEFAULT_QUERY_MAX_READ_CONNECTIONS;
 pub use error::{ConfigError, ConfigErrorDebug, ConfigErrorKind};
 pub use loader::{Config, load_optional_with_overrides};
 pub use model::*;

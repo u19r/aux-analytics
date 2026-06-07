@@ -1,9 +1,11 @@
+mod engine_access;
 mod openapi;
 mod request_validation;
 pub mod retention;
 mod router;
 mod types;
 
+pub use engine_access::{AnalyticsEngineAccess, AnalyticsEngineAccessError};
 pub use openapi::{build as build_openapi, build_json as build_openapi_json};
 pub use router::{
     EndpointConfig, MetricsEndpointConfig, PrometheusMetricsEndpointConfig, router,

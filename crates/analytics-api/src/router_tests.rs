@@ -233,6 +233,100 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
 }
 
 #[tokio::test]
+async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
+    let router = test_router();
+
+    let response = post_json(
+        router.clone(),
+        "/ingest/users",
+        json!({
+            "record_key": "user-1",
+            "record": {
+                "Keys": storage_key("USER", "user-1"),
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", "typed@example.com", "org-a"),
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = post_json(
+        router.clone(),
+        "/tenant-query-batch",
+        json!({
+            "target_tenant_id": "tenant_01",
+            "queries": [
+                {
+                    "name": "total_users",
+                    "query": StructuredQuery {
+                        analytics_table_name: "users".to_string(),
+                        select: vec![QuerySelect::Count {
+                            alias: "count".to_string(),
+                        }],
+                        filters: Vec::new(),
+                        group_by: Vec::new(),
+                        order_by: Vec::new(),
+                        limit: Some(1),
+                    }
+                },
+                {
+                    "name": "matching_users",
+                    "query": StructuredQuery {
+                        analytics_table_name: "users".to_string(),
+                        select: vec![QuerySelect::Column {
+                            column_name: "email".to_string(),
+                            alias: None,
+                        }],
+                        filters: vec![QueryPredicate::Eq {
+                            expression: QueryExpression::Column {
+                                column_name: "org_id".to_string(),
+                            },
+                            value: json!("org-a"),
+                        }],
+                        group_by: Vec::new(),
+                        order_by: Vec::new(),
+                        limit: Some(1),
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+    let status = response.status();
+    let body = response_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["results"][0]["name"], "total_users");
+    assert_eq!(body["results"][0]["rows"][0]["count"], 1);
+    assert_eq!(body["results"][1]["name"], "matching_users");
+    assert_eq!(body["results"][1]["rows"][0]["email"], "typed@example.com");
+
+    let response = post_json(
+        router,
+        "/tenant-query-batch",
+        json!({
+            "target_tenant_id": "tenant_02",
+            "queries": [{
+                "name": "total_users",
+                "query": StructuredQuery {
+                    analytics_table_name: "users".to_string(),
+                    select: vec![QuerySelect::Count {
+                        alias: "count".to_string(),
+                    }],
+                    filters: Vec::new(),
+                    group_by: Vec::new(),
+                    order_by: Vec::new(),
+                    limit: Some(1),
+                }
+            }]
+        }),
+    )
+    .await;
+    let body = response_json(response).await;
+    assert_eq!(body["results"][0]["rows"][0]["count"], 0);
+}
+
+#[tokio::test]
 async fn ingest_endpoint_applies_configured_privacy_policy() {
     let router = test_router_with_privacy_policy(
         PrivacyPolicy::new("privacy-v1")
@@ -530,6 +624,10 @@ async fn openapi_endpoint_describes_analytics_routes() {
         body["paths"]["/tenant-query"]["post"]["tags"][0],
         "Analytics"
     );
+    assert_eq!(
+        body["paths"]["/tenant-query-batch"]["post"]["tags"][0],
+        "Analytics"
+    );
     assert_eq!(body["paths"]["/tables"]["post"]["tags"][0], "Analytics");
     assert_eq!(
         body["paths"]["/ingest/{analytics_table_name}"]["post"]["tags"][0],
@@ -542,6 +640,8 @@ async fn openapi_endpoint_describes_analytics_routes() {
     assert!(body["components"]["schemas"]["UnscopedSqlQueryRequest"].is_object());
     assert!(body["components"]["schemas"]["UnscopedStructuredQueryRequest"].is_object());
     assert!(body["components"]["schemas"]["TenantQueryRequest"].is_object());
+    assert!(body["components"]["schemas"]["TenantQueryBatchRequest"].is_object());
+    assert!(body["components"]["schemas"]["QueryBatchResponse"].is_object());
     assert!(body["components"]["schemas"]["StructuredQuery"].is_object());
     assert!(body["components"]["schemas"]["IngestStreamRecordRequest"].is_object());
     assert!(body["components"]["schemas"]["IngestStreamRecordBatchRequest"].is_object());

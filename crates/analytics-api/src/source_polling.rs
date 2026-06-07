@@ -32,10 +32,10 @@ pub(crate) async fn spawn_source_polling(
     }
     *app_state.source_health.write().await = SourceHealth::starting(source_table_count);
     tracing::info!("analytics source checkpoint load starting");
-    let checkpoints = {
-        let engine = app_state.engine.lock().await;
-        engine.load_source_checkpoints()?
-    };
+    let checkpoints = app_state
+        .engine
+        .with_read(|engine| engine.load_source_checkpoints())
+        .await??;
     tracing::info!(
         checkpoint_count = checkpoints.len(),
         "analytics source checkpoint load complete"
@@ -171,17 +171,20 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
         } else {
             None
         };
-        let engine = app_state.engine.lock().await;
         let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
-            engine
-                .ingest_stream_record_with_privacy_policy_and_retention(
-                    &manifest,
-                    record.analytics_table_name.as_str(),
-                    record.record_key.as_bytes(),
-                    record.record.clone(),
-                    policy,
-                    retention.as_ref(),
-                )
+            app_state
+                .engine
+                .with_write(|engine| {
+                    engine.ingest_stream_record_with_privacy_policy_and_retention(
+                        &manifest,
+                        record.analytics_table_name.as_str(),
+                        record.record_key.as_bytes(),
+                        record.record.clone(),
+                        policy,
+                        retention.as_ref(),
+                    )
+                })
+                .await
                 .map(|outcome| {
                     metrics::counter!(
                         SOURCE_PRIVACY_DROPS_TOTAL_METRIC,
@@ -190,14 +193,18 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
                     .increment(outcome.dropped_fields);
                 })
         } else {
-            engine
-                .ingest_stream_record_with_retention(
-                    &manifest,
-                    record.analytics_table_name.as_str(),
-                    record.record_key.as_bytes(),
-                    record.record.clone(),
-                    retention.as_ref(),
-                )
+            app_state
+                .engine
+                .with_write(|engine| {
+                    engine.ingest_stream_record_with_retention(
+                        &manifest,
+                        record.analytics_table_name.as_str(),
+                        record.record_key.as_bytes(),
+                        record.record.clone(),
+                        retention.as_ref(),
+                    )
+                })
+                .await
                 .map(|_| ())
         };
         if let Err(error) = ingest_result {
@@ -216,13 +223,18 @@ async fn handle_source_batch(app_state: &Arc<AppState>, batch: &PollBatch) -> So
 
     let mut checkpoint_results = Vec::new();
     if ingest_results.iter().all(|result| *result) {
-        let engine = app_state.engine.lock().await;
         for checkpoint in persistable_checkpoints(&batch.checkpoints) {
-            if let Err(error) = engine.save_source_checkpoint(&analytics_engine::SourceCheckpoint {
-                source_table_name: checkpoint.source_table_name.clone(),
-                shard_id: checkpoint.shard_id.clone(),
-                position: checkpoint.position.clone(),
-            }) {
+            if let Err(error) = app_state
+                .engine
+                .with_write(|engine| {
+                    engine.save_source_checkpoint(&analytics_engine::SourceCheckpoint {
+                        source_table_name: checkpoint.source_table_name.clone(),
+                        shard_id: checkpoint.shard_id.clone(),
+                        position: checkpoint.position.clone(),
+                    })
+                })
+                .await
+            {
                 checkpoint_results.push(false);
                 metrics::counter!(SOURCE_CHECKPOINT_ERRORS_TOTAL_METRIC).increment(1);
                 tracing::warn!(error = %error, "failed to save analytics source checkpoint");

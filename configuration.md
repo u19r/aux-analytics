@@ -27,6 +27,7 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | --- | --- | --- |
 | `analytics.manifest_path` | none | Path to the table manifest JSON. Can be overridden by `--manifest` or `AUX_ANALYTICS_MANIFEST`. |
 | `analytics.http.ingest_endpoint_enabled` | `true` | Enables the direct HTTP `/ingest/{analytics_table_name}` endpoint. Set to `false` for standalone polling deployments that should only ingest from configured source streams. |
+| `analytics.query.max_read_connections` | `64` | Maximum dedicated analytical read connections for file-backed DuckDB and DuckLake backends. In-memory DuckDB uses the shared writer connection because separate in-memory connections do not share data. |
 | `analytics.source.stream_type` | none | Global stream format for source tables. Values: `storage_stream`, `aux_storage`. |
 | `analytics.source.endpoint_url` | none | Source endpoint override. Required for `aux_storage` polling, optional for AWS-compatible standard stream endpoints. |
 | `analytics.source.region` | AWS SDK default | Region for standard stream polling. |

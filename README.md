@@ -61,6 +61,9 @@ can own domain table registration while this repo stays agnostic.
     "http": {
       "ingest_endpoint_enabled": false
     },
+    "query": {
+      "max_read_connections": 64
+    },
     "source": {
       "stream_type": "storage_stream",
       "region": "us-east-1",

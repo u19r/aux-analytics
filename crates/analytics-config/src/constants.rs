@@ -6,3 +6,4 @@ pub(crate) const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
 pub(crate) const DEFAULT_POLL_MAX_SHARDS: usize = 16;
 pub(crate) const DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL: usize = 160;
 pub(crate) const DEFAULT_POLL_REQUEST_TIMEOUT_MS: u64 = 5_000;
+pub const DEFAULT_QUERY_MAX_READ_CONNECTIONS: usize = 64;

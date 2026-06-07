@@ -3,16 +3,18 @@ use std::{path::PathBuf, sync::Arc};
 use analytics_contract::{
     AnalyticsManifest, PrivacyPolicy, StorageItem, StorageStreamRecord, StructuredQuery,
 };
-use analytics_engine::AnalyticsEngine;
+use analytics_engine::{AnalyticsEngine, StorageBackend};
 use analytics_operations::{OperationEvent, StoredOperation};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use utoipa::ToSchema;
+
+use crate::AnalyticsEngineAccess;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub engine: Arc<Mutex<AnalyticsEngine>>,
+    pub engine: AnalyticsEngineAccess,
     pub manifest: Arc<RwLock<AnalyticsManifest>>,
     pub source_health: Arc<RwLock<SourceHealth>>,
     pub retention: Option<Arc<crate::retention::RetentionRuntime>>,
@@ -116,7 +118,43 @@ impl AppState {
     #[must_use]
     pub fn new(engine: AnalyticsEngine, manifest: AnalyticsManifest) -> Self {
         Self {
-            engine: Arc::new(Mutex::new(engine)),
+            engine: AnalyticsEngineAccess::shared(engine),
+            manifest: Arc::new(RwLock::new(manifest)),
+            source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
+            retention: None,
+            privacy_policy: None,
+            retention_health: Arc::new(RwLock::new(RetentionHealth::disabled())),
+            operation_store_path: None,
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_backend(
+        engine: AnalyticsEngine,
+        manifest: AnalyticsManifest,
+        backend: StorageBackend,
+    ) -> Self {
+        Self::new_with_backend_and_max_read_connections(
+            engine,
+            manifest,
+            backend,
+            config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_backend_and_max_read_connections(
+        engine: AnalyticsEngine,
+        manifest: AnalyticsManifest,
+        backend: StorageBackend,
+        max_read_connections: usize,
+    ) -> Self {
+        Self {
+            engine: AnalyticsEngineAccess::backend_aware_with_max_read_connections(
+                engine,
+                backend,
+                max_read_connections,
+            ),
             manifest: Arc::new(RwLock::new(manifest)),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention: None,
@@ -133,7 +171,46 @@ impl AppState {
         retention: Option<Arc<crate::retention::RetentionRuntime>>,
     ) -> Self {
         Self {
-            engine: Arc::new(Mutex::new(engine)),
+            engine: AnalyticsEngineAccess::shared(engine),
+            manifest: Arc::new(RwLock::new(manifest)),
+            source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
+            retention,
+            privacy_policy: None,
+            retention_health: Arc::new(RwLock::new(RetentionHealth::disabled())),
+            operation_store_path: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_retention_and_backend(
+        engine: AnalyticsEngine,
+        manifest: AnalyticsManifest,
+        retention: Option<Arc<crate::retention::RetentionRuntime>>,
+        backend: StorageBackend,
+    ) -> Self {
+        Self::with_retention_backend_and_max_read_connections(
+            engine,
+            manifest,
+            retention,
+            backend,
+            config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+        )
+    }
+
+    #[must_use]
+    pub fn with_retention_backend_and_max_read_connections(
+        engine: AnalyticsEngine,
+        manifest: AnalyticsManifest,
+        retention: Option<Arc<crate::retention::RetentionRuntime>>,
+        backend: StorageBackend,
+        max_read_connections: usize,
+    ) -> Self {
+        Self {
+            engine: AnalyticsEngineAccess::backend_aware_with_max_read_connections(
+                engine,
+                backend,
+                max_read_connections,
+            ),
             manifest: Arc::new(RwLock::new(manifest)),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention,
@@ -474,6 +551,53 @@ pub(crate) struct TenantQueryRequest {
     pub query: StructuredQuery,
 }
 
+/// Named tenant-scoped structured query for batch execution.
+#[derive(Debug, Clone, Deserialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "name": "total_users",
+    "query": {
+        "analytics_table_name": "users",
+        "select": [{"kind": "count", "alias": "count"}],
+        "filters": [],
+        "group_by": [],
+        "order_by": [],
+        "limit": 1
+    }
+}))]
+pub(crate) struct TenantQueryBatchItem {
+    /// Caller-owned stable name used to correlate results.
+    #[schema(min_length = 1, max_length = 255, example = "total_users")]
+    pub name: String,
+    /// Structured query tree compiled by the analytics engine.
+    pub query: StructuredQuery,
+}
+
+/// Tenant-scoped structured query batch request.
+#[derive(Debug, Clone, Deserialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "target_tenant_id": "tenant_01",
+    "queries": [{
+        "name": "total_users",
+        "query": {
+            "analytics_table_name": "users",
+            "select": [{"kind": "count", "alias": "count"}],
+            "filters": [],
+            "group_by": [],
+            "order_by": [],
+            "limit": 1
+        }
+    }]
+}))]
+pub(crate) struct TenantQueryBatchRequest {
+    /// Tenant id that each query is authorized to read. The API injects this as
+    /// an engine-owned tenant predicate.
+    #[schema(min_length = 1, max_length = 255, example = "tenant_01")]
+    pub target_tenant_id: String,
+    /// Named structured queries to execute against the same tenant scope.
+    #[schema(min_items = 1)]
+    pub queries: Vec<TenantQueryBatchItem>,
+}
+
 /// Query result rows as JSON objects.
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[schema(example = json!({
@@ -483,6 +607,32 @@ pub(crate) struct QueryResponse {
     /// Result rows returned by `DuckDB`.
     #[schema(min_items = 0, example = json!([{"email": "ada@example.com", "org_id": "org-a"}]))]
     pub rows: Vec<serde_json::Value>,
+}
+
+/// Named query result rows.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "name": "total_users",
+    "rows": [{"count": 42}]
+}))]
+pub(crate) struct QueryBatchResult {
+    /// Caller-owned stable name from the batch request.
+    #[schema(example = "total_users")]
+    pub name: String,
+    /// Result rows returned by `DuckDB`.
+    #[schema(min_items = 0, example = json!([{"count": 42}]))]
+    pub rows: Vec<serde_json::Value>,
+}
+
+/// Batch query result rows as JSON objects.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[schema(example = json!({
+    "results": [{"name": "total_users", "rows": [{"count": 42}]}]
+}))]
+pub(crate) struct QueryBatchResponse {
+    /// Results in request order.
+    #[schema(min_items = 0)]
+    pub results: Vec<QueryBatchResult>,
 }
 
 /// Basic service health response.
