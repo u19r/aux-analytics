@@ -9,7 +9,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { path = "../aux-common/crates/alloc-counter" }
+alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "02585330401d91ac7ef296f49192aabd6cbf500e" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }
@@ -56,20 +56,6 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "jso
 url = "2.5.7"
 utoipa = { version = "5.5.0", features = ["axum_extras"] }
 
-[profile.release]
-opt-level = "z"
-codegen-units = 1
-overflow-checks = true
-panic = "unwind"
-lto = "fat"
-strip = "symbols"
-
-[profile.fast-release]
-inherits = "release"
-opt-level = 1
-codegen-units = 256
-lto = false
-
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
@@ -86,3 +72,17 @@ dead_code = "warn"
 unused_imports = "warn"
 unused_variables = "warn"
 unused_must_use = "warn"
+
+[profile.release]
+opt-level = "z"
+codegen-units = 1
+overflow-checks = true
+panic = "unwind"
+lto = "fat"
+strip = "symbols"
+
+[profile.fast-release]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+lto = false

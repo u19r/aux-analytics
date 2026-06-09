@@ -60,6 +60,12 @@
           "$ref": "#/$defs/AnalyticsPrivacyConfig",
           "default": {}
         },
+        "query": {
+          "$ref": "#/$defs/AnalyticsQueryConfig",
+          "default": {
+            "max_read_connections": 64
+          }
+        },
         "retention": {
           "$ref": "#/$defs/AnalyticsRetentionConfig",
           "default": {
@@ -157,6 +163,18 @@
             "string",
             "null"
           ]
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsQueryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_read_connections": {
+          "default": 64,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "type": "object"
@@ -698,6 +716,9 @@
           "scheme": "s3"
         },
         "privacy": {},
+        "query": {
+          "max_read_connections": 64
+        },
         "retention": {
           "delete_batch_pause_ms": 250,
           "delete_batch_size": 500,
