@@ -119,6 +119,8 @@ fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCred
         }
     } else if credentials.instance_keys == Some(true) {
         options.push("PROVIDER credential_chain".to_string());
+        options.push("CHAIN 'instance'".to_string());
+        options.push("VALIDATION 'none'".to_string());
     }
 }
 
