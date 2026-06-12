@@ -601,19 +601,28 @@ pub(crate) struct TenantQueryBatchRequest {
 /// Query result rows as JSON objects.
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[schema(example = json!({
-    "rows": [{"email": "ada@example.com", "org_id": "org-a"}]
+    "rows": [{"email": "ada@example.com", "org_id": "org-a"}],
+    "columns": [{"name": "email", "value_type": "string", "nullable": false}],
+    "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
+    "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
 pub(crate) struct QueryResponse {
     /// Result rows returned by `DuckDB`.
     #[schema(min_items = 0, example = json!([{"email": "ada@example.com", "org_id": "org-a"}]))]
     pub rows: Vec<serde_json::Value>,
+    pub columns: Vec<QueryResultColumn>,
+    pub execution: QueryExecutionMetadata,
+    pub source_watermark: QuerySourceWatermark,
 }
 
 /// Named query result rows.
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[schema(example = json!({
     "name": "total_users",
-    "rows": [{"count": 42}]
+    "rows": [{"count": 42}],
+    "columns": [{"name": "count", "value_type": "i64", "nullable": false}],
+    "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
+    "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
 pub(crate) struct QueryBatchResult {
     /// Caller-owned stable name from the batch request.
@@ -622,6 +631,46 @@ pub(crate) struct QueryBatchResult {
     /// Result rows returned by `DuckDB`.
     #[schema(min_items = 0, example = json!([{"count": 42}]))]
     pub rows: Vec<serde_json::Value>,
+    pub columns: Vec<QueryResultColumn>,
+    pub execution: QueryExecutionMetadata,
+    pub source_watermark: QuerySourceWatermark,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct QueryResultColumn {
+    pub name: String,
+    pub value_type: QueryResultValueType,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum QueryResultValueType {
+    Boolean,
+    String,
+    I64,
+    Decimal,
+    F64,
+    Json,
+    TimestampMs,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct QueryExecutionMetadata {
+    pub query_hash: String,
+    pub row_count: u64,
+    pub truncated: bool,
+    pub tables: Vec<String>,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct QuerySourceWatermark {
+    pub max_occurred_at_ms: Option<i64>,
+    pub max_ingested_at_ms: Option<i64>,
 }
 
 /// Batch query result rows as JSON objects.

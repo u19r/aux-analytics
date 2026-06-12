@@ -949,14 +949,18 @@ fn seeded_structured_query_engine() -> (AnalyticsEngine, AnalyticsManifest, Stru
     transaction.commit().unwrap();
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: (0..4)
             .map(|index| QuerySelect::Column {
+                table_alias: None,
                 column_name: format!("column_{index:02}"),
                 alias: Some(format!("c_{index:02}")),
             })
             .collect(),
         filters: vec![QueryPredicate::Eq {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "tenant_id".to_string(),
             },
             value: serde_json::Value::String("tenant_03".to_string()),
@@ -964,6 +968,7 @@ fn seeded_structured_query_engine() -> (AnalyticsEngine, AnalyticsManifest, Stru
         group_by: Vec::new(),
         order_by: vec![QueryOrder {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "column_00".to_string(),
             },
             direction: None,
@@ -1117,20 +1122,26 @@ fn table_registration(count: usize) -> TableRegistration {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }
 }
 
 fn structured_query(count: usize) -> StructuredQuery {
     StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: (0..count)
             .map(|index| QuerySelect::Column {
+                table_alias: None,
                 column_name: format!("column_{index:02}"),
                 alias: Some(format!("c_{index:02}")),
             })
             .collect(),
         filters: vec![QueryPredicate::Eq {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "tenant_id".to_string(),
             },
             value: serde_json::Value::String("tenant_a".to_string()),
@@ -1138,6 +1149,7 @@ fn structured_query(count: usize) -> StructuredQuery {
         group_by: Vec::new(),
         order_by: vec![QueryOrder {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "column_00".to_string(),
             },
             direction: None,

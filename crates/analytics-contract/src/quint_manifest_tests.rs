@@ -148,6 +148,10 @@ impl ManifestDriver {
                 ManifestValidationError::InvalidRetentionPeriod { .. } => {
                     ValidationResult::InvalidRetentionPeriod
                 }
+                ManifestValidationError::GlobalReferenceHasTenantScope { .. }
+                | ManifestValidationError::InvalidJoinPolicy { .. } => {
+                    ValidationResult::UnknownLayoutColumn
+                }
             },
         );
     }
@@ -208,6 +212,8 @@ fn base_table(source_table_name: &str, analytics_table_name: &str) -> TableRegis
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }
 }
 

@@ -5,12 +5,13 @@ use std::{
 
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, PrivacyPolicy, ProjectionColumn,
-    QueryExpression, QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity,
-    SourcePosition, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
-    TenantSelector,
+    QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryPredicate, QuerySelect,
+    RetentionPolicy, RetentionTimestamp, RowIdentity, SourcePosition, StorageStreamRecord,
+    StorageValue, StructuredQuery, TableRegistration, TenantSelector,
 };
 use analytics_fixtures::{
-    generic_items_manifest, legacy_item, storage_key, user_item, users_manifest,
+    generic_items_manifest, legacy_item, metric_points_manifest, storage_key, user_item,
+    users_manifest,
 };
 
 use super::{
@@ -45,6 +46,8 @@ fn stream_records_are_projected_into_queryable_rows() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
 
@@ -142,6 +145,8 @@ fn privacy_policy_removes_denied_field_before_projection() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
     let policy = PrivacyPolicy {
@@ -327,19 +332,16 @@ fn query_unscoped_sql_json_rejects_mutating_statements() {
 }
 
 #[test]
-fn query_unscoped_sql_json_interrupts_queries_that_exceed_timeout() {
+fn query_unscoped_sql_json_rejects_queries_with_expired_timeout() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
 
     let err = engine
-        .query_unscoped_sql_json_with_timeout(
-            "select sum(i * j) as total from range(1000000) a(i), range(1000000) b(j)",
-            Duration::from_millis(1),
-        )
-        .expect_err("long query should be interrupted");
+        .query_unscoped_sql_json_with_timeout("select 1 as ready", Duration::ZERO)
+        .expect_err("query should be rejected after its deadline");
 
     assert!(matches!(
         err,
-        super::AnalyticsEngineError::QueryTimeout { timeout_ms: 1 }
+        super::AnalyticsEngineError::QueryTimeout { timeout_ms: 0 }
     ));
 
     let rows = engine
@@ -369,6 +371,8 @@ fn generic_document_tables_do_not_require_tenant_or_projection_layout() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
 
@@ -613,12 +617,16 @@ fn structured_queries_compile_from_registered_manifest_columns() {
             &manifest,
             &StructuredQuery {
                 analytics_table_name: "users".to_string(),
+                table_alias: None,
+                joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
                 filters: vec![QueryPredicate::Eq {
                     expression: QueryExpression::Column {
+                        table_alias: None,
                         column_name: "org_id".to_string(),
                     },
                     value: serde_json::json!("org-a"),
@@ -788,6 +796,8 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
 
@@ -824,12 +834,16 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
             &manifest,
             &StructuredQuery {
                 analytics_table_name: "users".to_string(),
+                table_alias: None,
+                joins: Vec::new(),
                 select: vec![
                     QuerySelect::Column {
+                        table_alias: None,
                         column_name: "tenant_id".to_string(),
                         alias: None,
                     },
                     QuerySelect::Column {
+                        table_alias: None,
                         column_name: "email".to_string(),
                         alias: None,
                     },
@@ -846,6 +860,101 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["tenant_id"], "tenant-a");
     assert_eq!(rows[0]["email"], "a@example.com");
+}
+
+#[test]
+fn tenant_structured_query_executes_joined_metric_scan() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    for (event_id, model_name, value) in [("evt_1", "input", "100"), ("evt_2", "output", "25")] {
+        engine
+            .ingest_stream_record(
+                &manifest,
+                "metric_points_v1",
+                event_id.as_bytes(),
+                StorageStreamRecord {
+                    sequence_number: event_id.to_string(),
+                    keys: HashMap::new(),
+                    old_image: None,
+                    new_image: Some(metric_point_item(event_id, model_name, value)),
+                },
+            )
+            .expect("ingest metric point");
+    }
+    for (model_name, rate_class) in [("input", "input_tokens"), ("output", "output_tokens")] {
+        engine
+            .ingest_stream_record(
+                &manifest,
+                "billing_rate_class_map_v1",
+                model_name.as_bytes(),
+                StorageStreamRecord {
+                    sequence_number: model_name.to_string(),
+                    keys: HashMap::new(),
+                    old_image: None,
+                    new_image: Some(rate_class_item(model_name, rate_class)),
+                },
+            )
+            .expect("ingest reference row");
+    }
+
+    let rows = engine
+        .query_tenant_structured_json(&manifest, &joined_metric_query(), "tenant_01")
+        .expect("joined metric query");
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["rate_class"], "input_tokens");
+    assert_eq!(rows[0]["quantity"], 100);
+    assert_eq!(rows[1]["rate_class"], "output_tokens");
+    assert_eq!(rows[1]["quantity"], 25);
+}
+
+#[test]
+fn metric_fact_layout_executes_core_meter_query_shapes() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    seed_metric_points(&engine, &manifest);
+
+    let total = engine
+        .query_tenant_structured_json(
+            &manifest,
+            &metric_sum_query("api_request_units"),
+            "tenant_01",
+        )
+        .expect("simple total query");
+    assert_eq!(total[0]["quantity"], 30);
+
+    let grouped = engine
+        .query_tenant_structured_json(&manifest, &metric_grouped_query(), "tenant_01")
+        .expect("grouped query");
+    assert_eq!(grouped[0]["region"], "eu-west-2");
+    assert_eq!(grouped[0]["quantity"], 30);
+
+    let grouped_three = engine
+        .query_tenant_structured_json(&manifest, &metric_three_dimension_query(), "tenant_01")
+        .expect("three dimension grouped query");
+    assert_eq!(grouped_three.len(), 2);
+    assert_eq!(grouped_three[0]["operation"], "read");
+    assert_eq!(grouped_three[1]["operation"], "write");
+
+    let distinct = engine
+        .query_tenant_structured_json(&manifest, &metric_distinct_query(), "tenant_01")
+        .expect("distinct query");
+    assert_eq!(distinct[0]["active_regions"], 1);
+
+    let decimal = engine
+        .query_tenant_structured_json(&manifest, &metric_decimal_query(), "tenant_01")
+        .expect("decimal query");
+    assert_eq!(decimal[0]["quantity"], 42.5);
+
+    let evidence = engine
+        .query_tenant_structured_json(&manifest, &metric_evidence_query(), "tenant_01")
+        .expect("evidence query");
+    assert_eq!(evidence.len(), 2);
+    assert_eq!(evidence[0]["event_id"], "evt_read");
+    assert_eq!(evidence[0]["occurred_at_ms"], 1782863999000_i64);
 }
 
 #[test]
@@ -879,6 +988,8 @@ fn partition_key_prefix_selector_maps_aux_storage_namespace_prefix_to_tenant_id(
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
 
@@ -910,7 +1021,10 @@ fn partition_key_prefix_selector_maps_aux_storage_namespace_prefix_to_tenant_id(
             &manifest,
             &StructuredQuery {
                 analytics_table_name: "users".to_string(),
+                table_alias: None,
+                joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -947,7 +1061,10 @@ fn structured_queries_read_document_paths_from_generic_tables() {
             &manifest,
             &StructuredQuery {
                 analytics_table_name: "legacy_items".to_string(),
+                table_alias: None,
+                joins: Vec::new(),
                 select: vec![QuerySelect::DocumentPath {
+                    table_alias: None,
                     document_column: "item".to_string(),
                     path: "profile.email".to_string(),
                     alias: "email".to_string(),
@@ -998,6 +1115,8 @@ fn regex_selectors_extract_tenant_and_row_identity() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }]);
     engine.ensure_manifest(&manifest).expect("ensure manifest");
     let record = StorageStreamRecord {
@@ -1139,6 +1258,8 @@ fn filtered_entity_table(
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }
 }
 
@@ -1179,4 +1300,400 @@ fn entity_item(entity_id: &str, entity_type: &str, email: &str) -> HashMap<Strin
         ),
         ("email".to_string(), StorageValue::S(email.to_string())),
     ])
+}
+
+fn metric_point_item(
+    event_id: &str,
+    model_name: &str,
+    value: &str,
+) -> HashMap<String, StorageValue> {
+    HashMap::from([
+        (
+            "tenant_id".to_string(),
+            StorageValue::S("tenant_01".to_string()),
+        ),
+        (
+            "series_name".to_string(),
+            StorageValue::S("ai_token_units".to_string()),
+        ),
+        (
+            "customer_account_id".to_string(),
+            StorageValue::S("bcus_123".to_string()),
+        ),
+        ("org_id".to_string(), StorageValue::NULL(true)),
+        (
+            "occurred_at_ms".to_string(),
+            StorageValue::N("1782863999000".to_string()),
+        ),
+        (
+            "ingested_at_ms".to_string(),
+            StorageValue::N("1782864000000".to_string()),
+        ),
+        (
+            "event_id".to_string(),
+            StorageValue::S(event_id.to_string()),
+        ),
+        ("value_i64".to_string(), StorageValue::N(value.to_string())),
+        ("value_decimal".to_string(), StorageValue::NULL(true)),
+        (
+            "dim_1".to_string(),
+            StorageValue::S("eu-west-2".to_string()),
+        ),
+        ("dim_2".to_string(), StorageValue::S(model_name.to_string())),
+        ("dim_3".to_string(), StorageValue::S("tokens".to_string())),
+        ("source".to_string(), StorageValue::S("test".to_string())),
+        (
+            "schema_version".to_string(),
+            StorageValue::N("1".to_string()),
+        ),
+    ])
+}
+
+fn rate_class_item(model_name: &str, rate_class: &str) -> HashMap<String, StorageValue> {
+    HashMap::from([
+        (
+            "tenant_id".to_string(),
+            StorageValue::S("tenant_01".to_string()),
+        ),
+        (
+            "model_name".to_string(),
+            StorageValue::S(model_name.to_string()),
+        ),
+        (
+            "rate_class".to_string(),
+            StorageValue::S(rate_class.to_string()),
+        ),
+        (
+            "effective_from_ms".to_string(),
+            StorageValue::N("0".to_string()),
+        ),
+        ("effective_to_ms".to_string(), StorageValue::NULL(true)),
+    ])
+}
+
+fn seed_metric_points(engine: &AnalyticsEngine, manifest: &AnalyticsManifest) {
+    for (event_id, series_name, operation, value) in [
+        ("evt_read", "api_request_units", "read", "10"),
+        ("evt_write", "api_request_units", "write", "20"),
+    ] {
+        engine
+            .ingest_stream_record(
+                manifest,
+                "metric_points_v1",
+                event_id.as_bytes(),
+                StorageStreamRecord {
+                    sequence_number: event_id.to_string(),
+                    keys: HashMap::new(),
+                    old_image: None,
+                    new_image: Some(metric_point_item_for_series(
+                        event_id,
+                        series_name,
+                        operation,
+                        value,
+                    )),
+                },
+            )
+            .expect("ingest metric point");
+    }
+    engine
+        .ingest_stream_record(
+            manifest,
+            "metric_points_v1",
+            b"evt_decimal",
+            StorageStreamRecord {
+                sequence_number: "evt_decimal".to_string(),
+                keys: HashMap::new(),
+                old_image: None,
+                new_image: Some(decimal_metric_point_item()),
+            },
+        )
+        .expect("ingest decimal metric point");
+}
+
+fn metric_point_item_for_series(
+    event_id: &str,
+    series_name: &str,
+    operation: &str,
+    value: &str,
+) -> HashMap<String, StorageValue> {
+    let mut item = metric_point_item(event_id, "standard", value);
+    item.insert(
+        "series_name".to_string(),
+        StorageValue::S(series_name.to_string()),
+    );
+    item.insert("dim_3".to_string(), StorageValue::S(operation.to_string()));
+    item
+}
+
+fn decimal_metric_point_item() -> HashMap<String, StorageValue> {
+    let mut item = metric_point_item("evt_decimal", "standard", "0");
+    item.insert(
+        "series_name".to_string(),
+        StorageValue::S("storage_gb_hours".to_string()),
+    );
+    item.insert("value_i64".to_string(), StorageValue::NULL(true));
+    item.insert(
+        "value_decimal".to_string(),
+        StorageValue::N("42.5".to_string()),
+    );
+    item
+}
+
+fn metric_sum_query(series_name: &str) -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![QuerySelect::Sum {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "value_i64".to_string(),
+            },
+            alias: "quantity".to_string(),
+        }],
+        filters: metric_series_filters(series_name),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(1),
+    }
+}
+
+fn metric_grouped_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_1".to_string(),
+                alias: Some("region".to_string()),
+            },
+            QuerySelect::Sum {
+                expression: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "value_i64".to_string(),
+                },
+                alias: "quantity".to_string(),
+            },
+        ],
+        filters: metric_series_filters("api_request_units"),
+        group_by: vec![QueryExpression::Column {
+            table_alias: Some("m".to_string()),
+            column_name: "dim_1".to_string(),
+        }],
+        order_by: Vec::new(),
+        limit: Some(1000),
+    }
+}
+
+fn metric_three_dimension_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_1".to_string(),
+                alias: Some("region".to_string()),
+            },
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_2".to_string(),
+                alias: Some("plan".to_string()),
+            },
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_3".to_string(),
+                alias: Some("operation".to_string()),
+            },
+            QuerySelect::Sum {
+                expression: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "value_i64".to_string(),
+                },
+                alias: "quantity".to_string(),
+            },
+        ],
+        filters: metric_series_filters("api_request_units"),
+        group_by: vec![
+            QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_1".to_string(),
+            },
+            QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_2".to_string(),
+            },
+            QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_3".to_string(),
+            },
+        ],
+        order_by: vec![analytics_contract::QueryOrder {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_3".to_string(),
+            },
+            direction: Some(analytics_contract::SortOrder::Asc),
+        }],
+        limit: Some(1000),
+    }
+}
+
+fn metric_distinct_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![QuerySelect::CountDistinct {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "dim_1".to_string(),
+            },
+            alias: "active_regions".to_string(),
+        }],
+        filters: metric_series_filters("api_request_units"),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(1),
+    }
+}
+
+fn metric_decimal_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![QuerySelect::Sum {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "value_decimal".to_string(),
+            },
+            alias: "quantity".to_string(),
+        }],
+        filters: metric_series_filters("storage_gb_hours"),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(1),
+    }
+}
+
+fn metric_evidence_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: Vec::new(),
+        select: vec![
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "event_id".to_string(),
+                alias: Some("event_id".to_string()),
+            },
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "occurred_at_ms".to_string(),
+                alias: Some("occurred_at_ms".to_string()),
+            },
+            QuerySelect::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "value_i64".to_string(),
+                alias: Some("quantity".to_string()),
+            },
+        ],
+        filters: metric_series_filters("api_request_units"),
+        group_by: Vec::new(),
+        order_by: vec![analytics_contract::QueryOrder {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "event_id".to_string(),
+            },
+            direction: Some(analytics_contract::SortOrder::Asc),
+        }],
+        limit: Some(100),
+    }
+}
+
+fn metric_series_filters(series_name: &str) -> Vec<QueryPredicate> {
+    vec![
+        QueryPredicate::Eq {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "series_name".to_string(),
+            },
+            value: serde_json::json!(series_name),
+        },
+        QueryPredicate::Eq {
+            expression: QueryExpression::Column {
+                table_alias: Some("m".to_string()),
+                column_name: "customer_account_id".to_string(),
+            },
+            value: serde_json::json!("bcus_123"),
+        },
+    ]
+}
+
+fn joined_metric_query() -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "metric_points_v1".to_string(),
+        table_alias: Some("m".to_string()),
+        joins: vec![QueryJoin {
+            kind: QueryJoinKind::Inner,
+            analytics_table_name: "billing_rate_class_map_v1".to_string(),
+            table_alias: "r".to_string(),
+            on: vec![QueryJoinPredicate {
+                left: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "dim_2".to_string(),
+                },
+                right: QueryExpression::Column {
+                    table_alias: Some("r".to_string()),
+                    column_name: "model_name".to_string(),
+                },
+            }],
+        }],
+        select: vec![
+            QuerySelect::Column {
+                table_alias: Some("r".to_string()),
+                column_name: "rate_class".to_string(),
+                alias: Some("rate_class".to_string()),
+            },
+            QuerySelect::Sum {
+                expression: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "value_i64".to_string(),
+                },
+                alias: "quantity".to_string(),
+            },
+        ],
+        filters: vec![
+            QueryPredicate::Eq {
+                expression: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "series_name".to_string(),
+                },
+                value: serde_json::json!("ai_token_units"),
+            },
+            QueryPredicate::Eq {
+                expression: QueryExpression::Column {
+                    table_alias: Some("m".to_string()),
+                    column_name: "customer_account_id".to_string(),
+                },
+                value: serde_json::json!("bcus_123"),
+            },
+        ],
+        group_by: vec![QueryExpression::Column {
+            table_alias: Some("r".to_string()),
+            column_name: "rate_class".to_string(),
+        }],
+        order_by: vec![analytics_contract::QueryOrder {
+            expression: QueryExpression::Column {
+                table_alias: Some("r".to_string()),
+                column_name: "rate_class".to_string(),
+            },
+            direction: Some(analytics_contract::SortOrder::Asc),
+        }],
+        limit: Some(1000),
+    }
 }

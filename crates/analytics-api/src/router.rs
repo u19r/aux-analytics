@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc, time::Instant};
 
-use analytics_contract::{AnalyticsManifest, TableRegistration};
+use analytics_contract::{AnalyticsManifest, StructuredQuery, TableRegistration};
 use analytics_engine::{AnalyticsEngineError, IngestOutcome, StreamRecordBatchItem};
 use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
@@ -24,7 +24,8 @@ use crate::{
         IngestResponse, IngestStreamRecordBatchRequest, IngestStreamRecordRequest,
         OperationAuditEventResponse, OperationAuditResponse, OperationCancelResponse,
         OperationDiagnostics, OperationListResponse, OperationStatusResponse, QueryBatchResponse,
-        QueryBatchResult, QueryResponse, ReadyResponse, TenantQueryBatchItem,
+        QueryBatchResult, QueryExecutionMetadata, QueryResponse, QueryResultColumn,
+        QueryResultValueType, QuerySourceWatermark, ReadyResponse, TenantQueryBatchItem,
         TenantQueryBatchRequest, TenantQueryRequest, UnscopedSqlQueryRequest,
         UnscopedStructuredQueryRequest,
     },
@@ -485,7 +486,10 @@ pub(crate) async fn unscoped_structured_query(
     {
         Ok(Ok(rows)) => {
             record_query_metrics("unscoped_structured", "success", started);
-            Json(QueryResponse { rows }).into_response()
+            match query_response(rows, &request.query, started) {
+                Ok(response) => Json(response).into_response(),
+                Err(err) => error_response(StatusCode::BAD_REQUEST, &err),
+            }
         }
         Ok(Err(err)) => {
             record_query_metrics("unscoped_structured", "error", started);
@@ -534,7 +538,10 @@ pub(crate) async fn tenant_query(
     {
         Ok(Ok(rows)) => {
             record_query_metrics("tenant_structured", "success", started);
-            Json(QueryResponse { rows }).into_response()
+            match query_response(rows, &request.query, started) {
+                Ok(response) => Json(response).into_response(),
+                Err(err) => error_response(StatusCode::BAD_REQUEST, &err),
+            }
         }
         Ok(Err(err)) => {
             record_query_metrics("tenant_structured", "error", started);
@@ -780,6 +787,7 @@ async fn execute_tenant_query_batch(
         let manifest = Arc::clone(&manifest);
         let target_tenant_id = target_tenant_id.clone();
         tasks.spawn(async move {
+            let started = Instant::now();
             let rows = engine
                 .with_read(|engine| {
                     engine.query_tenant_structured_json(
@@ -789,13 +797,8 @@ async fn execute_tenant_query_batch(
                     )
                 })
                 .await??;
-            Ok::<_, TenantQueryBatchExecutionError>((
-                index,
-                QueryBatchResult {
-                    name: item.name,
-                    rows,
-                },
-            ))
+            let response = query_batch_result(item.name, rows, &item.query, started)?;
+            Ok::<_, TenantQueryBatchExecutionError>((index, response))
         });
     }
 
@@ -807,11 +810,119 @@ async fn execute_tenant_query_batch(
     Ok(results.into_iter().map(|(_, result)| result).collect())
 }
 
+fn query_response(
+    rows: Vec<Value>,
+    query: &StructuredQuery,
+    started: Instant,
+) -> Result<QueryResponse, String> {
+    Ok(QueryResponse {
+        columns: result_columns(rows.as_slice()),
+        execution: execution_metadata(query, rows.len(), started)?,
+        source_watermark: source_watermark(rows.as_slice()),
+        rows,
+    })
+}
+
+fn query_batch_result(
+    name: String,
+    rows: Vec<Value>,
+    query: &StructuredQuery,
+    started: Instant,
+) -> Result<QueryBatchResult, TenantQueryBatchExecutionError> {
+    Ok(QueryBatchResult {
+        name,
+        columns: result_columns(rows.as_slice()),
+        execution: execution_metadata(query, rows.len(), started)
+            .map_err(TenantQueryBatchExecutionError::Metadata)?,
+        source_watermark: source_watermark(rows.as_slice()),
+        rows,
+    })
+}
+
+fn execution_metadata(
+    query: &StructuredQuery,
+    row_count: usize,
+    started: Instant,
+) -> Result<QueryExecutionMetadata, String> {
+    Ok(QueryExecutionMetadata {
+        query_hash: query.query_hash().map_err(|err| err.to_string())?,
+        row_count: row_count as u64,
+        truncated: query.limit.is_some_and(|limit| row_count >= limit as usize),
+        tables: participating_tables(query),
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn participating_tables(query: &StructuredQuery) -> Vec<String> {
+    let mut tables = Vec::with_capacity(query.joins.len() + 1);
+    tables.push(query.analytics_table_name.clone());
+    tables.extend(
+        query
+            .joins
+            .iter()
+            .map(|join| join.analytics_table_name.clone()),
+    );
+    tables
+}
+
+fn result_columns(rows: &[Value]) -> Vec<QueryResultColumn> {
+    let Some(row) = rows.first().and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    row.iter()
+        .map(|(name, value)| QueryResultColumn {
+            name: name.clone(),
+            value_type: result_value_type(name, value),
+            nullable: rows
+                .iter()
+                .any(|row| row.get(name).is_none_or(serde_json::Value::is_null)),
+        })
+        .collect()
+}
+
+fn result_value_type(name: &str, value: &Value) -> QueryResultValueType {
+    match value {
+        Value::Bool(_) => QueryResultValueType::Boolean,
+        Value::String(value) if looks_like_decimal(value) => QueryResultValueType::Decimal,
+        Value::String(_) => QueryResultValueType::String,
+        Value::Number(number)
+            if (number.is_i64() || number.is_u64()) && name.ends_with("_at_ms") =>
+        {
+            QueryResultValueType::TimestampMs
+        }
+        Value::Number(number) if number.is_i64() || number.is_u64() => QueryResultValueType::I64,
+        Value::Number(_) => QueryResultValueType::F64,
+        Value::Null | Value::Array(_) | Value::Object(_) => QueryResultValueType::Json,
+    }
+}
+
+fn source_watermark(rows: &[Value]) -> QuerySourceWatermark {
+    QuerySourceWatermark {
+        max_occurred_at_ms: max_i64_column(rows, "occurred_at_ms"),
+        max_ingested_at_ms: max_i64_column(rows, "ingested_at_ms"),
+    }
+}
+
+fn max_i64_column(rows: &[Value], column_name: &str) -> Option<i64> {
+    rows.iter()
+        .filter_map(|row| row.get(column_name).and_then(Value::as_i64))
+        .max()
+}
+
+fn looks_like_decimal(value: &str) -> bool {
+    value.contains('.')
+        && !value.trim().is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_digit() || matches!(character, '.' | '-'))
+}
+
 #[derive(Debug)]
 enum TenantQueryBatchExecutionError {
     Query(AnalyticsEngineError),
     Access(AnalyticsEngineAccessError),
     Join(tokio::task::JoinError),
+    Metadata(String),
 }
 
 impl TenantQueryBatchExecutionError {
@@ -820,6 +931,7 @@ impl TenantQueryBatchExecutionError {
             Self::Query(_) => StatusCode::BAD_REQUEST,
             Self::Access(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Join(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Metadata(_) => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -830,6 +942,7 @@ impl fmt::Display for TenantQueryBatchExecutionError {
             Self::Query(error) => write!(formatter, "{error}"),
             Self::Access(error) => write!(formatter, "{error}"),
             Self::Join(error) => write!(formatter, "{error}"),
+            Self::Metadata(error) => write!(formatter, "{error}"),
         }
     }
 }

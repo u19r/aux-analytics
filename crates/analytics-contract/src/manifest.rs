@@ -204,6 +204,14 @@ pub struct TableRegistration {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schema(default = json!([]), min_items = 0, example = json!([]))]
     pub columns: Vec<AnalyticsColumn>,
+    /// Tenant/reference scope used by safe structured query planning.
+    #[serde(default)]
+    #[schema(default = json!({"kind": "tenant_scoped"}))]
+    pub table_scope: TableScope,
+    /// Join participation policy for bounded structured queries.
+    #[serde(default)]
+    #[schema(default = json!({"allowed_as_primary": true, "allowed_as_join": false}))]
+    pub join_policy: JoinPolicy,
     /// `DuckLake` partition layout columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schema(default = json!([]), min_items = 0, example = json!([{"column_name": "tenant_id"}]))]
@@ -227,6 +235,9 @@ impl TableRegistration {
         if let Some(retention) = self.retention.as_ref() {
             retention.validate(self.analytics_table_name.as_str())?;
         }
+        validate_table_scope(self)?;
+        self.join_policy
+            .validate(self.analytics_table_name.as_str(), &self.table_scope)?;
 
         let mut output_column_names = HashSet::new();
         if let Some(document_column) = self.document_column.as_deref() {
@@ -316,6 +327,86 @@ impl TableRegistration {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Default)]
+pub enum TableScope {
+    #[default]
+    TenantScoped,
+    GlobalReference {
+        #[schema(min_length = 1, max_length = 255, example = "public_product_catalog")]
+        reference_class: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct JoinPolicy {
+    #[serde(default = "default_allowed_as_primary")]
+    #[schema(default = true, example = true)]
+    pub allowed_as_primary: bool,
+    #[serde(default)]
+    #[schema(default = false, example = false)]
+    pub allowed_as_join: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), minimum = 1, example = 10000_u64)]
+    pub max_join_rows_hint: Option<u64>,
+}
+
+impl Default for JoinPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_as_primary: true,
+            allowed_as_join: false,
+            max_join_rows_hint: None,
+        }
+    }
+}
+
+impl JoinPolicy {
+    fn validate(
+        &self,
+        table: &str,
+        table_scope: &TableScope,
+    ) -> Result<(), ManifestValidationError> {
+        if matches!(self.max_join_rows_hint, Some(0)) {
+            return Err(ManifestValidationError::InvalidJoinPolicy {
+                table: table.to_string(),
+                reason: "max_join_rows_hint must be greater than zero when set",
+            });
+        }
+        if matches!(table_scope, TableScope::GlobalReference { .. })
+            && self.allowed_as_join
+            && self.max_join_rows_hint.is_none()
+        {
+            return Err(ManifestValidationError::InvalidJoinPolicy {
+                table: table.to_string(),
+                reason: "global reference joins require max_join_rows_hint",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn default_allowed_as_primary() -> bool {
+    true
+}
+
+fn validate_table_scope(table: &TableRegistration) -> Result<(), ManifestValidationError> {
+    match &table.table_scope {
+        TableScope::TenantScoped => Ok(()),
+        TableScope::GlobalReference { reference_class } => {
+            validate_non_empty("table_scope reference_class", reference_class)?;
+            if table.tenant_id.is_some() || table.tenant_selector != TenantSelector::None {
+                return Err(ManifestValidationError::GlobalReferenceHasTenantScope {
+                    table: table.analytics_table_name.clone(),
+                });
+            }
+            Ok(())
+        }
     }
 }
 

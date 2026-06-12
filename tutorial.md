@@ -283,6 +283,32 @@ contract:
 }
 ```
 
+Structured query responses are envelopes, not bare row arrays. `rows` contains the returned JSON
+objects, `columns` describes the observed result shape, `execution` includes the stable query hash
+and participating tables, and `source_watermark` reports max source timestamps when those columns
+are selected:
+
+```json
+{
+  "rows": [{ "status": "paid", "count": 42 }],
+  "columns": [
+    { "name": "status", "value_type": "string", "nullable": false },
+    { "name": "count", "value_type": "i64", "nullable": false }
+  ],
+  "execution": {
+    "query_hash": "sha256:...",
+    "row_count": 1,
+    "truncated": false,
+    "tables": ["orders"],
+    "elapsed_ms": 4
+  },
+  "source_watermark": {
+    "max_occurred_at_ms": null,
+    "max_ingested_at_ms": null
+  }
+}
+```
+
 ## Generic Table With Tenant Metadata
 
 If the table belongs to one tenant but the items do not contain tenant metadata,

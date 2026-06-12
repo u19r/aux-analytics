@@ -1,4 +1,4 @@
-use analytics_contract::{AnalyticsManifest, read_manifest};
+use analytics_contract::{AnalyticsManifest, StructuredQuery, read_manifest};
 use analytics_engine::AnalyticsEngine;
 use analytics_storage::RetentionPolicyLookup;
 use clap::CommandFactory as _;
@@ -76,10 +76,8 @@ pub async fn run(cli: Cli) -> CliResult<Option<String>> {
             let storage_backend =
                 config::resolve_storage_backend(&(&backend).into(), &config.root)?;
             let engine = AnalyticsEngine::connect(&storage_backend)?;
-            pretty_json_value(serde_json::Value::Array(
-                engine.query_unscoped_structured_json(&manifest, &structured_query)?,
-            ))
-            .map(Some)
+            let rows = engine.query_unscoped_structured_json(&manifest, &structured_query)?;
+            pretty_json_value(query_response_value(rows, &structured_query)?).map(Some)
         }
         Command::TenantQuery {
             target_tenant_id,
@@ -96,14 +94,12 @@ pub async fn run(cli: Cli) -> CliResult<Option<String>> {
             let storage_backend =
                 config::resolve_storage_backend(&(&backend).into(), &config.root)?;
             let engine = AnalyticsEngine::connect(&storage_backend)?;
-            pretty_json_value(serde_json::Value::Array(
-                engine.query_tenant_structured_json(
-                    &manifest,
-                    &structured_query,
-                    target_tenant_id.as_str(),
-                )?,
-            ))
-            .map(Some)
+            let rows = engine.query_tenant_structured_json(
+                &manifest,
+                &structured_query,
+                target_tenant_id.as_str(),
+            )?;
+            pretty_json_value(query_response_value(rows, &structured_query)?).map(Some)
         }
         Command::RepairRetention {
             manifest,
@@ -169,6 +165,78 @@ pub async fn run(cli: Cli) -> CliResult<Option<String>> {
         Command::Trim(command) => run_trim_command(command).map(Some),
         Command::Completions { shell } => Ok(Some(generate_completions(shell))),
     }
+}
+
+fn query_response_value(
+    rows: Vec<serde_json::Value>,
+    query: &StructuredQuery,
+) -> CliResult<serde_json::Value> {
+    let row_count = rows.len();
+    let columns = rows
+        .first()
+        .and_then(serde_json::Value::as_object)
+        .map(|row| {
+            row.iter()
+                .map(|(name, value)| {
+                    serde_json::json!({
+                        "name": name,
+                        "value_type": result_value_type(value),
+                        "nullable": rows.iter().any(|row| {
+                            row.get(name).is_none_or(serde_json::Value::is_null)
+                        })
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let query_hash = query.query_hash()?;
+    let max_occurred_at_ms = max_i64_column(rows.as_slice(), "occurred_at_ms");
+    let max_ingested_at_ms = max_i64_column(rows.as_slice(), "ingested_at_ms");
+    Ok(serde_json::json!({
+        "rows": rows,
+        "columns": columns,
+        "execution": {
+            "query_hash": query_hash,
+            "row_count": row_count,
+            "truncated": query.limit.is_some_and(|limit| row_count >= limit as usize),
+            "tables": participating_tables(query),
+            "elapsed_ms": 0
+        },
+        "source_watermark": {
+            "max_occurred_at_ms": max_occurred_at_ms,
+            "max_ingested_at_ms": max_ingested_at_ms
+        }
+    }))
+}
+
+fn participating_tables(query: &StructuredQuery) -> Vec<String> {
+    let mut tables = Vec::with_capacity(query.joins.len() + 1);
+    tables.push(query.analytics_table_name.clone());
+    tables.extend(
+        query
+            .joins
+            .iter()
+            .map(|join| join.analytics_table_name.clone()),
+    );
+    tables
+}
+
+fn result_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "i64",
+        serde_json::Value::Number(_) => "f64",
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            "json"
+        }
+    }
+}
+
+fn max_i64_column(rows: &[serde_json::Value], column_name: &str) -> Option<i64> {
+    rows.iter()
+        .filter_map(|row| row.get(column_name).and_then(serde_json::Value::as_i64))
+        .max()
 }
 
 #[allow(clippy::needless_pass_by_value)]

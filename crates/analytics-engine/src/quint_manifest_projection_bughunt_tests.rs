@@ -239,6 +239,8 @@ fn base_table() -> TableRegistration {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }
 }
 

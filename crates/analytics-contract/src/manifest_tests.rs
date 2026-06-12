@@ -28,6 +28,8 @@ fn manifest_serializes_to_stable_snake_case_contract() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     let encoded = serde_json::to_value(&manifest).expect("manifest should serialize");
@@ -56,9 +58,29 @@ fn manifest_deserializes_table_without_retention() {
     .expect("manifest without retention should deserialize");
 
     assert_eq!(manifest.tables[0].retention, None);
+    assert_eq!(manifest.tables[0].table_scope, TableScope::TenantScoped);
+    assert_eq!(manifest.tables[0].join_policy, JoinPolicy::default());
     manifest
         .validate()
         .expect("manifest without retention should validate");
+}
+
+#[test]
+fn manifest_scope_defaults_keep_existing_tables_tenant_scoped() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "tenant_01",
+            "analytics_table_name": "users",
+            "projection_attribute_names": ["email"]
+        }]
+    }))
+    .expect("manifest should deserialize with table scope defaults");
+
+    assert_eq!(manifest.tables[0].table_scope, TableScope::TenantScoped);
+    assert!(manifest.tables[0].join_policy.allowed_as_primary);
+    assert!(!manifest.tables[0].join_policy.allowed_as_join);
+    assert_eq!(manifest.tables[0].join_policy.max_join_rows_hint, None);
 }
 
 #[test]
@@ -121,6 +143,8 @@ fn manifest_validation_rejects_duplicate_output_tables() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     };
     let manifest = AnalyticsManifest::new(vec![table.clone(), table]);
 
@@ -153,12 +177,66 @@ fn manifest_validation_rejects_layout_columns_that_are_not_projected() {
             bucket: None,
         }],
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     assert!(matches!(
         manifest.validate(),
         Err(ManifestValidationError::UnknownLayoutColumn { column, .. }) if column == "org_id"
     ));
+}
+
+#[test]
+fn manifest_validation_accepts_tenant_scoped_join_targets_when_policy_opts_in() {
+    let mut table = base_table("tenant_01", "billing_rate_class_map_v1");
+    table.join_policy = JoinPolicy {
+        allowed_as_primary: false,
+        allowed_as_join: true,
+        max_join_rows_hint: Some(100_000),
+    };
+
+    AnalyticsManifest::new(vec![table])
+        .validate()
+        .expect("tenant-scoped reference table can opt into bounded joins");
+}
+
+#[test]
+fn manifest_validation_rejects_global_reference_tables_with_tenant_scope() {
+    let mut table = base_table("global_rates", "global_rate_class_map_v1");
+    table.table_scope = TableScope::GlobalReference {
+        reference_class: "rates".to_string(),
+    };
+
+    assert_eq!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::GlobalReferenceHasTenantScope {
+            table: "global_rate_class_map_v1".to_string(),
+        })
+    );
+}
+
+#[test]
+fn manifest_validation_rejects_unbounded_global_reference_joins() {
+    let mut table = base_table("global_rates", "global_rate_class_map_v1");
+    table.tenant_id = None;
+    table.tenant_selector = TenantSelector::None;
+    table.table_scope = TableScope::GlobalReference {
+        reference_class: "rates".to_string(),
+    };
+    table.join_policy = JoinPolicy {
+        allowed_as_primary: false,
+        allowed_as_join: true,
+        max_join_rows_hint: None,
+    };
+
+    assert_eq!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidJoinPolicy {
+            table: "global_rate_class_map_v1".to_string(),
+            reason: "global reference joins require max_join_rows_hint",
+        })
+    );
 }
 
 #[test]
@@ -188,6 +266,8 @@ fn manifest_validation_rejects_reserved_projection_column_names() {
             columns: Vec::new(),
             partition_keys: Vec::new(),
             clustering_keys: Vec::new(),
+            table_scope: crate::TableScope::default(),
+            join_policy: crate::JoinPolicy::default(),
         }]);
 
         assert!(matches!(
@@ -195,6 +275,30 @@ fn manifest_validation_rejects_reserved_projection_column_names() {
             Err(ManifestValidationError::ReservedOutputColumn { column, .. })
                 if column == reserved_column
         ));
+    }
+}
+
+fn base_table(source_table_name: &str, analytics_table_name: &str) -> TableRegistration {
+    TableRegistration {
+        source_table_name: source_table_name.to_string(),
+        analytics_table_name: analytics_table_name.to_string(),
+        source_table_name_prefix: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }
 }
 
@@ -224,6 +328,8 @@ fn manifest_validation_rejects_duplicate_output_columns_across_sources() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     assert!(matches!(
@@ -269,6 +375,8 @@ fn manifest_validation_allows_reserved_columns_as_layout_references() {
             bucket: None,
         }],
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     manifest
@@ -301,6 +409,8 @@ fn manifest_validation_accepts_static_retention() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     manifest.validate().expect("static retention manifest");
@@ -329,6 +439,8 @@ fn manifest_validation_rejects_zero_retention_period() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     assert!(matches!(
@@ -374,6 +486,8 @@ fn manifest_validation_rejects_internal_retention_columns() {
             columns: Vec::new(),
             partition_keys: Vec::new(),
             clustering_keys: Vec::new(),
+            table_scope: crate::TableScope::default(),
+            join_policy: crate::JoinPolicy::default(),
         }]);
 
         assert!(matches!(
@@ -474,6 +588,8 @@ fn manifest_supports_generic_document_tables_without_tenant_layout() {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
     }]);
 
     manifest.validate().expect("generic manifest");
@@ -483,8 +599,11 @@ fn manifest_supports_generic_document_tables_without_tenant_layout() {
 fn structured_query_serializes_to_stable_contract() {
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: vec![
             QuerySelect::Column {
+                table_alias: None,
                 column_name: "email".to_string(),
                 alias: None,
             },
@@ -494,15 +613,18 @@ fn structured_query_serializes_to_stable_contract() {
         ],
         filters: vec![QueryPredicate::Eq {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "org_id".to_string(),
             },
             value: serde_json::Value::String("org-a".to_string()),
         }],
         group_by: vec![QueryExpression::Column {
+            table_alias: None,
             column_name: "email".to_string(),
         }],
         order_by: vec![QueryOrder {
             expression: QueryExpression::Column {
+                table_alias: None,
                 column_name: "email".to_string(),
             },
             direction: Some(SortOrder::Asc),
@@ -521,6 +643,8 @@ fn structured_query_serializes_to_stable_contract() {
 fn structured_query_rejects_empty_select() {
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: Vec::new(),
         filters: Vec::new(),
         group_by: Vec::new(),

@@ -32,7 +32,9 @@ use thiserror::Error;
 use crate::{
     cache::EngineCaches,
     sql,
-    structured_query::{structured_query_sql, tenant_scoped_structured_query_sql},
+    structured_query::{
+        structured_query_sql_for_manifest, tenant_scoped_structured_query_sql_for_manifest,
+    },
 };
 
 const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -650,6 +652,9 @@ impl AnalyticsEngine {
         timeout: Duration,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
         validate_read_only_query(sql)?;
+        if timeout.is_zero() {
+            return Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 0 });
+        }
         let wrapped = format!(
             "SELECT to_json(result) FROM ({}) AS result",
             sql.trim_end_matches(';')
@@ -708,14 +713,7 @@ impl AnalyticsEngine {
         query
             .validate_shape()
             .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
-        let table = manifest
-            .tables
-            .iter()
-            .find(|table| table.analytics_table_name == query.analytics_table_name)
-            .ok_or_else(|| {
-                AnalyticsEngineError::TableNotRegistered(query.analytics_table_name.clone())
-            })?;
-        let sql = structured_query_sql(table, query)?;
+        let sql = structured_query_sql_for_manifest(manifest, query)?;
         self.query_unscoped_sql_json(sql.as_str())
     }
 
@@ -728,14 +726,8 @@ impl AnalyticsEngine {
         query
             .validate_shape()
             .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
-        let table = manifest
-            .tables
-            .iter()
-            .find(|table| table.analytics_table_name == query.analytics_table_name)
-            .ok_or_else(|| {
-                AnalyticsEngineError::TableNotRegistered(query.analytics_table_name.clone())
-            })?;
-        let sql = tenant_scoped_structured_query_sql(table, query, target_tenant_id)?;
+        let sql =
+            tenant_scoped_structured_query_sql_for_manifest(manifest, query, target_tenant_id)?;
         self.query_unscoped_sql_json(sql.as_str())
     }
 

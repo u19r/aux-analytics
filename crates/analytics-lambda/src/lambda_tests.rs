@@ -92,12 +92,16 @@ async fn lambda_runs_structured_queries() {
             "operation": "unscoped_structured_query",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
                 filters: vec![QueryPredicate::Eq {
                     expression: QueryExpression::Column {
+                        table_alias: None,
                         column_name: "org_id".to_string(),
                     },
                     value: json!("org-a"),
@@ -142,7 +146,10 @@ async fn lambda_runs_tenant_scoped_queries() {
             "target_tenant_id": "tenant_01",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -168,7 +175,10 @@ async fn lambda_runs_tenant_scoped_queries() {
             "target_tenant_id": "tenant_02",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -211,6 +221,8 @@ async fn lambda_tenant_query_batch_returns_named_results() {
                     "name": "total_users",
                     "query": StructuredQuery {
                         analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                         select: vec![QuerySelect::Count {
                             alias: "count".to_string(),
                         }],
@@ -224,7 +236,10 @@ async fn lambda_tenant_query_batch_returns_named_results() {
                     "name": "matching_users",
                     "query": StructuredQuery {
                         analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                         select: vec![QuerySelect::Column {
+                            table_alias: None,
                             column_name: "email".to_string(),
                             alias: None,
                         }],

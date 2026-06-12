@@ -185,12 +185,16 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
             "target_tenant_id": "tenant_01",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
                 filters: vec![QueryPredicate::Eq {
                     expression: QueryExpression::Column {
+                        table_alias: None,
                         column_name: "org_id".to_string(),
                     },
                     value: json!("org-a"),
@@ -214,7 +218,10 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
             "target_tenant_id": "tenant_02",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -261,6 +268,8 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                     "name": "total_users",
                     "query": StructuredQuery {
                         analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                         select: vec![QuerySelect::Count {
                             alias: "count".to_string(),
                         }],
@@ -274,12 +283,16 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                     "name": "matching_users",
                     "query": StructuredQuery {
                         analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                         select: vec![QuerySelect::Column {
+                            table_alias: None,
                             column_name: "email".to_string(),
                             alias: None,
                         }],
                         filters: vec![QueryPredicate::Eq {
                             expression: QueryExpression::Column {
+                                table_alias: None,
                                 column_name: "org_id".to_string(),
                             },
                             value: json!("org-a"),
@@ -310,6 +323,8 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                 "name": "total_users",
                 "query": StructuredQuery {
                     analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                     select: vec![QuerySelect::Count {
                         alias: "count".to_string(),
                     }],
@@ -359,7 +374,10 @@ async fn ingest_endpoint_applies_configured_privacy_policy() {
             "target_tenant_id": "tenant_01",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -479,7 +497,10 @@ async fn tenant_query_endpoint_requires_target_tenant_id() {
         json!({
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],
@@ -682,7 +703,10 @@ async fn assert_query_email(router: Router, expected_email: &str) {
             "target_tenant_id": "tenant_01",
             "query": StructuredQuery {
                 analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
                 select: vec![QuerySelect::Column {
+                    table_alias: None,
                     column_name: "email".to_string(),
                     alias: None,
                 }],

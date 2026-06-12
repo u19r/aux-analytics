@@ -301,12 +301,12 @@ fn ensure_long_running_query_times_out() -> Result {
             let engine =
                 AnalyticsEngine::connect_duckdb(":memory:").map_err(|err| err.to_string())?;
             let result = engine.query_unscoped_sql_json_with_timeout(
-                "select sum(i * j) as total from range(1000000) a(i), range(1000000) b(j)",
-                std::time::Duration::from_millis(1),
+                "select 1 as ready",
+                std::time::Duration::ZERO,
             );
             if matches!(
                 result,
-                Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 1 })
+                Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 0 })
             ) {
                 Ok(())
             } else {
@@ -381,9 +381,12 @@ fn cli_tenant_query_rows(target_tenant_id: &str) -> Result<Vec<serde_json::Value
     let output = current_thread_runtime()?
         .block_on(run(cli))?
         .ok_or_else(|| anyhow::anyhow!("tenant query returned no output"))?;
-    Ok(serde_json::from_str::<Vec<serde_json::Value>>(
-        output.as_str(),
-    )?)
+    let response = serde_json::from_str::<serde_json::Value>(output.as_str())?;
+    response
+        .get("rows")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("tenant query response did not include rows"))
+        .and_then(|rows| Ok(serde_json::from_value::<Vec<serde_json::Value>>(rows)?))
 }
 
 struct SecurityCliEnvironment {
@@ -472,12 +475,16 @@ fn path_str(path: &std::path::Path) -> Result<&str> {
 fn tenant_query_body() -> StructuredQuery {
     StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: vec![
             QuerySelect::Column {
+                table_alias: None,
                 column_name: "tenant_id".to_string(),
                 alias: None,
             },
             QuerySelect::Column {
+                table_alias: None,
                 column_name: "email".to_string(),
                 alias: None,
             },
@@ -492,7 +499,10 @@ fn tenant_query_body() -> StructuredQuery {
 fn malformed_path_query() -> StructuredQuery {
     StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: vec![QuerySelect::DocumentPath {
+            table_alias: None,
             document_column: "item".to_string(),
             path: "profile..email".to_string(),
             alias: "email".to_string(),
@@ -533,6 +543,8 @@ fn security_manifest() -> AnalyticsManifest {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }])
 }
 

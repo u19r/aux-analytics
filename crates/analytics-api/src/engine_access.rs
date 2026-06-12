@@ -184,6 +184,8 @@ mod tests {
                             manifest.as_ref(),
                             &StructuredQuery {
                                 analytics_table_name: "users".to_string(),
+                                table_alias: None,
+                                joins: Vec::new(),
                                 select: vec![QuerySelect::Count {
                                     alias: "count".to_string(),
                                 }],

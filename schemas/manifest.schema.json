@@ -106,6 +106,27 @@
       ],
       "type": "object"
     },
+    "JoinPolicy": {
+      "properties": {
+        "allowed_as_join": {
+          "default": false,
+          "type": "boolean"
+        },
+        "allowed_as_primary": {
+          "default": true,
+          "type": "boolean"
+        },
+        "max_join_rows_hint": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "PartitionBucket": {
       "description": "Partition bucketing transform.",
       "oneOf": [
@@ -565,6 +586,14 @@
             "null"
           ]
         },
+        "join_policy": {
+          "$ref": "#/$defs/JoinPolicy",
+          "default": {
+            "allowed_as_join": false,
+            "allowed_as_primary": true
+          },
+          "description": "Join participation policy for bounded structured queries."
+        },
         "partition_keys": {
           "description": "`DuckLake` partition layout columns.",
           "items": {
@@ -626,6 +655,13 @@
             "null"
           ]
         },
+        "table_scope": {
+          "$ref": "#/$defs/TableScope",
+          "default": {
+            "kind": "tenant_scoped"
+          },
+          "description": "Tenant/reference scope used by safe structured query planning."
+        },
         "tenant_id": {
           "description": "Static tenant id to write into ingested rows when the source does not\ncarry tenant identity.",
           "type": [
@@ -646,6 +682,38 @@
         "analytics_table_name"
       ],
       "type": "object"
+    },
+    "TableScope": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "tenant_scoped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "global_reference",
+              "type": "string"
+            },
+            "reference_class": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reference_class"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "TenantSelector": {
       "description": "Tenant id extraction rule.",

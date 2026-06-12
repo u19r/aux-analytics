@@ -222,12 +222,16 @@ fn check_structured_query_compiled() -> Result<QueryResult> {
         &table(),
         &StructuredQuery {
             analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
             select: vec![QuerySelect::Column {
+                table_alias: None,
                 column_name: "email".to_string(),
                 alias: Some("user\"email".to_string()),
             }],
             filters: vec![QueryPredicate::Eq {
                 expression: QueryExpression::Column {
+                    table_alias: None,
                     column_name: "org_id".to_string(),
                 },
                 value: json!("org's"),
@@ -254,7 +258,10 @@ fn check_document_path_compiled() -> Result<QueryResult> {
         &table(),
         &StructuredQuery {
             analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
             select: vec![QuerySelect::DocumentPath {
+                table_alias: None,
                 document_column: "item".to_string(),
                 path: "profile.email".to_string(),
                 alias: "email".to_string(),
@@ -277,7 +284,10 @@ fn check_unregistered_column_rejected() -> Result<QueryResult> {
         &table(),
         &StructuredQuery {
             analytics_table_name: "users".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
             select: vec![QuerySelect::Column {
+                table_alias: None,
                 column_name: "password".to_string(),
                 alias: None,
             }],
@@ -299,6 +309,8 @@ fn check_unregistered_column_rejected() -> Result<QueryResult> {
 fn check_empty_select_rejected() -> Result<QueryResult> {
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: Vec::new(),
         filters: Vec::new(),
         group_by: Vec::new(),
@@ -333,5 +345,7 @@ fn table() -> TableRegistration {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }
 }

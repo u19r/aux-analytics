@@ -1068,6 +1068,8 @@ fn given_table_registration_when_projection_is_built_then_manifest_columns_defin
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     };
 
     let projection = CheckRowProjection::from_table_registration(&table).unwrap();

@@ -21,6 +21,8 @@ mod manifest_tests;
 #[cfg(test)]
 mod privacy_policy_tests;
 #[cfg(test)]
+mod query_tests;
+#[cfg(test)]
 mod quint_manifest_tests;
 #[cfg(test)]
 mod quint_privacy_policy_tests;

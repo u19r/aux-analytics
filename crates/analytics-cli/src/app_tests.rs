@@ -139,10 +139,12 @@ async fn given_tenant_query_command_when_run_then_only_target_tenant_rows_are_re
         .await
         .expect("tenant query should run")
         .expect("output");
-    let rows: serde_json::Value = serde_json::from_str(&output).expect("query rows");
+    let response: serde_json::Value = serde_json::from_str(&output).expect("query response");
 
-    assert_eq!(rows.as_array().map(Vec::len), Some(1));
-    assert_eq!(rows[0]["email"], "a@example.com");
+    assert_eq!(response["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(response["rows"][0]["email"], "a@example.com");
+    assert_eq!(response["columns"][0]["name"], "email");
+    assert_eq!(response["execution"]["row_count"], 1);
 }
 
 #[tokio::test]
@@ -1313,6 +1315,8 @@ fn tenant_attribute_manifest() -> AnalyticsManifest {
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }])
 }
 
@@ -1510,7 +1514,10 @@ async fn write_cli_raw_backup_object(backup_root: &std::path::Path, object_id: &
 fn email_query() -> StructuredQuery {
     StructuredQuery {
         analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
         select: vec![QuerySelect::Column {
+            table_alias: None,
             column_name: "email".to_string(),
             alias: None,
         }],

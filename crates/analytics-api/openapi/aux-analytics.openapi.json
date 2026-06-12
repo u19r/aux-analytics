@@ -478,6 +478,31 @@
         ],
         "type": "object"
       },
+      "JoinPolicy": {
+        "properties": {
+          "allowed_as_join": {
+            "default": false,
+            "example": false,
+            "type": "boolean"
+          },
+          "allowed_as_primary": {
+            "default": true,
+            "example": true,
+            "type": "boolean"
+          },
+          "max_join_rows_hint": {
+            "default": null,
+            "example": 10000,
+            "format": "int64",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "OperationAuditEventResponse": {
         "properties": {
           "cursor": {
@@ -872,14 +897,43 @@
       "QueryBatchResult": {
         "description": "Named query result rows.",
         "example": {
+          "columns": [
+            {
+              "name": "count",
+              "nullable": false,
+              "value_type": "i64"
+            }
+          ],
+          "execution": {
+            "elapsed_ms": 7,
+            "query_hash": "sha256:example",
+            "row_count": 1,
+            "tables": [
+              "users"
+            ],
+            "truncated": false
+          },
           "name": "total_users",
           "rows": [
             {
               "count": 42
             }
-          ]
+          ],
+          "source_watermark": {
+            "max_ingested_at_ms": null,
+            "max_occurred_at_ms": null
+          }
         },
         "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/QueryResultColumn"
+            },
+            "type": "array"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/QueryExecutionMetadata"
+          },
           "name": {
             "description": "Caller-owned stable name from the batch request.",
             "example": "total_users",
@@ -895,11 +949,51 @@
             "items": {},
             "minItems": 0,
             "type": "array"
+          },
+          "source_watermark": {
+            "$ref": "#/components/schemas/QuerySourceWatermark"
           }
         },
         "required": [
           "name",
-          "rows"
+          "rows",
+          "columns",
+          "execution",
+          "source_watermark"
+        ],
+        "type": "object"
+      },
+      "QueryExecutionMetadata": {
+        "properties": {
+          "elapsed_ms": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query_hash": {
+            "type": "string"
+          },
+          "row_count": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tables": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "query_hash",
+          "row_count",
+          "truncated",
+          "tables",
+          "elapsed_ms"
         ],
         "type": "object"
       },
@@ -921,6 +1015,16 @@
                   "column"
                 ],
                 "type": "string"
+              },
+              "table_alias": {
+                "default": null,
+                "example": "u",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -951,6 +1055,16 @@
                 "maxLength": 1024,
                 "minLength": 1,
                 "type": "string"
+              },
+              "table_alias": {
+                "default": null,
+                "example": "u",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -961,6 +1075,60 @@
             "type": "object"
           }
         ]
+      },
+      "QueryJoin": {
+        "properties": {
+          "analytics_table_name": {
+            "example": "orgs",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QueryJoinKind"
+          },
+          "on": {
+            "items": {
+              "$ref": "#/components/schemas/QueryJoinPredicate"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "table_alias": {
+            "example": "o",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "analytics_table_name",
+          "table_alias"
+        ],
+        "type": "object"
+      },
+      "QueryJoinKind": {
+        "enum": [
+          "inner",
+          "left"
+        ],
+        "type": "string"
+      },
+      "QueryJoinPredicate": {
+        "properties": {
+          "left": {
+            "$ref": "#/components/schemas/QueryExpression"
+          },
+          "right": {
+            "$ref": "#/components/schemas/QueryExpression"
+          }
+        },
+        "required": [
+          "left",
+          "right"
+        ],
+        "type": "object"
       },
       "QueryOrder": {
         "description": "Structured ORDER BY clause.",
@@ -1188,14 +1356,43 @@
       "QueryResponse": {
         "description": "Query result rows as JSON objects.",
         "example": {
+          "columns": [
+            {
+              "name": "email",
+              "nullable": false,
+              "value_type": "string"
+            }
+          ],
+          "execution": {
+            "elapsed_ms": 7,
+            "query_hash": "sha256:example",
+            "row_count": 1,
+            "tables": [
+              "users"
+            ],
+            "truncated": false
+          },
           "rows": [
             {
               "email": "ada@example.com",
               "org_id": "org-a"
             }
-          ]
+          ],
+          "source_watermark": {
+            "max_ingested_at_ms": null,
+            "max_occurred_at_ms": null
+          }
         },
         "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/QueryResultColumn"
+            },
+            "type": "array"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/QueryExecutionMetadata"
+          },
           "rows": {
             "description": "Result rows returned by `DuckDB`.",
             "example": [
@@ -1207,12 +1404,49 @@
             "items": {},
             "minItems": 0,
             "type": "array"
+          },
+          "source_watermark": {
+            "$ref": "#/components/schemas/QuerySourceWatermark"
           }
         },
         "required": [
-          "rows"
+          "rows",
+          "columns",
+          "execution",
+          "source_watermark"
         ],
         "type": "object"
+      },
+      "QueryResultColumn": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "nullable": {
+            "type": "boolean"
+          },
+          "value_type": {
+            "$ref": "#/components/schemas/QueryResultValueType"
+          }
+        },
+        "required": [
+          "name",
+          "value_type",
+          "nullable"
+        ],
+        "type": "object"
+      },
+      "QueryResultValueType": {
+        "enum": [
+          "boolean",
+          "string",
+          "i64",
+          "decimal",
+          "f64",
+          "json",
+          "timestamp_ms"
+        ],
+        "type": "string"
       },
       "QuerySelect": {
         "description": "Structured select expression.",
@@ -1243,6 +1477,16 @@
                   "column"
                 ],
                 "type": "string"
+              },
+              "table_alias": {
+                "default": null,
+                "example": "u",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -1280,6 +1524,16 @@
                 "maxLength": 1024,
                 "minLength": 1,
                 "type": "string"
+              },
+              "table_alias": {
+                "default": null,
+                "example": "u",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -1312,8 +1566,152 @@
               "kind"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "alias": {
+                "example": "total",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "sum"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "alias": {
+                "example": "minimum",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "min"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "alias": {
+                "example": "maximum",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "max"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "alias": {
+                "example": "average",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "avg"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "alias": {
+                "example": "distinct_count",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "count_distinct"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
           }
         ]
+      },
+      "QuerySourceWatermark": {
+        "properties": {
+          "max_ingested_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_occurred_at_ms": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "ReadyResponse": {
         "description": "Readiness response.",
@@ -2030,6 +2428,16 @@
             "minItems": 0,
             "type": "array"
           },
+          "joins": {
+            "default": [],
+            "description": "Optional bounded joins.",
+            "items": {
+              "$ref": "#/components/schemas/QueryJoin"
+            },
+            "maxItems": 2,
+            "minItems": 0,
+            "type": "array"
+          },
           "limit": {
             "default": null,
             "description": "Optional row limit.",
@@ -2074,6 +2482,17 @@
             },
             "minItems": 1,
             "type": "array"
+          },
+          "table_alias": {
+            "default": null,
+            "description": "Optional alias for the primary table. Defaults to the table name when\nomitted.",
+            "example": "u",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2211,6 +2630,18 @@
               "null"
             ]
           },
+          "join_policy": {
+            "default": {
+              "allowed_as_join": false,
+              "allowed_as_primary": true
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/JoinPolicy",
+                "description": "Join participation policy for bounded structured queries."
+              }
+            ]
+          },
           "partition_keys": {
             "default": [],
             "description": "`DuckLake` partition layout columns.",
@@ -2315,6 +2746,17 @@
               "null"
             ]
           },
+          "table_scope": {
+            "default": {
+              "kind": "tenant_scoped"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TableScope",
+                "description": "Tenant/reference scope used by safe structured query planning."
+              }
+            ]
+          },
           "tenant_id": {
             "default": null,
             "description": "Static tenant id to write into ingested rows when the source does not\ncarry tenant identity.",
@@ -2348,6 +2790,45 @@
           "analytics_table_name"
         ],
         "type": "object"
+      },
+      "TableScope": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "tenant_scoped"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "global_reference"
+                ],
+                "type": "string"
+              },
+              "reference_class": {
+                "example": "public_product_catalog",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "reference_class",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "TenantQueryBatchItem": {
         "description": "Named tenant-scoped structured query for batch execution.",

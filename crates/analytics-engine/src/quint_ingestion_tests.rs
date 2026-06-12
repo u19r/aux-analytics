@@ -506,6 +506,8 @@ fn manifest() -> AnalyticsManifest {
             columns: Vec::new(),
             partition_keys: Vec::new(),
             clustering_keys: Vec::new(),
+            table_scope: analytics_contract::TableScope::default(),
+            join_policy: analytics_contract::JoinPolicy::default(),
         },
         TableRegistration {
             source_table_name: "audit_stream".to_string(),
@@ -528,6 +530,8 @@ fn manifest() -> AnalyticsManifest {
             columns: Vec::new(),
             partition_keys: Vec::new(),
             clustering_keys: Vec::new(),
+            table_scope: analytics_contract::TableScope::default(),
+            join_policy: analytics_contract::JoinPolicy::default(),
         },
     ])
 }
@@ -571,6 +575,8 @@ fn lifecycle_table(
         columns: Vec::new(),
         partition_keys: Vec::new(),
         clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
     }
 }
 

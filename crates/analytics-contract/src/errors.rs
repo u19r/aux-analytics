@@ -4,6 +4,8 @@ pub enum ManifestValidationError {
     EmptyField(&'static str),
     DuplicateAnalyticsTableName(String),
     DuplicateColumnName { table: String, column: String },
+    GlobalReferenceHasTenantScope { table: String },
+    InvalidJoinPolicy { table: String, reason: &'static str },
     ReservedOutputColumn { table: String, column: String },
     UnknownLayoutColumn { table: String, column: String },
     InvalidRetentionPeriod { table: String },
@@ -24,6 +26,18 @@ impl std::fmt::Display for ManifestValidationError {
             }
             Self::DuplicateColumnName { table, column } => {
                 write!(f, "duplicate column {column} in analytics table {table}")
+            }
+            Self::GlobalReferenceHasTenantScope { table } => {
+                write!(
+                    f,
+                    "global reference table {table} must not declare tenant scope"
+                )
+            }
+            Self::InvalidJoinPolicy { table, reason } => {
+                write!(
+                    f,
+                    "join policy for analytics table {table} is invalid: {reason}"
+                )
             }
             Self::ReservedOutputColumn { table, column } => {
                 write!(
@@ -51,17 +65,36 @@ impl std::error::Error for ManifestValidationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredQueryValidationError {
+    DuplicateAlias(String),
     EmptyField(&'static str),
     EmptySelect,
+    InvalidIdentifier { field: &'static str, value: String },
     InvalidPath(String),
+    MissingJoinPredicate(String),
+    TooManyJoins { actual: usize, maximum: usize },
 }
 
 impl std::fmt::Display for StructuredQueryValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DuplicateAlias(alias) => {
+                write!(f, "query alias {alias} is declared more than once")
+            }
             Self::EmptyField(field) => write!(f, "query field {field} must not be empty"),
             Self::EmptySelect => write!(f, "structured query must select at least one field"),
+            Self::InvalidIdentifier { field, value } => {
+                write!(f, "query field {field} has invalid identifier {value}")
+            }
             Self::InvalidPath(path) => write!(f, "document path {path} is invalid"),
+            Self::MissingJoinPredicate(alias) => {
+                write!(f, "join {alias} must declare at least one on predicate")
+            }
+            Self::TooManyJoins { actual, maximum } => {
+                write!(
+                    f,
+                    "structured query has {actual} joins but supports at most {maximum}"
+                )
+            }
         }
     }
 }
