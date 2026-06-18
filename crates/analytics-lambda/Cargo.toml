@@ -17,7 +17,11 @@ bundled = ["analytics-api/bundled", "analytics-engine/bundled"]
 analytics-api = { workspace = true, default-features = false }
 analytics-contract = { workspace = true }
 analytics-engine = { workspace = true, default-features = false }
+aws-config = { workspace = true }
+aws-sdk-ssm = { workspace = true }
+base64 = { workspace = true }
 config = { workspace = true }
+flate2 = { workspace = true }
 jsonschema = { workspace = true }
 lambda_runtime = { workspace = true }
 schemars = { workspace = true }

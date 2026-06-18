@@ -54,6 +54,14 @@ impl AnalyticsStorageError {
             source: Some(Box::new(source)),
         }
     }
+
+    pub(crate) fn kind(&self) -> AnalyticsStorageErrorKind {
+        self.kind
+    }
+
+    pub(crate) fn debug(&self) -> &AnalyticsStorageErrorDebug {
+        &self.debug
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

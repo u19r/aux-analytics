@@ -45,6 +45,7 @@ fn poller_defaults_allow_many_responses_per_interval() {
     );
     assert_eq!(config.max_shards, 16);
     assert_eq!(config.max_responses_per_interval, 160);
+    assert_eq!(config.max_records_per_response, 1_000);
     assert_eq!(config.response_budget_per_shard(), 10);
 }
 
@@ -55,6 +56,7 @@ fn poller_plan_spreads_response_budget_across_concurrent_shards() {
         request_timeout: std::time::Duration::from_millis(5_000),
         max_shards: 3,
         max_responses_per_interval: 30,
+        max_records_per_response: 1_000,
     };
 
     let requests = config.plan_requests(["a", "b", "c", "d"]);

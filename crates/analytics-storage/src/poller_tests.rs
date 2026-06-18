@@ -5,6 +5,7 @@ use std::{
 };
 
 use analytics_contract::StorageStreamRecord;
+use config::AnalyticsSourceConfig;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -12,14 +13,15 @@ use tokio::{
 
 use crate::{
     PollBatch, PolledRecord, SnapshotChunk, SnapshotChunkCheckpoint, SourceCheckpoint,
+    SourcePoller, SourceTablePlan,
     aux_storage_client::AuxStorageStreamClient,
     aws_stream::AwsShardIteratorState,
     execution::{BackfillExecutionInputs, SnapshotChunkSource, StreamCatchupSource},
     poller::{
         AUX_STORAGE_SHARD_ID, AuxStorageTablePoller, apply_aws_iterator_checkpoint,
-        aws_stream_response_batch, checkpoint_position, expand_records,
+        aux_storage_initial_cursor, aws_stream_response_batch, checkpoint_position, expand_records,
         iterator_checkpoint_shard_id, next_aux_storage_cursor, table_index_from_request_shard,
-        table_request_names,
+        table_request_names_from,
     },
 };
 
@@ -54,6 +56,7 @@ fn given_aux_storage_checkpoint_for_same_table_when_committed_then_cursor_advanc
         source_table_name: "source_users".to_string(),
         analytics_table_names: vec!["users".to_string()],
         last_evaluated_key: Some("old".to_string()),
+        max_records_per_response: 1_000,
     };
 
     poller.commit(&SourceCheckpoint {
@@ -72,6 +75,7 @@ fn given_aux_storage_checkpoint_for_other_shard_when_committed_then_cursor_is_un
         source_table_name: "source_users".to_string(),
         analytics_table_names: vec!["users".to_string()],
         last_evaluated_key: Some("old".to_string()),
+        max_records_per_response: 1_000,
     };
 
     poller.commit(&SourceCheckpoint {
@@ -109,10 +113,60 @@ fn given_checkpoints_when_matching_table_and_shard_exists_then_position_is_reuse
 }
 
 #[test]
+fn given_registration_source_checkpoint_when_aux_storage_poller_starts_then_cursor_is_reused() {
+    let checkpoints = vec![SourceCheckpoint {
+        source_table_name: "nsystem".to_string(),
+        shard_id: AUX_STORAGE_SHARD_ID.to_string(),
+        position: "stale-registration-cursor".to_string(),
+    }];
+
+    let cursor = aux_storage_initial_cursor(
+        &checkpoints,
+        "nsystem",
+        &["analytics_registered_tables".to_string()],
+    );
+
+    assert_eq!(cursor.as_deref(), Some("stale-registration-cursor"));
+}
+
+#[test]
+fn given_metric_source_checkpoint_when_aux_storage_poller_starts_then_cursor_is_reused() {
+    let checkpoints = vec![SourceCheckpoint {
+        source_table_name: "ntenantabc".to_string(),
+        shard_id: AUX_STORAGE_SHARD_ID.to_string(),
+        position: "metric-cursor".to_string(),
+    }];
+
+    let cursor = aux_storage_initial_cursor(
+        &checkpoints,
+        "ntenantabc",
+        &["metric_points_v1".to_string()],
+    );
+
+    assert_eq!(cursor.as_deref(), Some("metric-cursor"));
+}
+
+#[test]
 fn given_pollable_tables_when_requests_are_planned_then_table_indexes_are_used_as_shard_ids() {
-    assert_eq!(table_request_names(3), vec!["0", "1", "2"]);
+    assert_eq!(table_request_names_from(3, 0), vec!["0", "1", "2"]);
     assert_eq!(table_index_from_request_shard("2"), Some(2));
     assert_eq!(table_index_from_request_shard("not-a-table-index"), None);
+}
+
+#[test]
+fn given_poll_budget_below_table_count_when_requests_are_planned_then_start_index_rotates() {
+    assert_eq!(
+        table_request_names_from(5, 0),
+        vec!["0", "1", "2", "3", "4"]
+    );
+    assert_eq!(
+        table_request_names_from(5, 4),
+        vec!["4", "0", "1", "2", "3"]
+    );
+    assert_eq!(
+        table_request_names_from(5, 8),
+        vec!["3", "4", "0", "1", "2"]
+    );
 }
 
 #[test]
@@ -233,6 +287,7 @@ async fn given_terminal_aux_storage_page_when_polled_then_last_record_sequence_i
         source_table_name: "source_users".to_string(),
         analytics_table_names: vec!["users".to_string()],
         last_evaluated_key: None,
+        max_records_per_response: 1_000,
     };
 
     let batch = poller.poll_once(1).await.expect("poll aux-storage page");
@@ -241,6 +296,59 @@ async fn given_terminal_aux_storage_page_when_polled_then_last_record_sequence_i
     assert_eq!(batch.records[0].record_key, "seq-1");
     assert_eq!(batch.checkpoints.len(), 1);
     assert_eq!(batch.checkpoints[0].position, "seq-2");
+}
+
+#[tokio::test]
+async fn given_registered_aux_storage_table_when_polled_by_name_then_only_that_table_is_polled() {
+    let base_url = serve_once(
+        r#"{"TableName":"source_accounts","Records":[{"Keys":{"pk":{"S":"ACCOUNT#1"}},"SequenceNumber":"seq-account-1"}]}"#,
+    )
+    .await;
+    let mut poller = SourcePoller::from_plans(
+        &source_config(&base_url),
+        vec![
+            SourceTablePlan::aux_storage("source_users".to_string(), vec!["users".to_string()]),
+            SourceTablePlan::aux_storage(
+                "source_accounts".to_string(),
+                vec!["accounts".to_string()],
+            ),
+        ],
+        &[],
+    )
+    .await
+    .expect("source poller");
+
+    let batch = poller
+        .poll_aux_storage_table("source_accounts")
+        .await
+        .expect("poll changed table");
+
+    assert_eq!(batch.records.len(), 1);
+    assert_eq!(batch.records[0].analytics_table_name, "accounts");
+    assert_eq!(batch.records[0].record_key, "seq-account-1");
+    assert_eq!(batch.checkpoints[0].source_table_name, "source_accounts");
+}
+
+#[tokio::test]
+async fn given_unregistered_aux_storage_table_when_polled_by_name_then_empty_batch_is_returned() {
+    let mut poller = SourcePoller::from_plans(
+        &source_config("http://127.0.0.1:1"),
+        vec![SourceTablePlan::aux_storage(
+            "source_users".to_string(),
+            vec!["users".to_string()],
+        )],
+        &[],
+    )
+    .await
+    .expect("source poller");
+
+    let batch = poller
+        .poll_aux_storage_table("source_accounts")
+        .await
+        .expect("poll unknown table");
+
+    assert!(batch.records.is_empty());
+    assert!(batch.checkpoints.is_empty());
 }
 
 #[tokio::test]
@@ -311,6 +419,14 @@ async fn serve_once(body: &'static str) -> String {
         socket.write_all(response.as_bytes()).await.unwrap();
     });
     format!("http://{addr}")
+}
+
+fn source_config(endpoint_url: &str) -> AnalyticsSourceConfig {
+    AnalyticsSourceConfig {
+        endpoint_url: Some(endpoint_url.to_string()),
+        poll_max_responses_per_interval: 1,
+        ..AnalyticsSourceConfig::default()
+    }
 }
 
 fn stream_record(sequence_number: &str) -> StorageStreamRecord {

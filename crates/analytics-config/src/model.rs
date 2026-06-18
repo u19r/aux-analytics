@@ -4,10 +4,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{
-    DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_LOG_LEVEL,
-    DEFAULT_OBJECT_STORAGE_SCHEME, DEFAULT_POLL_INTERVAL_MS,
-    DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL, DEFAULT_POLL_MAX_SHARDS,
-    DEFAULT_POLL_REQUEST_TIMEOUT_MS, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+    DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_INGEST_HEARTBEAT_INTERVAL_MS,
+    DEFAULT_INGEST_HEARTBEAT_TTL_MS, DEFAULT_INGEST_LEASE_DURATION_MS,
+    DEFAULT_INGEST_POLL_INTERVAL_MS, DEFAULT_INGEST_PROCESSOR_ENABLED, DEFAULT_INGEST_SLOT_COUNT,
+    DEFAULT_LOG_LEVEL, DEFAULT_OBJECT_STORAGE_SCHEME, DEFAULT_POLL_INTERVAL_MS,
+    DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE, DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL,
+    DEFAULT_POLL_MAX_SHARDS, DEFAULT_POLL_REQUEST_TIMEOUT_MS, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -172,6 +174,9 @@ pub struct AnalyticsConfig {
     pub source: AnalyticsSourceConfig,
     #[serde(default)]
     #[schemars(default)]
+    pub ingest: AnalyticsIngestConfig,
+    #[serde(default)]
+    #[schemars(default)]
     pub catalog: AnalyticsCatalogConfig,
     #[serde(default)]
     #[schemars(default)]
@@ -198,18 +203,42 @@ pub struct AnalyticsQueryConfig {
     #[serde(default = "default_query_max_read_connections")]
     #[schemars(default = "default_query_max_read_connections")]
     pub max_read_connections: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub max_response_size_kb: Option<usize>,
+    #[serde(default)]
+    #[schemars(default)]
+    pub lambda_response_compression: AnalyticsLambdaResponseCompression,
+    #[serde(default)]
+    #[schemars(default)]
+    pub lambda_query_only: bool,
+    #[serde(default)]
+    #[schemars(default)]
+    pub disable_duckdb_interrupt: bool,
 }
 
 impl Default for AnalyticsQueryConfig {
     fn default() -> Self {
         Self {
             max_read_connections: default_query_max_read_connections(),
+            max_response_size_kb: None,
+            lambda_response_compression: AnalyticsLambdaResponseCompression::default(),
+            lambda_query_only: false,
+            disable_duckdb_interrupt: false,
         }
     }
 }
 
 fn default_query_max_read_connections() -> usize {
     DEFAULT_QUERY_MAX_READ_CONNECTIONS
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalyticsLambdaResponseCompression {
+    #[default]
+    None,
+    GzipBase64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -255,9 +284,71 @@ pub struct AnalyticsSourceConfig {
     #[serde(default = "default_poll_max_responses_per_interval")]
     #[schemars(default = "default_poll_max_responses_per_interval")]
     pub poll_max_responses_per_interval: usize,
+    #[serde(default = "default_poll_max_records_per_response")]
+    #[schemars(default = "default_poll_max_records_per_response")]
+    pub poll_max_records_per_response: u32,
     #[serde(default)]
     #[schemars(default)]
     pub tables: Vec<AnalyticsSourceTableConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AnalyticsIngestConfig {
+    #[serde(default = "default_ingest_processor_enabled")]
+    #[schemars(default = "default_ingest_processor_enabled")]
+    pub processor_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub processor_id: Option<String>,
+    #[serde(default = "default_ingest_poll_interval_ms")]
+    #[schemars(default = "default_ingest_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_ingest_heartbeat_interval_ms")]
+    #[schemars(default = "default_ingest_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
+    #[serde(default = "default_ingest_lease_duration_ms")]
+    #[schemars(default = "default_ingest_lease_duration_ms")]
+    pub lease_duration_ms: u64,
+    #[serde(default = "default_ingest_heartbeat_ttl_ms")]
+    #[schemars(default = "default_ingest_heartbeat_ttl_ms")]
+    pub heartbeat_ttl_ms: u64,
+    #[serde(default = "default_ingest_slot_count")]
+    #[schemars(default = "default_ingest_slot_count")]
+    pub slot_count: u16,
+}
+
+impl Default for AnalyticsIngestConfig {
+    fn default() -> Self {
+        Self {
+            processor_enabled: default_ingest_processor_enabled(),
+            processor_id: None,
+            poll_interval_ms: default_ingest_poll_interval_ms(),
+            heartbeat_interval_ms: default_ingest_heartbeat_interval_ms(),
+            lease_duration_ms: default_ingest_lease_duration_ms(),
+            heartbeat_ttl_ms: default_ingest_heartbeat_ttl_ms(),
+            slot_count: default_ingest_slot_count(),
+        }
+    }
+}
+
+fn default_ingest_processor_enabled() -> bool {
+    DEFAULT_INGEST_PROCESSOR_ENABLED
+}
+fn default_ingest_poll_interval_ms() -> u64 {
+    DEFAULT_INGEST_POLL_INTERVAL_MS
+}
+fn default_ingest_heartbeat_interval_ms() -> u64 {
+    DEFAULT_INGEST_HEARTBEAT_INTERVAL_MS
+}
+fn default_ingest_lease_duration_ms() -> u64 {
+    DEFAULT_INGEST_LEASE_DURATION_MS
+}
+fn default_ingest_heartbeat_ttl_ms() -> u64 {
+    DEFAULT_INGEST_HEARTBEAT_TTL_MS
+}
+fn default_ingest_slot_count() -> u16 {
+    DEFAULT_INGEST_SLOT_COUNT
 }
 
 impl Default for AnalyticsSourceConfig {
@@ -271,6 +362,7 @@ impl Default for AnalyticsSourceConfig {
             poll_request_timeout_ms: default_poll_request_timeout_ms(),
             poll_max_shards: default_poll_max_shards(),
             poll_max_responses_per_interval: default_poll_max_responses_per_interval(),
+            poll_max_records_per_response: default_poll_max_records_per_response(),
             tables: Vec::new(),
         }
     }
@@ -287,6 +379,9 @@ fn default_poll_max_shards() -> usize {
 }
 fn default_poll_max_responses_per_interval() -> usize {
     DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL
+}
+fn default_poll_max_records_per_response() -> u32 {
+    DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -463,6 +558,24 @@ pub struct AnalyticsCatalogConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
     pub connection_string: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub duckdb_threads: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub postgres_pool_max_connections: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub postgres_pool_idle_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub postgres_pool_wait_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub postgres_pool_acquire_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub postgres_pool_enable_thread_local_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

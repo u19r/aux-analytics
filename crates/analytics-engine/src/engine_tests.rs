@@ -4,15 +4,17 @@ use std::{
 };
 
 use analytics_contract::{
-    AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, PrivacyPolicy, ProjectionColumn,
-    QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryPredicate, QuerySelect,
-    RetentionPolicy, RetentionTimestamp, RowIdentity, SourcePosition, StorageStreamRecord,
-    StorageValue, StructuredQuery, TableRegistration, TenantSelector,
+    AnalyticsColumnType, AnalyticsManifest, ClusteringKey, PrimitiveColumnType, PrivacyPolicy,
+    ProjectionColumn, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
+    QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity, SortOrder,
+    SourcePosition, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
+    TenantSelector,
 };
 use analytics_fixtures::{
     generic_items_manifest, legacy_item, metric_points_manifest, storage_key, user_item,
     users_manifest,
 };
+use config::{CatalogType, StorageBackend};
 
 use super::{
     AnalyticsEngine, IngestOutcome, PrivacyTableRemediationMode, SourceCheckpoint,
@@ -73,6 +75,131 @@ fn stream_records_are_projected_into_queryable_rows() {
         .expect("query");
     assert_eq!(rows[0]["tenant_id"], "tenant_01");
     assert_eq!(rows[0]["email"], "a@example.com");
+}
+
+#[test]
+fn timestamp_projection_epoch_millis_ingests_as_duckdb_timestamp() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "sessions".to_string(),
+        source_table_name_prefix: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: None,
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "created_at".to_string(),
+            attribute_path: "created_at".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::Timestamp,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
+    }]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let insert_outcome = engine
+        .ingest_stream_record(
+            &manifest,
+            "sessions",
+            b"session-1",
+            timestamp_record("seq-1", "1781572733032"),
+        )
+        .expect("insert timestamp");
+    assert_eq!(insert_outcome, IngestOutcome::Inserted);
+
+    let update_outcome = engine
+        .ingest_stream_record(
+            &manifest,
+            "sessions",
+            b"session-1",
+            timestamp_record("seq-2", "1781572733547"),
+        )
+        .expect("update timestamp");
+    assert_eq!(update_outcome, IngestOutcome::Updated);
+
+    let rows = engine
+        .query_unscoped_sql_json("select epoch_ms(created_at) as created_at_ms from sessions")
+        .expect("query timestamp");
+    assert_eq!(rows[0]["created_at_ms"], 1_781_572_733_547_i64);
+}
+
+#[test]
+fn existing_tables_gain_new_projection_columns_before_layout_is_applied() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let existing_manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "metric_events_raw".to_string(),
+        source_table_name_prefix: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: analytics_contract::RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
+    }]);
+    engine
+        .ensure_manifest(&existing_manifest)
+        .expect("ensure existing manifest");
+
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "metric_events_raw".to_string(),
+        source_table_name_prefix: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: analytics_contract::RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "updated_at_ms".to_string(),
+            attribute_path: "updated_at_ms".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::BigInt,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: vec![ClusteringKey {
+            column_name: "updated_at_ms".to_string(),
+            order: Some(SortOrder::Desc),
+        }],
+        table_scope: analytics_contract::TableScope::default(),
+        join_policy: analytics_contract::JoinPolicy::default(),
+    }]);
+
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let rows = engine
+        .query_unscoped_sql_json("select updated_at_ms from metric_events_raw")
+        .expect("query added column");
+    assert!(rows.is_empty());
 }
 
 #[test]
@@ -293,6 +420,50 @@ fn source_checkpoints_are_persisted_in_analytics_database() {
         vec![SourceCheckpoint {
             source_table_name: "tenant_entities".to_string(),
             shard_id: "shard-0001".to_string(),
+            position: "12345".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn source_checkpoints_are_persisted_in_ducklake_catalog() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let catalog_path = tempdir.path().join("catalog.sqlite");
+    let data_path = tempdir.path().join("ducklake-data");
+    std::fs::create_dir_all(&data_path).expect("create ducklake data dir");
+    let engine = AnalyticsEngine::connect(&StorageBackend::DuckLake {
+        catalog: CatalogType::Sqlite,
+        catalog_path: catalog_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    })
+    .expect("connect ducklake");
+    engine
+        .save_source_checkpoint(&SourceCheckpoint {
+            source_table_name: "s00000".to_string(),
+            shard_id: "aux-storage".to_string(),
+            position: "12345".to_string(),
+        })
+        .expect("save checkpoint");
+
+    let reopened = AnalyticsEngine::connect(&StorageBackend::DuckLake {
+        catalog: CatalogType::Sqlite,
+        catalog_path: catalog_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    })
+    .expect("reopen ducklake");
+    let checkpoints = reopened
+        .load_source_checkpoints()
+        .expect("load checkpoints");
+
+    assert_eq!(
+        checkpoints,
+        vec![SourceCheckpoint {
+            source_table_name: "s00000".to_string(),
+            shard_id: "aux-storage".to_string(),
             position: "12345".to_string(),
         }]
     );
@@ -911,6 +1082,55 @@ fn tenant_structured_query_executes_joined_metric_scan() {
 }
 
 #[test]
+fn expanded_metric_wal_point_uses_tenant_attribute_for_materialization() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let mut item = metric_point_item("evt_wal_1", "input", "7");
+    item.insert(
+        "series_name".to_string(),
+        StorageValue::S("canary_lambda_gzip".to_string()),
+    );
+    item.insert(
+        "tenant_id".to_string(),
+        StorageValue::S("t_metric_wal".to_string()),
+    );
+    item.insert(
+        "wal_batch_id".to_string(),
+        StorageValue::S("mwb_01".to_string()),
+    );
+    item.insert(
+        "wal_row_ordinal".to_string(),
+        StorageValue::N("0".to_string()),
+    );
+
+    let outcome = engine
+        .ingest_stream_record(
+            &manifest,
+            "metric_points_v1",
+            b"mwb_01:0",
+            StorageStreamRecord {
+                sequence_number: "mwb_01:0".to_string(),
+                keys: HashMap::new(),
+                old_image: None,
+                new_image: Some(item),
+            },
+        )
+        .expect("ingest expanded WAL metric point");
+
+    assert_eq!(outcome, IngestOutcome::Inserted);
+    let rows = engine
+        .query_tenant_structured_json(
+            &manifest,
+            &metric_sum_query("canary_lambda_gzip"),
+            "t_metric_wal",
+        )
+        .expect("query materialized WAL metric point");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["quantity"], 7);
+}
+
+#[test]
 fn metric_fact_layout_executes_core_meter_query_shapes() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     let manifest = metric_points_manifest();
@@ -1278,6 +1498,18 @@ fn user_record(sequence_number: &str, email: &str) -> StorageStreamRecord {
         keys: storage_key("USER", "1"),
         old_image: None,
         new_image: Some(analytics_fixtures::user_item("1", email, "org-a")),
+    }
+}
+
+fn timestamp_record(sequence_number: &str, created_at_ms: &str) -> StorageStreamRecord {
+    StorageStreamRecord {
+        sequence_number: sequence_number.to_string(),
+        keys: HashMap::new(),
+        old_image: None,
+        new_image: Some(HashMap::from([(
+            "created_at".to_string(),
+            StorageValue::N(created_at_ms.to_string()),
+        )])),
     }
 }
 

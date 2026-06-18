@@ -415,8 +415,9 @@ fn check_poll_error_health() -> Result<ApiPollingResult> {
 }
 
 fn check_startup_disabled() -> Result<ApiPollingResult> {
-    if source_polling_startup(0, false) == SourcePollingStartup::Disabled
-        && source_polling_startup(2, true) == SourcePollingStartup::Disabled
+    if source_polling_startup(true, 0, false) == SourcePollingStartup::Disabled
+        && source_polling_startup(true, 2, true) == SourcePollingStartup::Disabled
+        && source_polling_startup(false, 2, false) == SourcePollingStartup::Disabled
     {
         Ok(ApiPollingResult::StartupDisabled)
     } else {
@@ -427,7 +428,7 @@ fn check_startup_disabled() -> Result<ApiPollingResult> {
 }
 
 fn check_startup_starting() -> Result<ApiPollingResult> {
-    if source_polling_startup(2, false) == SourcePollingStartup::Starting {
+    if source_polling_startup(true, 2, false) == SourcePollingStartup::Starting {
         Ok(ApiPollingResult::StartupStarting)
     } else {
         Err(anyhow::anyhow!(

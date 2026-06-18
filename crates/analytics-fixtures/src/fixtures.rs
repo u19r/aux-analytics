@@ -226,12 +226,18 @@ fn metric_points_columns() -> Vec<AnalyticsColumn> {
         analytics_column("ingested_at_ms", PrimitiveColumnType::BigInt),
         analytics_column("event_id", PrimitiveColumnType::VarChar),
         analytics_column("value_i64", PrimitiveColumnType::BigInt),
+        analytics_column("value_u64", PrimitiveColumnType::BigInt),
         analytics_column("value_decimal", PrimitiveColumnType::Decimal),
+        analytics_column("value_f64", PrimitiveColumnType::Decimal),
+        analytics_column("value_bool", PrimitiveColumnType::Boolean),
         analytics_column("dim_1", PrimitiveColumnType::VarChar),
         analytics_column("dim_2", PrimitiveColumnType::VarChar),
         analytics_column("dim_3", PrimitiveColumnType::VarChar),
         analytics_column("source", PrimitiveColumnType::VarChar),
         analytics_column("schema_version", PrimitiveColumnType::BigInt),
+        analytics_column("external_event_id", PrimitiveColumnType::VarChar),
+        analytics_column("wal_batch_id", PrimitiveColumnType::VarChar),
+        analytics_column("wal_row_ordinal", PrimitiveColumnType::BigInt),
     ]
 }
 

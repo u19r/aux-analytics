@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use crate::{
-    AnalyticsCatalogBackend, AnalyticsObjectStorageConfig, AnalyticsRetentionConfig,
-    AnalyticsSourceConfig, ConfigError, ConfigErrorDebug, ConfigErrorKind, RootConfig,
-    TenantRetentionPolicyRequest, TenantRetentionPolicySource, load_optional_with_overrides,
+    AnalyticsCatalogBackend, AnalyticsCatalogConfig, AnalyticsIngestConfig,
+    AnalyticsObjectStorageConfig, AnalyticsRetentionConfig, AnalyticsSourceConfig, ConfigError,
+    ConfigErrorDebug, ConfigErrorKind, RootConfig, TenantRetentionPolicyRequest,
+    TenantRetentionPolicySource, load_optional_with_overrides,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,6 +33,7 @@ impl BackendOverride {
                 catalog_path: catalog_path.clone(),
                 data_path: self.required_ducklake_data_path()?,
                 object_storage: None,
+                catalog_settings: DuckLakeCatalogSettings::default(),
             });
         }
         if let Some(catalog_path) = self.ducklake_postgres_catalog.as_ref() {
@@ -40,6 +42,7 @@ impl BackendOverride {
                 catalog_path: catalog_path.clone(),
                 data_path: self.required_ducklake_data_path()?,
                 object_storage: None,
+                catalog_settings: DuckLakeCatalogSettings::default(),
             });
         }
         Err(ConfigError::new(ConfigErrorKind::MissingBackend))
@@ -62,6 +65,7 @@ pub enum StorageBackend {
         catalog_path: String,
         data_path: String,
         object_storage: Option<Box<AnalyticsObjectStorageConfig>>,
+        catalog_settings: DuckLakeCatalogSettings,
     },
 }
 
@@ -69,6 +73,29 @@ pub enum StorageBackend {
 pub enum CatalogType {
     Sqlite,
     Postgres,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DuckLakeCatalogSettings {
+    pub duckdb_threads: Option<usize>,
+    pub postgres_pool_max_connections: Option<usize>,
+    pub postgres_pool_idle_timeout_ms: Option<u64>,
+    pub postgres_pool_wait_timeout_ms: Option<u64>,
+    pub postgres_pool_acquire_mode: Option<String>,
+    pub postgres_pool_enable_thread_local_cache: Option<bool>,
+}
+
+impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
+    fn from(config: &AnalyticsCatalogConfig) -> Self {
+        Self {
+            duckdb_threads: config.duckdb_threads,
+            postgres_pool_max_connections: config.postgres_pool_max_connections,
+            postgres_pool_idle_timeout_ms: config.postgres_pool_idle_timeout_ms,
+            postgres_pool_wait_timeout_ms: config.postgres_pool_wait_timeout_ms,
+            postgres_pool_acquire_mode: config.postgres_pool_acquire_mode.clone(),
+            postgres_pool_enable_thread_local_cache: config.postgres_pool_enable_thread_local_cache,
+        }
+    }
 }
 
 pub fn resolve_storage_backend(
@@ -97,12 +124,14 @@ pub fn resolve_storage_backend(
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: DuckLakeCatalogSettings::from(catalog),
         }),
         AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Postgres,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: DuckLakeCatalogSettings::from(catalog),
         }),
     }
 }
@@ -172,6 +201,49 @@ pub fn validate_source_config(source: &AnalyticsSourceConfig) -> Result<(), Conf
         }
     }
     Ok(())
+}
+
+pub fn validate_ingest_config(ingest: &AnalyticsIngestConfig) -> Result<(), ConfigError> {
+    if let Some(processor_id) = ingest.processor_id.as_deref()
+        && processor_id.trim().is_empty()
+    {
+        return invalid_ingest_config("processor_id must not be empty when configured");
+    }
+    if ingest.poll_interval_ms == 0
+        || ingest.heartbeat_interval_ms == 0
+        || ingest.lease_duration_ms == 0
+        || ingest.heartbeat_ttl_ms == 0
+        || ingest.slot_count == 0
+    {
+        return invalid_ingest_config(
+            "poll_interval_ms, heartbeat_interval_ms, lease_duration_ms, heartbeat_ttl_ms, and \
+             slot_count must be greater than zero",
+        );
+    }
+    let min_lease_ms = ingest.heartbeat_interval_ms.checked_mul(2).ok_or_else(|| {
+        ConfigError::with_debug(
+            ConfigErrorKind::InvalidIngestConfig,
+            ConfigErrorDebug::Message(
+                "heartbeat_interval_ms is too large to validate lease duration".to_string(),
+            ),
+        )
+    })?;
+    if ingest.lease_duration_ms < min_lease_ms {
+        return invalid_ingest_config(
+            "lease_duration_ms must be at least two heartbeat_interval_ms values",
+        );
+    }
+    if ingest.heartbeat_ttl_ms < ingest.lease_duration_ms {
+        return invalid_ingest_config("heartbeat_ttl_ms must be at least lease_duration_ms");
+    }
+    Ok(())
+}
+
+fn invalid_ingest_config<T>(message: &str) -> Result<T, ConfigError> {
+    Err(ConfigError::with_debug(
+        ConfigErrorKind::InvalidIngestConfig,
+        ConfigErrorDebug::Message(message.to_string()),
+    ))
 }
 
 #[allow(clippy::too_many_lines)]

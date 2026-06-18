@@ -1,10 +1,12 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, io::Read, sync::Arc};
 
 use analytics_contract::{
     PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
 };
 use analytics_fixtures::{user_item, users_manifest};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::{AnalyticsCatalogBackend, RootConfig};
+use flate2::read::GzDecoder;
 
 use super::*;
 
@@ -115,6 +117,10 @@ async fn lambda_runs_structured_queries() {
         .expect("structured query");
 
     assert_eq!(query_response["rows"][0]["email"], "structured@example.com");
+    assert_eq!(query_response["execution"]["row_count"], 1);
+    assert_eq!(query_response["execution"]["tables"], json!(["users"]));
+    assert_eq!(query_response["columns"][0]["name"], "email");
+    assert!(query_response["source_watermark"].is_object());
 }
 
 #[tokio::test]
@@ -256,10 +262,123 @@ async fn lambda_tenant_query_batch_returns_named_results() {
 
     assert_eq!(query_response["results"][0]["name"], "total_users");
     assert_eq!(query_response["results"][0]["rows"][0]["count"], 1);
+    assert_eq!(query_response["results"][0]["execution"]["row_count"], 1);
+    assert_eq!(query_response["results"][0]["columns"][0]["name"], "count");
     assert_eq!(query_response["results"][1]["name"], "matching_users");
     assert_eq!(
         query_response["results"][1]["rows"][0]["email"],
         "tenant-a@example.com"
+    );
+}
+
+#[tokio::test]
+async fn lambda_rejects_query_responses_that_exceed_configured_size() {
+    let handler = test_handler_with_response_config(LambdaResponseConfig {
+        max_response_size_kb: Some(1),
+        response_compression: AnalyticsLambdaResponseCompression::None,
+        query_only: false,
+        disable_duckdb_interrupt: false,
+    });
+    let large_email = format!("{}@example.com", "large-response-payload".repeat(128));
+    handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", large_email.as_str(), "org-a"),
+            }
+        }))
+        .await
+        .expect("ingest");
+
+    let error = handler
+        .handle_event(json!({
+            "operation": "tenant_query",
+            "target_tenant_id": "tenant_01",
+            "query": email_query(Some(1)),
+        }))
+        .await
+        .expect_err("response too large");
+
+    assert!(error.to_string().contains("analytics_response_too_large"));
+}
+
+#[tokio::test]
+async fn lambda_compresses_query_response_when_raw_json_exceeds_configured_size() {
+    let handler = test_handler_with_response_config(LambdaResponseConfig {
+        max_response_size_kb: Some(1),
+        response_compression: AnalyticsLambdaResponseCompression::GzipBase64,
+        query_only: false,
+        disable_duckdb_interrupt: false,
+    });
+    let large_email = format!("{}@example.com", "compressible".repeat(128));
+    handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", large_email.as_str(), "org-a"),
+            }
+        }))
+        .await
+        .expect("ingest");
+
+    let response = handler
+        .handle_event(json!({
+            "operation": "tenant_query",
+            "target_tenant_id": "tenant_01",
+            "query": email_query(Some(1)),
+        }))
+        .await
+        .expect("compressed response");
+
+    assert_eq!(response["encoding"], "gzip+base64");
+    let decoded = BASE64
+        .decode(response["payload"].as_str().expect("payload"))
+        .expect("base64");
+    let mut decoder = GzDecoder::new(decoded.as_slice());
+    let mut json_payload = String::new();
+    decoder
+        .read_to_string(&mut json_payload)
+        .expect("gzip payload");
+    let decompressed: serde_json::Value = serde_json::from_str(&json_payload).expect("json");
+    assert_eq!(decompressed["rows"][0]["email"], large_email);
+    assert_eq!(decompressed["execution"]["row_count"], 1);
+}
+
+#[tokio::test]
+async fn lambda_query_only_mode_rejects_ingest_operations() {
+    let handler = test_handler_with_response_config(LambdaResponseConfig {
+        max_response_size_kb: None,
+        response_compression: AnalyticsLambdaResponseCompression::None,
+        query_only: true,
+        disable_duckdb_interrupt: false,
+    });
+
+    let error = handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", "a@example.com", "org-a"),
+            }
+        }))
+        .await
+        .expect_err("query-only ingest");
+
+    assert!(
+        error
+            .to_string()
+            .contains("analytics.query.lambda_query_only")
     );
 }
 
@@ -337,6 +456,38 @@ fn test_handler_with_privacy_policy(policy: PrivacyPolicy) -> AnalyticsLambdaHan
     .expect("handler")
 }
 
+fn test_handler_with_response_config(
+    response_config: LambdaResponseConfig,
+) -> AnalyticsLambdaHandler {
+    AnalyticsLambdaHandler::new_with_privacy_policy_max_read_connections_and_response_config(
+        users_manifest(),
+        &StorageBackend::DuckDb {
+            path: ":memory:".to_string(),
+        },
+        None,
+        config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+        response_config,
+    )
+    .expect("handler")
+}
+
+fn email_query(limit: Option<u32>) -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::Column {
+            table_alias: None,
+            column_name: "email".to_string(),
+            alias: None,
+        }],
+        filters: Vec::new(),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit,
+    }
+}
+
 #[test]
 fn given_lambda_manifest_path_in_env_when_resolved_then_it_overrides_config_path() {
     let mut root = RootConfig::default();
@@ -361,6 +512,174 @@ fn given_lambda_without_manifest_path_when_resolved_then_manifest_requirement_is
 }
 
 #[test]
+fn given_aws_lambda_env_when_applied_then_query_and_ducklake_config_are_overridden() {
+    let mut root = RootConfig::default();
+    let env = env_map([
+        (ENV_CATALOG_BACKEND, "ducklake_postgres"),
+        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
+        (ENV_OBJECT_REGION, "us-east-1"),
+        (ENV_CATALOG_DUCKDB_THREADS, "1"),
+        (ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS, "1"),
+        (ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS, "1000"),
+        (ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS, "5000"),
+        (ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE, "wait"),
+        (ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE, "false"),
+        (ENV_QUERY_MAX_READ_CONNECTIONS, "1"),
+        (ENV_QUERY_MAX_RESPONSE_SIZE_KB, "5800"),
+        (ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION, "gzip_base64"),
+        (ENV_QUERY_LAMBDA_QUERY_ONLY, "true"),
+        (ENV_QUERY_DISABLE_DUCKDB_INTERRUPT, "true"),
+    ]);
+
+    apply_lambda_env_config(&mut root, |key| env.get(key).cloned()).expect("env config");
+
+    assert_eq!(
+        root.analytics.catalog.backend,
+        Some(AnalyticsCatalogBackend::DucklakePostgres)
+    );
+    assert_eq!(
+        root.analytics.object_storage.bucket.as_deref(),
+        Some("analytics-bucket")
+    );
+    assert_eq!(
+        root.analytics.object_storage.path.as_deref(),
+        Some("warehouse")
+    );
+    assert_eq!(
+        root.analytics.object_storage.region.as_deref(),
+        Some("us-east-1")
+    );
+    assert_eq!(
+        root.analytics.object_storage.endpoint_url.as_deref(),
+        Some("s3.us-east-1.amazonaws.com")
+    );
+    assert!(root.analytics.object_storage.credentials.is_none());
+    assert_eq!(root.analytics.catalog.duckdb_threads, Some(1));
+    assert_eq!(
+        root.analytics.catalog.postgres_pool_max_connections,
+        Some(1)
+    );
+    assert_eq!(
+        root.analytics.catalog.postgres_pool_idle_timeout_ms,
+        Some(1_000)
+    );
+    assert_eq!(
+        root.analytics.catalog.postgres_pool_wait_timeout_ms,
+        Some(5_000)
+    );
+    assert_eq!(
+        root.analytics.catalog.postgres_pool_acquire_mode.as_deref(),
+        Some("wait")
+    );
+    assert_eq!(
+        root.analytics
+            .catalog
+            .postgres_pool_enable_thread_local_cache,
+        Some(false)
+    );
+    assert_eq!(root.analytics.query.max_read_connections, 1);
+    assert_eq!(root.analytics.query.max_response_size_kb, Some(5800));
+    assert_eq!(
+        root.analytics.query.lambda_response_compression,
+        AnalyticsLambdaResponseCompression::GzipBase64
+    );
+    assert!(root.analytics.query.lambda_query_only);
+    assert!(root.analytics.query.disable_duckdb_interrupt);
+}
+
+#[test]
+fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config_is_preserved() {
+    let mut root = RootConfig::default();
+    root.analytics.object_storage.bucket = Some("analytics-bucket".to_string());
+    root.analytics.object_storage.path = Some("warehouse".to_string());
+    root.analytics.object_storage.region = Some("us-east-1".to_string());
+    root.analytics.object_storage.credentials = Some(config::RemoteCredentialsConfig {
+        instance_keys: Some(true),
+        ..config::RemoteCredentialsConfig::default()
+    });
+    let env = env_map([
+        (
+            ENV_DUCKLAKE_POSTGRES_CATALOG,
+            "postgres://catalog.example/db",
+        ),
+        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
+    ]);
+
+    let backend =
+        resolve_storage_backend_from_env_with(&root, |key| env.get(key).cloned()).expect("backend");
+
+    let StorageBackend::DuckLake {
+        catalog,
+        catalog_path,
+        data_path,
+        object_storage,
+        ..
+    } = backend
+    else {
+        panic!("expected DuckLake backend");
+    };
+    assert_eq!(catalog, analytics_engine::CatalogType::Postgres);
+    assert_eq!(catalog_path, "postgres://catalog.example/db");
+    assert_eq!(data_path, "s3://analytics-bucket/warehouse");
+    assert_eq!(
+        object_storage
+            .as_ref()
+            .and_then(|storage| storage.credentials.as_ref())
+            .and_then(|credentials| credentials.instance_keys),
+        Some(true)
+    );
+}
+
+#[test]
+fn given_invalid_lambda_query_env_when_applied_then_validation_error_names_variable() {
+    let mut root = RootConfig::default();
+    let env = env_map([(ENV_QUERY_MAX_RESPONSE_SIZE_KB, "many")]);
+
+    let error = apply_lambda_env_config(&mut root, |key| env.get(key).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(ENV_QUERY_MAX_RESPONSE_SIZE_KB));
+}
+
+#[test]
+fn given_ssm_catalog_value_when_applied_then_ducklake_postgres_catalog_is_configured() {
+    let mut root = RootConfig::default();
+
+    apply_ssm_catalog_parameter_value(
+        &mut root,
+        "/aux-infra/test/planetscale/analytics-postgres-url",
+        "postgres://catalog.example/db",
+    )
+    .expect("catalog parameter");
+
+    assert_eq!(
+        root.analytics.catalog.backend,
+        Some(AnalyticsCatalogBackend::DucklakePostgres)
+    );
+    assert_eq!(
+        root.analytics.catalog.connection_string.as_deref(),
+        Some("postgres://catalog.example/db")
+    );
+}
+
+#[test]
+fn given_empty_ssm_catalog_value_when_applied_then_error_names_parameter() {
+    let mut root = RootConfig::default();
+
+    let error = apply_ssm_catalog_parameter_value(
+        &mut root,
+        "/aux-infra/test/planetscale/analytics-postgres-url",
+        " ",
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("/aux-infra/test/planetscale/analytics-postgres-url")
+    );
+}
+
+#[test]
 fn given_duckdb_catalog_config_when_lambda_backend_is_resolved_then_embedded_duckdb_is_used() {
     let mut root = RootConfig::default();
     root.analytics.catalog.backend = Some(AnalyticsCatalogBackend::Duckdb);
@@ -369,6 +688,15 @@ fn given_duckdb_catalog_config_when_lambda_backend_is_resolved_then_embedded_duc
     let backend = resolve_storage_backend_from_config(&root).expect("backend");
 
     assert!(matches!(backend, StorageBackend::DuckDb { path } if path == ":memory:"));
+}
+
+fn env_map(
+    values: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> BTreeMap<String, String> {
+    values
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[test]

@@ -1,9 +1,19 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, io::Write, path::PathBuf, sync::Arc, time::Instant};
 
-use analytics_api::{AnalyticsEngineAccess, IngestStreamRecordRequest};
+use analytics_api::{
+    AnalyticsEngineAccess, IngestStreamRecordRequest, QueryBatchResult, QueryResponseBuildError,
+    build_query_batch_result, build_query_response,
+};
 use analytics_contract::{AnalyticsManifest, PrivacyPolicy, StructuredQuery};
 use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
-use config::{AnalyticsCatalogBackend, RootConfig, load_optional_with_overrides};
+use aws_config::BehaviorVersion;
+use aws_sdk_ssm::Client as SsmClient;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use config::{
+    AnalyticsCatalogBackend, AnalyticsLambdaResponseCompression, RootConfig,
+    load_optional_with_overrides,
+};
+use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -15,7 +25,30 @@ const ENV_MANIFEST_PATH: &str = "AUX_ANALYTICS_MANIFEST";
 const ENV_DUCKDB: &str = "AUX_ANALYTICS_DUCKDB";
 const ENV_DUCKLAKE_SQLITE_CATALOG: &str = "AUX_ANALYTICS_DUCKLAKE_SQLITE_CATALOG";
 const ENV_DUCKLAKE_POSTGRES_CATALOG: &str = "AUX_ANALYTICS_DUCKLAKE_POSTGRES_CATALOG";
+const ENV_DUCKLAKE_POSTGRES_CATALOG_PARAMETER: &str =
+    "AUX_ANALYTICS_DUCKLAKE_POSTGRES_CATALOG_PARAMETER";
 const ENV_DUCKLAKE_DATA_PATH: &str = "AUX_ANALYTICS_DUCKLAKE_DATA_PATH";
+const ENV_CATALOG_BACKEND: &str = "AUX_ANALYTICS_CATALOG_BACKEND";
+const ENV_S3_BUCKET: &str = "AUX_ANALYTICS_S3_BUCKET";
+const ENV_S3_PREFIX: &str = "AUX_ANALYTICS_S3_PREFIX";
+const ENV_OBJECT_REGION: &str = "AUX_ANALYTICS_OBJECT_REGION";
+const ENV_CATALOG_DUCKDB_THREADS: &str = "AUX_ANALYTICS_CATALOG_DUCKDB_THREADS";
+const ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS: &str =
+    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS";
+const ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS: &str =
+    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS";
+const ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS: &str =
+    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS";
+const ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE: &str =
+    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_ACQUIRE_MODE";
+const ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE: &str =
+    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE";
+const ENV_QUERY_MAX_READ_CONNECTIONS: &str = "AUX_ANALYTICS_QUERY_MAX_READ_CONNECTIONS";
+const ENV_QUERY_MAX_RESPONSE_SIZE_KB: &str = "AUX_ANALYTICS_QUERY_MAX_RESPONSE_SIZE_KB";
+const ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION: &str =
+    "AUX_ANALYTICS_QUERY_LAMBDA_RESPONSE_COMPRESSION";
+const ENV_QUERY_LAMBDA_QUERY_ONLY: &str = "AUX_ANALYTICS_QUERY_LAMBDA_QUERY_ONLY";
+const ENV_QUERY_DISABLE_DUCKDB_INTERRUPT: &str = "AUX_ANALYTICS_QUERY_DISABLE_DUCKDB_INTERRUPT";
 
 #[derive(Debug, Error)]
 pub enum AnalyticsLambdaError {
@@ -29,8 +62,20 @@ pub enum AnalyticsLambdaError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("query response metadata error: {0}")]
+    QueryResponse(#[from] QueryResponseBuildError),
+    #[error(
+        "analytics_response_too_large: serialized response is {actual_bytes} bytes, limit is \
+         {limit_bytes} bytes"
+    )]
+    ResponseTooLarge {
+        actual_bytes: usize,
+        limit_bytes: usize,
+    },
     #[error("schema error: {0}")]
     Schema(String),
+    #[error("ssm error: {0}")]
+    Ssm(String),
     #[error("privacy policy error: {0}")]
     PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("query task failed: {0}")]
@@ -47,29 +92,67 @@ impl AnalyticsLambdaError {
     fn validation(message: impl Into<String>) -> Self {
         Self::Validation(message.into())
     }
+
+    fn ssm(message: impl Into<String>) -> Self {
+        Self::Ssm(message.into())
+    }
 }
 
 pub struct AnalyticsLambdaHandler {
     manifest: Arc<AnalyticsManifest>,
     engine: AnalyticsEngineAccess,
     privacy_policy: Option<Arc<PrivacyPolicy>>,
+    response_config: LambdaResponseConfig,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LambdaResponseConfig {
+    max_response_size_kb: Option<usize>,
+    response_compression: AnalyticsLambdaResponseCompression,
+    query_only: bool,
+    disable_duckdb_interrupt: bool,
+}
+
+impl Default for LambdaResponseConfig {
+    fn default() -> Self {
+        Self {
+            max_response_size_kb: None,
+            response_compression: AnalyticsLambdaResponseCompression::None,
+            query_only: false,
+            disable_duckdb_interrupt: false,
+        }
+    }
+}
+
+impl From<&config::AnalyticsQueryConfig> for LambdaResponseConfig {
+    fn from(query: &config::AnalyticsQueryConfig) -> Self {
+        Self {
+            max_response_size_kb: query.max_response_size_kb,
+            response_compression: query.lambda_response_compression,
+            query_only: query.lambda_query_only,
+            disable_duckdb_interrupt: query.disable_duckdb_interrupt,
+        }
+    }
 }
 
 impl AnalyticsLambdaHandler {
-    pub fn from_env() -> Result<Self, AnalyticsLambdaError> {
+    pub async fn from_env() -> Result<Self, AnalyticsLambdaError> {
         let config_path = optional_env_path(ENV_CONFIG_PATH);
         let config = load_optional_with_overrides(config_path.as_deref(), &[])?;
-        let root = config.root.clone();
+        let mut root = config.root.clone();
+        apply_lambda_env_config(&mut root, optional_env)?;
+        apply_ssm_catalog_parameter_from_env(&mut root).await?;
         let manifest_path =
             resolve_manifest_path(optional_env(ENV_MANIFEST_PATH).as_deref(), &root)?;
         let manifest = read_manifest(manifest_path.as_str())?;
         let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
         let backend = resolve_storage_backend_from_env(&root)?;
-        Self::new_with_privacy_policy_and_max_read_connections(
+        Self::new_with_privacy_policy_max_read_connections_and_response_config(
             manifest,
             &backend,
             privacy_policy,
             root.analytics.query.max_read_connections,
+            LambdaResponseConfig::from(&root.analytics.query),
         )
     }
 
@@ -77,13 +160,12 @@ impl AnalyticsLambdaHandler {
         manifest: AnalyticsManifest,
         backend: &StorageBackend,
     ) -> Result<Self, AnalyticsLambdaError> {
-        let engine = AnalyticsEngine::connect(backend)?;
-        engine.ensure_manifest(&manifest)?;
-        Ok(Self {
-            manifest: Arc::new(manifest),
-            engine: AnalyticsEngineAccess::backend_aware(engine, backend.clone()),
-            privacy_policy: None,
-        })
+        Self::new_with_privacy_policy_and_max_read_connections(
+            manifest,
+            backend,
+            None,
+            config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+        )
     }
 
     pub fn new_with_privacy_policy(
@@ -105,16 +187,40 @@ impl AnalyticsLambdaHandler {
         privacy_policy: Option<Arc<PrivacyPolicy>>,
         max_read_connections: usize,
     ) -> Result<Self, AnalyticsLambdaError> {
+        Self::new_with_privacy_policy_max_read_connections_and_response_config(
+            manifest,
+            backend,
+            privacy_policy,
+            max_read_connections,
+            LambdaResponseConfig::default(),
+        )
+    }
+
+    pub fn new_with_privacy_policy_max_read_connections_and_response_config(
+        manifest: AnalyticsManifest,
+        backend: &StorageBackend,
+        privacy_policy: Option<Arc<PrivacyPolicy>>,
+        max_read_connections: usize,
+        response_config: LambdaResponseConfig,
+    ) -> Result<Self, AnalyticsLambdaError> {
         let engine = AnalyticsEngine::connect(backend)?;
-        engine.ensure_manifest(&manifest)?;
-        Ok(Self {
-            manifest: Arc::new(manifest),
-            engine: AnalyticsEngineAccess::backend_aware_with_max_read_connections(
+        if !response_config.query_only {
+            engine.ensure_manifest(&manifest)?;
+        }
+        let engine = if response_config.query_only {
+            AnalyticsEngineAccess::shared(engine)
+        } else {
+            AnalyticsEngineAccess::backend_aware_with_max_read_connections(
                 engine,
                 backend.clone(),
                 max_read_connections,
-            ),
+            )
+        };
+        Ok(Self {
+            manifest: Arc::new(manifest),
+            engine,
             privacy_policy,
+            response_config,
         })
     }
 
@@ -133,41 +239,53 @@ impl AnalyticsLambdaHandler {
                 Ok(json!(QueryLambdaResponse { rows }))
             }
             AnalyticsLambdaEvent::UnscopedStructuredQuery { query } => {
+                let started = Instant::now();
                 let rows = self
                     .engine
                     .with_read(|engine| {
                         engine.query_unscoped_structured_json(self.manifest.as_ref(), &query)
                     })
                     .await??;
-                Ok(json!(QueryLambdaResponse { rows }))
+                self.query_response(build_query_response(rows, &query, started)?)
             }
             AnalyticsLambdaEvent::TenantQuery {
                 target_tenant_id,
                 query,
             } => {
+                let started = Instant::now();
+                let response_config = self.response_config;
                 let rows = self
                     .engine
                     .with_read(|engine| {
-                        engine.query_tenant_structured_json(
-                            self.manifest.as_ref(),
-                            &query,
-                            target_tenant_id.as_str(),
-                        )
+                        if response_config.disable_duckdb_interrupt {
+                            engine.query_tenant_structured_json_without_timeout(
+                                self.manifest.as_ref(),
+                                &query,
+                                target_tenant_id.as_str(),
+                            )
+                        } else {
+                            engine.query_tenant_structured_json(
+                                self.manifest.as_ref(),
+                                &query,
+                                target_tenant_id.as_str(),
+                            )
+                        }
                     })
                     .await??;
-                Ok(json!(QueryLambdaResponse { rows }))
+                self.query_response(build_query_response(rows, &query, started)?)
             }
             AnalyticsLambdaEvent::TenantQueryBatch {
                 target_tenant_id,
                 queries,
             } => {
                 let results = self.query_tenant_batch(target_tenant_id, queries).await?;
-                Ok(json!(QueryBatchLambdaResponse { results }))
+                self.query_response(QueryBatchLambdaResponse { results })
             }
             AnalyticsLambdaEvent::Ingest {
                 analytics_table_name,
                 request,
             } => {
+                self.ensure_ingest_allowed()?;
                 let outcome = self
                     .ingest_one(analytics_table_name.as_str(), *request)
                     .await?;
@@ -179,6 +297,7 @@ impl AnalyticsLambdaHandler {
                 analytics_table_name,
                 records,
             } => {
+                self.ensure_ingest_allowed()?;
                 let mut outcomes = Vec::with_capacity(records.len());
                 for request in records {
                     let outcome = self
@@ -232,29 +351,34 @@ impl AnalyticsLambdaHandler {
         &self,
         target_tenant_id: String,
         queries: Vec<TenantQueryBatchItem>,
-    ) -> Result<Vec<QueryBatchLambdaResult>, AnalyticsLambdaError> {
+    ) -> Result<Vec<QueryBatchResult>, AnalyticsLambdaError> {
         let mut tasks = JoinSet::new();
         for (index, query) in queries.into_iter().enumerate() {
             let engine = self.engine.clone();
             let manifest = Arc::clone(&self.manifest);
             let target_tenant_id = target_tenant_id.clone();
+            let response_config = self.response_config;
             tasks.spawn(async move {
+                let started = Instant::now();
                 let rows = engine
                     .with_read(|engine| {
-                        engine.query_tenant_structured_json(
-                            manifest.as_ref(),
-                            &query.query,
-                            target_tenant_id.as_str(),
-                        )
+                        if response_config.disable_duckdb_interrupt {
+                            engine.query_tenant_structured_json_without_timeout(
+                                manifest.as_ref(),
+                                &query.query,
+                                target_tenant_id.as_str(),
+                            )
+                        } else {
+                            engine.query_tenant_structured_json(
+                                manifest.as_ref(),
+                                &query.query,
+                                target_tenant_id.as_str(),
+                            )
+                        }
                     })
                     .await??;
-                Ok::<_, AnalyticsLambdaError>((
-                    index,
-                    QueryBatchLambdaResult {
-                        name: query.name,
-                        rows,
-                    },
-                ))
+                let response = build_query_batch_result(query.name, rows, &query.query, started)?;
+                Ok::<_, AnalyticsLambdaError>((index, response))
             });
         }
 
@@ -265,6 +389,63 @@ impl AnalyticsLambdaHandler {
         results.sort_by_key(|(index, _)| *index);
         Ok(results.into_iter().map(|(_, result)| result).collect())
     }
+
+    fn ensure_ingest_allowed(&self) -> Result<(), AnalyticsLambdaError> {
+        if self.response_config.query_only {
+            return Err(AnalyticsLambdaError::validation(
+                "ingest operations are disabled when analytics.query.lambda_query_only is true",
+            ));
+        }
+        Ok(())
+    }
+
+    fn query_response<T: Serialize>(&self, response: T) -> Result<Value, AnalyticsLambdaError> {
+        let value = serde_json::to_value(response)?;
+        encode_limited_query_response(value, self.response_config)
+    }
+}
+
+fn encode_limited_query_response(
+    value: Value,
+    config: LambdaResponseConfig,
+) -> Result<Value, AnalyticsLambdaError> {
+    let Some(limit_bytes) = config.max_response_size_kb.map(kib_to_bytes) else {
+        return Ok(value);
+    };
+    let raw = serde_json::to_vec(&value)?;
+    if raw.len() <= limit_bytes {
+        return Ok(value);
+    }
+    if config.response_compression != AnalyticsLambdaResponseCompression::GzipBase64 {
+        return Err(AnalyticsLambdaError::ResponseTooLarge {
+            actual_bytes: raw.len(),
+            limit_bytes,
+        });
+    }
+    let compressed = gzip_bytes(raw.as_slice())?;
+    let payload = BASE64.encode(compressed);
+    let envelope = json!({
+        "encoding": "gzip+base64",
+        "payload": payload,
+    });
+    let envelope_size = serde_json::to_vec(&envelope)?.len();
+    if envelope_size > limit_bytes {
+        return Err(AnalyticsLambdaError::ResponseTooLarge {
+            actual_bytes: envelope_size,
+            limit_bytes,
+        });
+    }
+    Ok(envelope)
+}
+
+fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, AnalyticsLambdaError> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(bytes)?;
+    Ok(encoder.finish()?)
+}
+
+fn kib_to_bytes(kib: usize) -> usize {
+    kib.saturating_mul(1024)
 }
 
 fn load_privacy_policy(root: &RootConfig) -> Result<Option<PrivacyPolicy>, AnalyticsLambdaError> {
@@ -323,14 +504,8 @@ pub struct TenantQueryBatchItem {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct QueryBatchLambdaResult {
-    pub name: String,
-    pub rows: Vec<Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct QueryBatchLambdaResponse {
-    pub results: Vec<QueryBatchLambdaResult>,
+    pub results: Vec<QueryBatchResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -392,26 +567,234 @@ fn resolve_manifest_path(
 fn resolve_storage_backend_from_env(
     root: &RootConfig,
 ) -> Result<StorageBackend, AnalyticsLambdaError> {
-    if let Some(path) = optional_env(ENV_DUCKDB) {
+    resolve_storage_backend_from_env_with(root, optional_env)
+}
+
+fn resolve_storage_backend_from_env_with(
+    root: &RootConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<StorageBackend, AnalyticsLambdaError> {
+    if let Some(path) = env(ENV_DUCKDB) {
         return Ok(StorageBackend::DuckDb { path });
     }
-    if let Some(catalog_path) = optional_env(ENV_DUCKLAKE_SQLITE_CATALOG) {
+    if let Some(catalog_path) = env(ENV_DUCKLAKE_SQLITE_CATALOG) {
         return Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Sqlite,
             catalog_path,
-            data_path: required_env(ENV_DUCKLAKE_DATA_PATH)?,
-            object_storage: None,
+            data_path: required_env_with(ENV_DUCKLAKE_DATA_PATH, &env)?,
+            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: (&root.analytics.catalog).into(),
         });
     }
-    if let Some(catalog_path) = optional_env(ENV_DUCKLAKE_POSTGRES_CATALOG) {
+    if let Some(catalog_path) = env(ENV_DUCKLAKE_POSTGRES_CATALOG) {
         return Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Postgres,
             catalog_path,
-            data_path: required_env(ENV_DUCKLAKE_DATA_PATH)?,
-            object_storage: None,
+            data_path: required_env_with(ENV_DUCKLAKE_DATA_PATH, &env)?,
+            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: (&root.analytics.catalog).into(),
         });
     }
     resolve_storage_backend_from_config(root)
+}
+
+async fn apply_ssm_catalog_parameter_from_env(
+    root: &mut RootConfig,
+) -> Result<(), AnalyticsLambdaError> {
+    let Some(parameter_name) = optional_env(ENV_DUCKLAKE_POSTGRES_CATALOG_PARAMETER) else {
+        return Ok(());
+    };
+    let catalog = fetch_ssm_parameter_value(parameter_name.as_str()).await?;
+    apply_ssm_catalog_parameter_value(root, parameter_name.as_str(), catalog.as_str())
+}
+
+async fn fetch_ssm_parameter_value(parameter_name: &str) -> Result<String, AnalyticsLambdaError> {
+    let sdk_config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    let client = SsmClient::new(&sdk_config);
+    let output = client
+        .get_parameter()
+        .name(parameter_name)
+        .with_decryption(true)
+        .send()
+        .await
+        .map_err(|source| {
+            AnalyticsLambdaError::ssm(format!(
+                "failed to read SSM parameter {parameter_name}: {source}"
+            ))
+        })?;
+    output
+        .parameter()
+        .and_then(|parameter| parameter.value())
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            AnalyticsLambdaError::ssm(format!(
+                "SSM parameter {parameter_name} did not contain a non-empty value"
+            ))
+        })
+}
+
+fn apply_ssm_catalog_parameter_value(
+    root: &mut RootConfig,
+    parameter_name: &str,
+    catalog_connection_string: &str,
+) -> Result<(), AnalyticsLambdaError> {
+    if catalog_connection_string.trim().is_empty() {
+        return Err(AnalyticsLambdaError::ssm(format!(
+            "SSM parameter {parameter_name} did not contain a non-empty value"
+        )));
+    }
+    root.analytics.catalog.backend = Some(AnalyticsCatalogBackend::DucklakePostgres);
+    root.analytics.catalog.connection_string = Some(catalog_connection_string.to_string());
+    Ok(())
+}
+
+fn apply_lambda_env_config(
+    root: &mut RootConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<(), AnalyticsLambdaError> {
+    if let Some(backend) = env(ENV_CATALOG_BACKEND) {
+        root.analytics.catalog.backend = Some(parse_catalog_backend(backend.as_str())?);
+    }
+    if let Some(data_path) = env(ENV_DUCKLAKE_DATA_PATH) {
+        apply_ducklake_data_path(root, data_path.as_str());
+    }
+    if let Some(bucket) = env(ENV_S3_BUCKET) {
+        root.analytics.object_storage.bucket = Some(bucket);
+    }
+    if let Some(prefix) = env(ENV_S3_PREFIX) {
+        root.analytics.object_storage.path = Some(prefix);
+    }
+    if let Some(region) = env(ENV_OBJECT_REGION) {
+        let endpoint = format!("s3.{region}.amazonaws.com");
+        root.analytics.object_storage.region = Some(region);
+        if root.analytics.object_storage.endpoint_url.is_none() {
+            root.analytics.object_storage.endpoint_url = Some(endpoint);
+        }
+    }
+    if let Some(threads) = env(ENV_CATALOG_DUCKDB_THREADS) {
+        root.analytics.catalog.duckdb_threads = Some(parse_usize_env(
+            ENV_CATALOG_DUCKDB_THREADS,
+            threads.as_str(),
+        )?);
+    }
+    if let Some(max_connections) = env(ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS) {
+        root.analytics.catalog.postgres_pool_max_connections = Some(parse_usize_env(
+            ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS,
+            max_connections.as_str(),
+        )?);
+    }
+    if let Some(idle_timeout) = env(ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS) {
+        root.analytics.catalog.postgres_pool_idle_timeout_ms = Some(parse_u64_env(
+            ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS,
+            idle_timeout.as_str(),
+        )?);
+    }
+    if let Some(wait_timeout) = env(ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS) {
+        root.analytics.catalog.postgres_pool_wait_timeout_ms = Some(parse_u64_env(
+            ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS,
+            wait_timeout.as_str(),
+        )?);
+    }
+    if let Some(acquire_mode) = env(ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE) {
+        root.analytics.catalog.postgres_pool_acquire_mode = Some(acquire_mode);
+    }
+    if let Some(thread_local_cache) = env(ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE) {
+        root.analytics
+            .catalog
+            .postgres_pool_enable_thread_local_cache = Some(parse_bool_env(
+            ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE,
+            thread_local_cache.as_str(),
+        )?);
+    }
+    if let Some(max_read_connections) = env(ENV_QUERY_MAX_READ_CONNECTIONS) {
+        root.analytics.query.max_read_connections = parse_usize_env(
+            ENV_QUERY_MAX_READ_CONNECTIONS,
+            max_read_connections.as_str(),
+        )?;
+    }
+    if let Some(limit) = env(ENV_QUERY_MAX_RESPONSE_SIZE_KB) {
+        root.analytics.query.max_response_size_kb = Some(parse_usize_env(
+            ENV_QUERY_MAX_RESPONSE_SIZE_KB,
+            limit.as_str(),
+        )?);
+    }
+    if let Some(compression) = env(ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION) {
+        root.analytics.query.lambda_response_compression =
+            parse_lambda_response_compression(compression.as_str())?;
+    }
+    if let Some(query_only) = env(ENV_QUERY_LAMBDA_QUERY_ONLY) {
+        root.analytics.query.lambda_query_only =
+            parse_bool_env(ENV_QUERY_LAMBDA_QUERY_ONLY, query_only.as_str())?;
+    }
+    if let Some(disable_interrupt) = env(ENV_QUERY_DISABLE_DUCKDB_INTERRUPT) {
+        root.analytics.query.disable_duckdb_interrupt = parse_bool_env(
+            ENV_QUERY_DISABLE_DUCKDB_INTERRUPT,
+            disable_interrupt.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn parse_catalog_backend(value: &str) -> Result<AnalyticsCatalogBackend, AnalyticsLambdaError> {
+    match value.trim() {
+        "duckdb" => Ok(AnalyticsCatalogBackend::Duckdb),
+        "ducklake_sqlite" => Ok(AnalyticsCatalogBackend::DucklakeSqlite),
+        "ducklake_postgres" => Ok(AnalyticsCatalogBackend::DucklakePostgres),
+        other => Err(AnalyticsLambdaError::validation(format!(
+            "{ENV_CATALOG_BACKEND} must be one of duckdb, ducklake_sqlite, or ducklake_postgres; \
+             got {other}"
+        ))),
+    }
+}
+
+fn parse_lambda_response_compression(
+    value: &str,
+) -> Result<AnalyticsLambdaResponseCompression, AnalyticsLambdaError> {
+    match value.trim() {
+        "none" => Ok(AnalyticsLambdaResponseCompression::None),
+        "gzip_base64" => Ok(AnalyticsLambdaResponseCompression::GzipBase64),
+        other => Err(AnalyticsLambdaError::validation(format!(
+            "{ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION} must be one of none or gzip_base64; got \
+             {other}"
+        ))),
+    }
+}
+
+fn parse_usize_env(name: &str, value: &str) -> Result<usize, AnalyticsLambdaError> {
+    value.trim().parse::<usize>().map_err(|source| {
+        AnalyticsLambdaError::validation(format!("{name} must be a positive integer: {source}"))
+    })
+}
+
+fn parse_u64_env(name: &str, value: &str) -> Result<u64, AnalyticsLambdaError> {
+    value.trim().parse::<u64>().map_err(|source| {
+        AnalyticsLambdaError::validation(format!("{name} must be a positive integer: {source}"))
+    })
+}
+
+fn parse_bool_env(name: &str, value: &str) -> Result<bool, AnalyticsLambdaError> {
+    match value.trim() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        other => Err(AnalyticsLambdaError::validation(format!(
+            "{name} must be true, false, 1, or 0; got {other}"
+        ))),
+    }
+}
+
+fn apply_ducklake_data_path(root: &mut RootConfig, data_path: &str) {
+    let trimmed = data_path.trim();
+    let Some(rest) = trimmed.strip_prefix("s3://") else {
+        root.analytics.object_storage.path = Some(trimmed.to_string());
+        return;
+    };
+    if let Some((bucket, prefix)) = rest.split_once('/') {
+        root.analytics.object_storage.bucket = Some(bucket.to_string());
+        root.analytics.object_storage.path = Some(prefix.to_string());
+    } else if !rest.is_empty() {
+        root.analytics.object_storage.bucket = Some(rest.to_string());
+    }
 }
 
 fn resolve_storage_backend_from_config(
@@ -440,12 +823,14 @@ fn resolve_storage_backend_from_config(
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: (&root.analytics.catalog).into(),
         }),
         AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Postgres,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: (&root.analytics.catalog).into(),
         }),
     }
 }
@@ -487,8 +872,11 @@ fn optional_env_path(key: &str) -> Option<PathBuf> {
     optional_env(key).map(PathBuf::from)
 }
 
-fn required_env(key: &str) -> Result<String, AnalyticsLambdaError> {
-    optional_env(key).ok_or_else(|| {
+fn required_env_with(
+    key: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<String, AnalyticsLambdaError> {
+    env(key).ok_or_else(|| {
         AnalyticsLambdaError::validation(format!("{key} is required for the selected backend"))
     })
 }

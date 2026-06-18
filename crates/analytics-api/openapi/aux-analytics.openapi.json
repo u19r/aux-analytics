@@ -194,14 +194,24 @@
         "description": "Process diagnostics including source poller state.",
         "example": {
           "source": {
+            "active_processor_count": 0,
             "checkpoints": [],
+            "dynamic_source_table_count": 0,
             "last_error": null,
             "last_error_at_ms": null,
+            "last_heartbeat_at_ms": null,
             "last_poll_started_at_ms": null,
+            "last_registry_refresh_at_ms": null,
             "last_success_at_ms": null,
+            "lease_loss_count": 0,
+            "owned_slot_count": 0,
+            "phase": "disabled",
+            "phase_started_at_ms": null,
             "poller_enabled": false,
+            "registered_table_rows": 0,
             "status": "disabled",
             "table_count": 0,
+            "table_lag": [],
             "total_checkpoint_errors": 0,
             "total_checkpoints_saved": 0,
             "total_ingest_errors": 0,
@@ -259,14 +269,24 @@
         "description": "Basic service health response.",
         "example": {
           "source": {
+            "active_processor_count": 0,
             "checkpoints": [],
+            "dynamic_source_table_count": 0,
             "last_error": null,
             "last_error_at_ms": null,
+            "last_heartbeat_at_ms": null,
             "last_poll_started_at_ms": null,
+            "last_registry_refresh_at_ms": null,
             "last_success_at_ms": null,
+            "lease_loss_count": 0,
+            "owned_slot_count": 0,
+            "phase": "disabled",
+            "phase_started_at_ms": null,
             "poller_enabled": false,
+            "registered_table_rows": 0,
             "status": "disabled",
             "table_count": 0,
+            "table_lag": [],
             "total_checkpoint_errors": 0,
             "total_checkpoints_saved": 0,
             "total_ingest_errors": 0,
@@ -1970,6 +1990,7 @@
       "SourceHealth": {
         "description": "Current source polling and checkpoint health for diagnostics responses.",
         "example": {
+          "active_processor_count": 2,
           "checkpoints": [
             {
               "position": "49668899999999999999999999999999999999999999999999999999",
@@ -1978,21 +1999,50 @@
               "updated_at_ms": 1778670000200
             }
           ],
+          "dynamic_source_table_count": 2,
+          "job_id": "analytics_source_polling",
           "last_error": null,
           "last_error_at_ms": null,
+          "last_heartbeat_at_ms": 1778670000100,
           "last_poll_started_at_ms": 1778670000000,
+          "last_registry_refresh_at_ms": 1778670000100,
           "last_success_at_ms": 1778670000200,
+          "lease_loss_count": 0,
+          "lease_token": "analytics-worker-1-1778670000000-1",
+          "lease_until_ms": 1778670300000,
+          "owned_slot_count": 128,
+          "phase": "healthy",
+          "phase_started_at_ms": 1778670000000,
           "poller_enabled": true,
+          "processor_mode": "ingest",
+          "registered_table_rows": 2,
           "status": "healthy",
           "table_count": 1,
+          "table_lag": [
+            {
+              "cursor_age_ms": 5000,
+              "lag_ms": 0,
+              "source_table_name": "source_users",
+              "updated_at_ms": 1778670000200,
+              "versionstamp": "00000000000000000042"
+            }
+          ],
           "total_checkpoint_errors": 0,
           "total_checkpoints_saved": 16,
           "total_ingest_errors": 0,
           "total_poll_errors": 0,
           "total_polls": 42,
-          "total_records_ingested": 128
+          "total_records_ingested": 128,
+          "worker_id": "analytics-worker-1"
         },
         "properties": {
+          "active_processor_count": {
+            "default": 0,
+            "description": "Active ingest processors visible to this instance.",
+            "example": 2,
+            "minimum": 0,
+            "type": "integer"
+          },
           "checkpoints": {
             "default": [],
             "description": "Last known checkpoint positions by source table and shard.",
@@ -2009,6 +2059,22 @@
             },
             "minItems": 0,
             "type": "array"
+          },
+          "dynamic_source_table_count": {
+            "default": 0,
+            "description": "Concrete tenant source tables derived from the most recent dynamic\nregistered-table refresh.",
+            "example": 2,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "job_id": {
+            "default": null,
+            "description": "Durable job identifier used for source-polling lease ownership.",
+            "example": "analytics_source_polling",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "last_error": {
             "default": null,
@@ -2029,10 +2095,30 @@
               "null"
             ]
           },
+          "last_heartbeat_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds for the most recent processor heartbeat write.",
+            "example": 1778670000100,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "last_poll_started_at_ms": {
             "default": null,
             "description": "Unix epoch milliseconds when the most recent poll started.",
             "example": 1778670000000,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_registry_refresh_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when dynamic registered-table source discovery\nlast refreshed.",
+            "example": 1778670000100,
             "minimum": 0,
             "type": [
               "integer",
@@ -2049,11 +2135,75 @@
               "null"
             ]
           },
+          "lease_loss_count": {
+            "default": 0,
+            "description": "Slot lease losses observed by this processor.",
+            "example": 0,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_token": {
+            "default": null,
+            "description": "Fencing token for the current source-polling ownership epoch.",
+            "example": "analytics-worker-1-1778670000000-1",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_until_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when the current lease expires, if this worker\nowns it.",
+            "example": 1778670300000,
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owned_slot_count": {
+            "default": 0,
+            "description": "Hash slots currently assigned to this processor.",
+            "example": 128,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/SourcePollingPhase",
+            "description": "Deterministic phase for the current source polling job step."
+          },
+          "phase_started_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when the current phase began.",
+            "example": 1778670000000,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "poller_enabled": {
             "default": false,
             "description": "Whether source polling is enabled for this process.",
             "example": true,
             "type": "boolean"
+          },
+          "processor_mode": {
+            "default": null,
+            "description": "Current processor mode for this instance.",
+            "example": "ingest",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "registered_table_rows": {
+            "default": 0,
+            "description": "Rows returned from `analytics_registered_tables` during the most recent\ndynamic source discovery refresh.",
+            "example": 2,
+            "minimum": 0,
+            "type": "integer"
           },
           "status": {
             "$ref": "#/components/schemas/SourceHealthStatus",
@@ -2065,6 +2215,24 @@
             "example": 1,
             "minimum": 0,
             "type": "integer"
+          },
+          "table_lag": {
+            "default": [],
+            "description": "Last known lag summary by source table for hashed-range ingest.",
+            "example": [
+              {
+                "cursor_age_ms": 5000,
+                "lag_ms": 0,
+                "source_table_name": "source_users",
+                "updated_at_ms": 1778670000200,
+                "versionstamp": "00000000000000000042"
+              }
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TableLagHealth"
+            },
+            "minItems": 0,
+            "type": "array"
           },
           "total_checkpoint_errors": {
             "default": 0,
@@ -2113,6 +2281,15 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "worker_id": {
+            "default": null,
+            "description": "Worker identity currently used by this process for source-polling\nleases.",
+            "example": "analytics-worker-1",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2126,6 +2303,27 @@
         "enum": [
           "disabled",
           "starting",
+          "healthy",
+          "degraded"
+        ],
+        "type": "string"
+      },
+      "SourcePollingPhase": {
+        "description": "Current phase for the source polling job state machine.",
+        "enum": [
+          "disabled",
+          "starting",
+          "waiting_for_lease",
+          "standby",
+          "lease_held",
+          "renewing",
+          "refreshing_plan",
+          "rebuilding_poller",
+          "polling",
+          "ingesting",
+          "checkpointing",
+          "lease_lost",
+          "timeout",
           "healthy",
           "degraded"
         ],
@@ -2498,6 +2696,52 @@
         "required": [
           "analytics_table_name",
           "select"
+        ],
+        "type": "object"
+      },
+      "TableLagHealth": {
+        "description": "Source table lag summary for hashed-range ingest.",
+        "example": {
+          "cursor_age_ms": 5000,
+          "lag_ms": 0,
+          "source_table_name": "source_users",
+          "updated_at_ms": 1778670000200,
+          "versionstamp": "00000000000000000042"
+        },
+        "properties": {
+          "cursor_age_ms": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lag_ms": {
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_table_name": {
+            "type": "string"
+          },
+          "updated_at_ms": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "versionstamp": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_table_name",
+          "versionstamp"
         ],
         "type": "object"
       },

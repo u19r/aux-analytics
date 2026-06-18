@@ -4,6 +4,7 @@ use analytics_contract::PrivacyPolicy;
 use config::{
     ConfigError, load_optional_with_overrides, parse_override_args,
     resolve_manifest_path as config_resolve_manifest_path,
+    validate_ingest_config as config_validate_ingest_config,
     validate_source_config as config_validate_source_config,
 };
 
@@ -32,6 +33,10 @@ pub(crate) fn resolve_manifest_path(
 
 pub(crate) fn validate_source_config(source: &config::AnalyticsSourceConfig) -> ApiResult<()> {
     config_validate_source_config(source).map_err(ApiError::from)
+}
+
+pub(crate) fn validate_ingest_config(ingest: &config::AnalyticsIngestConfig) -> ApiResult<()> {
+    config_validate_ingest_config(ingest).map_err(ApiError::from)
 }
 
 pub(crate) fn load_privacy_policy(root: &config::RootConfig) -> ApiResult<Option<PrivacyPolicy>> {

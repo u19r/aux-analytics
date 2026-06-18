@@ -19,6 +19,7 @@ fn config_resolves_ducklake_backend_with_object_storage_path() {
             catalog: AnalyticsCatalogConfig {
                 backend: Some(AnalyticsCatalogBackend::DucklakePostgres),
                 connection_string: Some("dbname=ducklake_catalog host=localhost".to_string()),
+                ..Default::default()
             },
             object_storage: AnalyticsObjectStorageConfig {
                 bucket: Some("analytics-lake".to_string()),
@@ -56,6 +57,7 @@ fn cli_backend_args_override_config_backend() {
     root.analytics.catalog = AnalyticsCatalogConfig {
         backend: Some(AnalyticsCatalogBackend::DucklakeSqlite),
         connection_string: Some("metadata.ducklake".to_string()),
+        ..Default::default()
     };
     root.analytics.object_storage.path = Some("lake-data".to_string());
     let backend_args = BackendArgs {

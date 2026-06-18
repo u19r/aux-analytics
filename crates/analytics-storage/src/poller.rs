@@ -17,7 +17,7 @@ use crate::{
     },
     execution::StreamCatchupSource,
     facade::storage_stream_record_from_facade,
-    planning::table_plans,
+    planning::{SourceTablePlan, table_plans},
     poller_config::PollerConfig,
     types::{PollBatch, PolledRecord, SourceCheckpoint},
 };
@@ -28,6 +28,7 @@ pub(crate) const AUX_STORAGE_SHARD_ID: &str = "aux-storage";
 pub struct SourcePoller {
     config: PollerConfig,
     tables: Vec<SourceTablePoller>,
+    next_table_start_index: usize,
 }
 
 #[derive(Debug)]
@@ -42,6 +43,7 @@ pub(crate) struct AuxStorageTablePoller {
     pub(crate) source_table_name: String,
     pub(crate) analytics_table_names: Vec<String>,
     pub(crate) last_evaluated_key: Option<String>,
+    pub(crate) max_records_per_response: u32,
 }
 
 #[derive(Debug)]
@@ -63,10 +65,24 @@ impl SourcePoller {
         manifest: &AnalyticsManifest,
         checkpoints: &[SourceCheckpoint],
     ) -> AnalyticsStorageResult<Self> {
-        let config = PollerConfig::from_source_config(source);
         let plans = table_plans(source, manifest)?;
+        Self::from_plans(source, plans, checkpoints).await
+    }
+
+    pub async fn from_plans(
+        source: &AnalyticsSourceConfig,
+        plans: Vec<SourceTablePlan>,
+        checkpoints: &[SourceCheckpoint],
+    ) -> AnalyticsStorageResult<Self> {
+        let config = PollerConfig::from_source_config(source);
         let mut tables = Vec::with_capacity(plans.len());
         for plan in plans {
+            tracing::info!(
+                source_table_name = plan.source_table_name,
+                analytics_table_names = ?plan.analytics_table_names,
+                stream_type = ?plan.stream_type,
+                "analytics source poller table plan registered"
+            );
             match plan.stream_type {
                 AnalyticsStreamType::AuxStorage => {
                     let endpoint_url = source.endpoint_url.as_deref().ok_or_else(|| {
@@ -74,16 +90,17 @@ impl SourcePoller {
                             AnalyticsStorageErrorKind::MissingAuxStorageEndpoint,
                         )
                     })?;
-                    let last_evaluated_key = checkpoint_position(
+                    let last_evaluated_key = aux_storage_initial_cursor(
                         checkpoints,
                         plan.source_table_name.as_str(),
-                        AUX_STORAGE_SHARD_ID,
+                        &plan.analytics_table_names,
                     );
                     tables.push(SourceTablePoller::AuxStorage(AuxStorageTablePoller {
                         client: AuxStorageStreamClient::new(endpoint_url, config.request_timeout)?,
                         source_table_name: plan.source_table_name,
                         analytics_table_names: plan.analytics_table_names,
                         last_evaluated_key,
+                        max_records_per_response: config.max_records_per_response,
                     }));
                 }
                 AnalyticsStreamType::StorageStream => {
@@ -114,7 +131,11 @@ impl SourcePoller {
                 }
             }
         }
-        Ok(Self { config, tables })
+        Ok(Self {
+            config,
+            tables,
+            next_table_start_index: 0,
+        })
     }
 
     #[must_use]
@@ -123,28 +144,36 @@ impl SourcePoller {
     }
 
     pub async fn poll_once(&mut self) -> AnalyticsStorageResult<PollBatch> {
-        let table_names = table_request_names(self.tables.len());
-        let requests = self
-            .config
-            .plan_requests(table_names.iter().map(String::as_str));
-        let mut records = Vec::new();
-        let mut checkpoints = Vec::new();
-        for request in requests {
-            let Some(table_index) = table_index_from_request_shard(request.shard_id.as_str())
-            else {
-                continue;
-            };
-            let Some(table) = self.tables.get_mut(table_index) else {
-                continue;
-            };
-            let batch = table.poll_once(request.max_responses).await?;
-            records.extend(batch.records);
-            checkpoints.extend(batch.checkpoints);
+        if self.tables.is_empty() {
+            return Ok(PollBatch {
+                records: Vec::new(),
+                checkpoints: Vec::new(),
+            });
         }
-        Ok(PollBatch {
-            records,
-            checkpoints,
-        })
+        let table_index = self.next_table_start_index % self.tables.len();
+        self.next_table_start_index = (table_index + 1) % self.tables.len();
+        self.tables[table_index]
+            .poll_once(self.config.max_responses_per_interval)
+            .await
+    }
+
+    pub async fn poll_aux_storage_table(
+        &mut self,
+        source_table_name: &str,
+    ) -> AnalyticsStorageResult<PollBatch> {
+        let Some(table) = self
+            .tables
+            .iter_mut()
+            .find(|table| table.is_aux_storage_source_table(source_table_name))
+        else {
+            return Ok(PollBatch {
+                records: Vec::new(),
+                checkpoints: Vec::new(),
+            });
+        };
+        table
+            .poll_once(self.config.max_responses_per_interval)
+            .await
     }
 
     #[must_use]
@@ -172,6 +201,13 @@ impl StreamCatchupSource for SourcePoller {
 }
 
 impl SourceTablePoller {
+    fn is_aux_storage_source_table(&self, source_table_name: &str) -> bool {
+        match self {
+            Self::AuxStorage(poller) => poller.source_table_name == source_table_name,
+            Self::AwsStream(_) => false,
+        }
+    }
+
     async fn poll_once(&mut self, max_responses: usize) -> AnalyticsStorageResult<PollBatch> {
         match self {
             Self::AuxStorage(poller) => poller.poll_once(max_responses).await,
@@ -198,8 +234,20 @@ impl AuxStorageTablePoller {
         for _ in 0..max_responses {
             let response = self
                 .client
-                .get_stream_records(self.source_table_name.as_str(), cursor.clone())
+                .get_stream_records(
+                    self.source_table_name.as_str(),
+                    cursor.clone(),
+                    self.max_records_per_response,
+                )
                 .await?;
+            tracing::info!(
+                source_table_name = self.source_table_name,
+                analytics_table_names = ?self.analytics_table_names,
+                request_cursor = ?cursor,
+                response_records = response.records.len(),
+                response_has_next = response.last_evaluated_key.is_some(),
+                "analytics aux-storage source poll response received"
+            );
             let latest_record_key = response
                 .records
                 .last()
@@ -314,10 +362,18 @@ impl AwsStreamTablePoller {
     }
 }
 
-pub(crate) fn table_request_names(table_count: usize) -> Vec<String> {
-    (0..table_count).map(|index| index.to_string()).collect()
+#[cfg(test)]
+pub(crate) fn table_request_names_from(table_count: usize, start_index: usize) -> Vec<String> {
+    if table_count == 0 {
+        return Vec::new();
+    }
+    let start_index = start_index % table_count;
+    (0..table_count)
+        .map(|offset| ((start_index + offset) % table_count).to_string())
+        .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn table_index_from_request_shard(shard_id: &str) -> Option<usize> {
     shard_id.parse::<usize>().ok()
 }
@@ -411,4 +467,12 @@ pub(crate) fn checkpoint_position(
             checkpoint.source_table_name == source_table_name && checkpoint.shard_id == shard_id
         })
         .map(|checkpoint| checkpoint.position.clone())
+}
+
+pub(crate) fn aux_storage_initial_cursor(
+    checkpoints: &[SourceCheckpoint],
+    source_table_name: &str,
+    _analytics_table_names: &[String],
+) -> Option<String> {
+    checkpoint_position(checkpoints, source_table_name, AUX_STORAGE_SHARD_ID)
 }

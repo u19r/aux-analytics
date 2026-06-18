@@ -91,9 +91,16 @@ fn condition_signature(table: &TableRegistration) -> AnalyticsEngineResult<Strin
 }
 
 fn storage_item_to_attribute_values(item: &StorageItem) -> HashMap<String, AttributeValue> {
-    item.iter()
+    let mut values = item
+        .iter()
         .map(|(name, value)| (name.clone(), storage_value_to_attribute_value(value)))
-        .collect()
+        .collect::<HashMap<_, _>>();
+    if !values.contains_key("entity_type")
+        && let Some(entity_type) = values.get("et").cloned()
+    {
+        values.insert("entity_type".to_string(), entity_type);
+    }
+    values
 }
 
 fn storage_value_to_attribute_value(value: &StorageValue) -> AttributeValue {

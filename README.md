@@ -115,15 +115,26 @@ Credential resolution follows the same configuration shape as aux-storage remote
   standard stream polling;
 - set `analytics.source.credentials.instance_keys: true` to use instance/task/workload identity;
 - set `analytics.source.credentials.static.*` for explicit source stream credentials;
-- omit `analytics.object_storage.credentials` to let DuckDB/DuckLake use its ambient credential
-  chain where available;
-- set `credentials.instance_keys: true` to request instance/workload identity credential lookup;
+- omit `analytics.object_storage.credentials` or set `credentials.instance_keys: true` to let
+  aux-common resolve workload credentials before DuckDB starts;
 - set `credentials.static.access_key`, `credentials.static.secret_key`, and optional
   `credentials.static.session_token` for explicit static credentials.
+
+DuckDB is configured as if the DuckDB `aws` extension does not exist. The engine resolves ambient
+AWS credentials through aux-common, creates a DuckDB S3 secret with static key options, and keeps
+credential expiry and refresh timestamps in memory when the provider returns them. Each engine
+operation performs a cheap refresh comparison and replaces the DuckDB secret before continuing when
+credentials need rotation. Explicit static credentials are caller-managed.
 
 When the binary runs continuously, `analytics-storage` starts the configured source pollers and
 feeds contract records into the engine. Lambda deployments do not start this poller; AWS event
 source mappings handle stream polling and invoke `analytics-lambda` with batches.
+
+For aux-storage pull deployments, ingest-capable instances coordinate through aux-storage heartbeat,
+slot lease, progress, and change-index tables. Set `analytics.ingest.processor_enabled = false` on
+query-only instances; they serve HTTP reads but do not write heartbeats, acquire slot leases, or poll
+aux-storage. The Docker Compose demo runs two processors and one query-only instance against a
+shared Postgres-backed DuckLake catalog.
 
 ## Retention
 
@@ -176,6 +187,11 @@ Important polling metrics:
 - `analytics.source.checkpoints_saved_total`
 - `analytics.source.checkpoint_errors_total`
 - `analytics.source.checkpoints`
+- `analytics.ingest.processor.active_processors`
+- `analytics.ingest.processor.owned_slots`
+- `analytics.ingest.table.records_total`
+- `analytics.ingest.table.bytes_total`
+- `analytics.ingest.trim.deleted_markers_total`
 - `analytics.retention.lookups_total`
 - `analytics.retention.lookup_failures_total`
 - `analytics.retention.sweeps_total`

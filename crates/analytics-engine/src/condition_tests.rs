@@ -34,6 +34,29 @@ fn condition_expression_matches_alias_equality() {
 }
 
 #[test]
+fn condition_expression_matches_compact_entity_type_attribute() {
+    let mut table = test_table();
+    table.condition_expression = Some("#entity_type = :entity_type".to_string());
+    table.expression_attribute_names = Some(HashMap::from([(
+        "#entity_type".to_string(),
+        "entity_type".to_string(),
+    )]));
+    table.expression_attribute_values = Some(BTreeMap::from([(
+        ":entity_type".to_string(),
+        StorageValue::S("METRIC_WAL_BATCH".to_string()),
+    )]));
+    let compact = HashMap::from([(
+        "et".to_string(),
+        StorageValue::S("METRIC_WAL_BATCH".to_string()),
+    )]);
+
+    assert!(
+        item_matches_registration(&table, &compact, &mut EngineCaches::new())
+            .expect("compact entity type condition")
+    );
+}
+
+#[test]
 fn condition_expression_supports_dynamodb_comparison_semantics() {
     let mut table = test_table();
     table.condition_expression = Some(

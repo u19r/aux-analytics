@@ -25,8 +25,14 @@ use analytics_contract::{
     SourcePosition, SourcePositionError, StorageStreamRecord, StructuredQuery, TableRegistration,
     merge_decision,
 };
-use config::StorageBackend;
-use duckdb::{Connection, OptionalExt};
+use aws_credentials::{
+    AwsResolvedCredentials, AwsStaticCredentials, resolve_default_chain_credentials_with_expiry,
+};
+use config::{
+    AnalyticsObjectStorageConfig, RemoteCredentialsConfig, RemoteStaticCredentialsConfig,
+    StorageBackend,
+};
+use duckdb::{Connection, OptionalExt, types::TimeUnit};
 use thiserror::Error;
 
 use crate::{
@@ -93,6 +99,8 @@ pub enum AnalyticsEngineError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     SourcePosition(#[from] SourcePositionError),
+    #[error("AWS credential resolution failed: {0}")]
+    AwsCredentials(#[from] aws_credentials::CredentialsError),
 }
 
 pub type AnalyticsEngineResult<T> = Result<T, AnalyticsEngineError>;
@@ -101,7 +109,20 @@ pub struct AnalyticsEngine {
     conn: Connection,
     supports_table_layout: bool,
     supports_persistent_checkpoints: bool,
+    object_storage_credentials: RefCell<Option<DuckLakeObjectStorageCredentials>>,
     pub(crate) caches: RefCell<EngineCaches>,
+}
+
+#[derive(Debug, Clone)]
+struct DuckLakeObjectStorageCredentials {
+    object_storage: AnalyticsObjectStorageConfig,
+    resolved: AwsResolvedCredentials,
+}
+
+impl DuckLakeObjectStorageCredentials {
+    fn needs_refresh(&self) -> bool {
+        self.resolved.needs_refresh()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,17 +139,76 @@ pub struct IngestRetention {
     pub missing_retention: bool,
 }
 
+fn configure_ducklake_object_storage_credentials(
+    backend: &StorageBackend,
+) -> AnalyticsEngineResult<(StorageBackend, Option<DuckLakeObjectStorageCredentials>)> {
+    let StorageBackend::DuckLake {
+        object_storage: Some(object_storage),
+        ..
+    } = backend
+    else {
+        return Ok((backend.clone(), None));
+    };
+    if !object_storage_needs_resolved_credentials(object_storage) {
+        return Ok((backend.clone(), None));
+    }
+
+    let resolved = resolve_default_chain_credentials_with_expiry()?;
+    let mut configured_backend = backend.clone();
+    if let StorageBackend::DuckLake {
+        object_storage: Some(configured_object_storage),
+        ..
+    } = &mut configured_backend
+    {
+        configured_object_storage.credentials =
+            Some(remote_credentials_config(&resolved.credentials));
+    }
+    Ok((
+        configured_backend,
+        Some(DuckLakeObjectStorageCredentials {
+            object_storage: (**object_storage).clone(),
+            resolved,
+        }),
+    ))
+}
+
+fn object_storage_needs_resolved_credentials(
+    object_storage: &AnalyticsObjectStorageConfig,
+) -> bool {
+    if object_storage.bucket.is_none() {
+        return false;
+    }
+    let Some(credentials) = object_storage.credentials.as_ref() else {
+        return true;
+    };
+    credentials.r#static.is_none() && credentials.instance_keys.unwrap_or(false)
+}
+
+fn remote_credentials_config(credentials: &AwsStaticCredentials) -> RemoteCredentialsConfig {
+    RemoteCredentialsConfig {
+        r#static: Some(RemoteStaticCredentialsConfig {
+            access_key: credentials.access_key_id.clone(),
+            secret_key: credentials.secret_access_key.clone(),
+            session_token: credentials.session_token.clone(),
+        }),
+        instance_keys: None,
+    }
+}
+
 impl AnalyticsEngine {
     pub fn connect(backend: &StorageBackend) -> AnalyticsEngineResult<Self> {
         let conn = match backend {
             StorageBackend::DuckDb { path } => Connection::open(path)?,
             StorageBackend::DuckLake { .. } => Connection::open_in_memory()?,
         };
-        sql::configure_connection(&conn, backend)?;
+        let (configured_backend, object_storage_credentials) =
+            configure_ducklake_object_storage_credentials(backend)?;
+        sql::configure_connection(&conn, &configured_backend)?;
         Ok(Self {
             conn,
             supports_table_layout: matches!(backend, StorageBackend::DuckLake { .. }),
-            supports_persistent_checkpoints: !matches!(backend, StorageBackend::DuckLake { .. }),
+            supports_persistent_checkpoints: true,
+            object_storage_credentials: RefCell::new(object_storage_credentials),
             caches: RefCell::new(EngineCaches::new()),
         })
     }
@@ -144,7 +224,25 @@ impl AnalyticsEngine {
         &self.conn
     }
 
+    fn refresh_object_storage_credentials_if_needed(&self) -> AnalyticsEngineResult<()> {
+        let mut state = self.object_storage_credentials.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return Ok(());
+        };
+        if !state.needs_refresh() {
+            return Ok(());
+        }
+
+        let resolved = resolve_default_chain_credentials_with_expiry()?;
+        let mut object_storage = state.object_storage.clone();
+        object_storage.credentials = Some(remote_credentials_config(&resolved.credentials));
+        sql::configure_object_storage(&self.conn, &object_storage)?;
+        state.resolved = resolved;
+        Ok(())
+    }
+
     pub fn ensure_manifest(&self, manifest: &AnalyticsManifest) -> AnalyticsEngineResult<()> {
+        self.refresh_object_storage_credentials_if_needed()?;
         manifest.validate()?;
         if self.supports_persistent_checkpoints {
             self.ensure_runtime_tables()?;
@@ -158,23 +256,22 @@ impl AnalyticsEngine {
     }
 
     pub fn ensure_runtime_tables(&self) -> AnalyticsEngineResult<()> {
+        self.refresh_object_storage_credentials_if_needed()?;
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS analytics_checkpoints (
                 source_table_name VARCHAR NOT NULL,
                 shard_id VARCHAR NOT NULL,
                 position VARCHAR NOT NULL,
-                updated_at_ms BIGINT NOT NULL,
-                PRIMARY KEY (source_table_name, shard_id)
+                updated_at_ms BIGINT NOT NULL
             );
              CREATE TABLE IF NOT EXISTS __analytics_row_source_positions (
                 analytics_table_name VARCHAR NOT NULL,
                 source_table_name VARCHAR NOT NULL,
                 tenant_id VARCHAR NOT NULL,
-                row_id VARCHAR NOT NULL,
+                source_row_id VARCHAR NOT NULL,
                 source_position_json JSON NOT NULL,
                 row_visible BOOLEAN NOT NULL,
-                updated_at_ms BIGINT NOT NULL,
-                PRIMARY KEY (analytics_table_name, source_table_name, tenant_id, row_id)
+                updated_at_ms BIGINT NOT NULL
             );",
             [],
         )?;
@@ -182,6 +279,7 @@ impl AnalyticsEngine {
     }
 
     pub fn load_source_checkpoints(&self) -> AnalyticsEngineResult<Vec<SourceCheckpoint>> {
+        self.refresh_object_storage_credentials_if_needed()?;
         if !self.supports_persistent_checkpoints {
             return Ok(Vec::new());
         }
@@ -214,6 +312,7 @@ impl AnalyticsEngine {
         &self,
         checkpoint: &SourceCheckpoint,
     ) -> AnalyticsEngineResult<()> {
+        self.refresh_object_storage_credentials_if_needed()?;
         if !self.supports_persistent_checkpoints {
             return Ok(());
         }
@@ -238,11 +337,17 @@ impl AnalyticsEngine {
     }
 
     pub fn ensure_table(&self, table: &TableRegistration) -> AnalyticsEngineResult<()> {
+        self.refresh_object_storage_credentials_if_needed()?;
         let columns = columns_for_registration(table);
-        self.conn.execute(
+        execute_convergent_schema_statement(
+            &self.conn,
             sql::create_table(table.analytics_table_name.as_str(), &columns).as_str(),
-            [],
         )?;
+        for statement in
+            sql::manifest_column_statements(table.analytics_table_name.as_str(), &columns)
+        {
+            self.conn.execute(statement.as_str(), [])?;
+        }
         self.conn.execute(
             sql::source_position_column_statement(table.analytics_table_name.as_str()).as_str(),
             [],
@@ -268,6 +373,7 @@ impl AnalyticsEngine {
     }
 
     pub fn ensure_retention_columns(&self, table_name: &str) -> AnalyticsEngineResult<()> {
+        self.refresh_object_storage_credentials_if_needed()?;
         for statement in sql::retention_column_statements(table_name) {
             self.conn.execute(statement.as_str(), [])?;
         }
@@ -295,6 +401,7 @@ impl AnalyticsEngine {
         manifest: &AnalyticsManifest,
         records: Vec<StreamRecordBatchItem>,
     ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
+        self.refresh_object_storage_credentials_if_needed()?;
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let mut outcomes = Vec::with_capacity(records.len());
         let mut batch = BatchSqlExecutor::new(&self.conn);
@@ -343,7 +450,7 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     manifest_retention.as_ref(),
                 )?;
-                batch.apply_upsert(table.analytics_table_name.as_str(), &row)
+                batch.apply_upsert(table, &row)
             }
             (Some(old_image), Some(new_image)) => {
                 let old_matches = crate::condition::item_matches_registration(
@@ -381,7 +488,7 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     manifest_retention.as_ref(),
                 )?;
-                batch.apply_upsert(table.analytics_table_name.as_str(), &row)
+                batch.apply_upsert(table, &row)
             }
             (Some(old_image), None) => {
                 if table.skip_delete {
@@ -498,6 +605,7 @@ impl AnalyticsEngine {
         resolved_retention: Option<&IngestRetention>,
         source_position: Option<&SourcePosition>,
     ) -> AnalyticsEngineResult<IngestOutcome> {
+        self.refresh_object_storage_credentials_if_needed()?;
         if let Some(source_position) = source_position {
             source_position.validate()?;
         }
@@ -606,6 +714,7 @@ impl AnalyticsEngine {
         now_ms: i64,
         batch_size: u64,
     ) -> AnalyticsEngineResult<u64> {
+        self.refresh_object_storage_credentials_if_needed()?;
         let sql = sql::delete_expired_rows(table_name);
         let changed = self.conn.prepare(sql.as_str())?.execute(duckdb::params![
             now_ms,
@@ -615,6 +724,7 @@ impl AnalyticsEngine {
     }
 
     pub fn missing_retention_count(&self, table_name: &str) -> AnalyticsEngineResult<u64> {
+        self.refresh_object_storage_credentials_if_needed()?;
         let sql = sql::missing_retention_count(table_name);
         let count: i64 = self.conn.query_row(sql.as_str(), [], |row| row.get(0))?;
         Ok(u64::try_from(count).unwrap_or(0))
@@ -627,6 +737,7 @@ impl AnalyticsEngine {
         period_ms: u64,
         batch_size: u64,
     ) -> AnalyticsEngineResult<u64> {
+        self.refresh_object_storage_credentials_if_needed()?;
         if period_ms == 0 {
             return Err(AnalyticsEngineError::InvalidRetentionPeriod);
         }
@@ -646,24 +757,43 @@ impl AnalyticsEngine {
         self.query_unscoped_sql_json_with_timeout(sql, DEFAULT_QUERY_TIMEOUT)
     }
 
+    pub fn query_unscoped_sql_json_without_timeout(
+        &self,
+        sql: &str,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_unscoped_sql_json_with_optional_timeout(sql, None)
+    }
+
     pub fn query_unscoped_sql_json_with_timeout(
         &self,
         sql: &str,
         timeout: Duration,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_unscoped_sql_json_with_optional_timeout(sql, Some(timeout))
+    }
+
+    fn query_unscoped_sql_json_with_optional_timeout(
+        &self,
+        sql: &str,
+        timeout: Option<Duration>,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.refresh_object_storage_credentials_if_needed()?;
         validate_read_only_query(sql)?;
-        if timeout.is_zero() {
+        if timeout.is_some_and(|timeout| timeout.is_zero()) {
             return Err(AnalyticsEngineError::QueryTimeout { timeout_ms: 0 });
         }
         let wrapped = format!(
             "SELECT to_json(result) FROM ({}) AS result",
             sql.trim_end_matches(';')
         );
-        let timed_out = query_timeout_watchdog(&self.conn, timeout);
+        let timed_out = timeout.map(|timeout| query_timeout_watchdog(&self.conn, timeout));
         let mut stmt = self.conn.prepare(wrapped.as_str()).map_err(|err| {
-            if timed_out.timed_out() {
+            if timed_out
+                .as_ref()
+                .is_some_and(QueryTimeoutWatchdog::timed_out)
+            {
                 AnalyticsEngineError::QueryTimeout {
-                    timeout_ms: timeout.as_millis(),
+                    timeout_ms: timeout.map_or(0, |timeout| timeout.as_millis()),
                 }
             } else {
                 err.into()
@@ -676,9 +806,12 @@ impl AnalyticsEngine {
                     .map_err(|_| duckdb::Error::InvalidColumnIndex(0))
             })
             .map_err(|err| {
-                if timed_out.timed_out() {
+                if timed_out
+                    .as_ref()
+                    .is_some_and(QueryTimeoutWatchdog::timed_out)
+                {
                     AnalyticsEngineError::QueryTimeout {
-                        timeout_ms: timeout.as_millis(),
+                        timeout_ms: timeout.map_or(0, |timeout| timeout.as_millis()),
                     }
                 } else {
                     err.into()
@@ -689,17 +822,24 @@ impl AnalyticsEngine {
         for row in rows {
             match row {
                 Ok(value) => values.push(value),
-                Err(_) if timed_out.timed_out() => {
+                Err(_)
+                    if timed_out
+                        .as_ref()
+                        .is_some_and(QueryTimeoutWatchdog::timed_out) =>
+                {
                     return Err(AnalyticsEngineError::QueryTimeout {
-                        timeout_ms: timeout.as_millis(),
+                        timeout_ms: timeout.map_or(0, |timeout| timeout.as_millis()),
                     });
                 }
                 Err(err) => return Err(err.into()),
             }
         }
-        if timed_out.timed_out() {
+        if timed_out
+            .as_ref()
+            .is_some_and(QueryTimeoutWatchdog::timed_out)
+        {
             return Err(AnalyticsEngineError::QueryTimeout {
-                timeout_ms: timeout.as_millis(),
+                timeout_ms: timeout.map_or(0, |timeout| timeout.as_millis()),
             });
         }
         Ok(values)
@@ -731,6 +871,20 @@ impl AnalyticsEngine {
         self.query_unscoped_sql_json(sql.as_str())
     }
 
+    pub fn query_tenant_structured_json_without_timeout(
+        &self,
+        manifest: &AnalyticsManifest,
+        query: &StructuredQuery,
+        target_tenant_id: &str,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        query
+            .validate_shape()
+            .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
+        let sql =
+            tenant_scoped_structured_query_sql_for_manifest(manifest, query, target_tenant_id)?;
+        self.query_unscoped_sql_json_without_timeout(sql.as_str())
+    }
+
     pub fn scrub_table_with_privacy_policy(
         &self,
         table: &TableRegistration,
@@ -752,6 +906,7 @@ impl AnalyticsEngine {
         dry_run: bool,
         mode: PrivacyTableRemediationMode,
     ) -> AnalyticsEngineResult<PrivacyTableRemediationReport> {
+        self.refresh_object_storage_credentials_if_needed()?;
         policy.validate()?;
         let projection_columns = privacy_scrubbable_projection_columns(table, policy)?;
         let mut selected_columns = vec!["__id".to_string()];
@@ -835,7 +990,7 @@ impl AnalyticsEngine {
 
     fn insert_row(
         &self,
-        table_name: &str,
+        table: &TableRegistration,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<()> {
         // Online ingestion fallback. Backfill and replay writers should use chunk-sized
@@ -845,7 +1000,7 @@ impl AnalyticsEngine {
         let placeholders = placeholder_list(columns.len());
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({placeholders})",
-            sql::quote_identifier(table_name),
+            sql::quote_identifier(table.analytics_table_name.as_str()),
             columns
                 .iter()
                 .map(|column| sql::quote_identifier(column))
@@ -855,7 +1010,10 @@ impl AnalyticsEngine {
         let values = columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(*column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value_for_column(
+                    row.get(*column).unwrap_or(&serde_json::Value::Null),
+                    column_type_for_name(table, column),
+                )
             })
             .collect::<Vec<_>>();
         self.conn
@@ -875,10 +1033,10 @@ impl AnalyticsEngine {
             source_position.map_or(Ok(serde_json::Value::Null), serde_json::to_value)?,
         );
         let Some(source_position) = source_position else {
-            return if self.update_row(table.analytics_table_name.as_str(), &row)? {
+            return if self.update_row(table, &row)? {
                 Ok(IngestOutcome::Updated)
             } else {
-                self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                self.insert_row(table, &row)?;
                 Ok(IngestOutcome::Inserted)
             };
         };
@@ -891,16 +1049,16 @@ impl AnalyticsEngine {
             table.skip_delete,
         )? {
             MergeDecision::Insert | MergeDecision::Append => {
-                self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                self.insert_row(table, &row)?;
                 self.save_row_source_position(table, &row, source_position, true)?;
                 Ok(IngestOutcome::Inserted)
             }
             MergeDecision::Replace => {
-                if self.update_row(table.analytics_table_name.as_str(), &row)? {
+                if self.update_row(table, &row)? {
                     self.save_row_source_position(table, &row, source_position, true)?;
                     Ok(IngestOutcome::Updated)
                 } else {
-                    self.insert_row(table.analytics_table_name.as_str(), &row)?;
+                    self.insert_row(table, &row)?;
                     self.save_row_source_position(table, &row, source_position, true)?;
                     Ok(IngestOutcome::Inserted)
                 }
@@ -1010,7 +1168,7 @@ impl AnalyticsEngine {
                  WHERE analytics_table_name = ?
                    AND source_table_name = ?
                    AND tenant_id = ?
-                   AND row_id = ?
+                   AND source_row_id = ?
                  LIMIT 1",
             )?
             .query_row(
@@ -1044,8 +1202,21 @@ impl AnalyticsEngine {
             .and_then(serde_json::Value::as_str)
             .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO __analytics_row_source_positions
-                (analytics_table_name, source_table_name, tenant_id, row_id,
+            "DELETE FROM __analytics_row_source_positions
+             WHERE analytics_table_name = ?
+               AND source_table_name = ?
+               AND tenant_id = ?
+               AND source_row_id = ?",
+            duckdb::params![
+                table.analytics_table_name.as_str(),
+                source_table_name,
+                tenant_id,
+                row_id,
+            ],
+        )?;
+        self.conn.execute(
+            "INSERT INTO __analytics_row_source_positions
+                (analytics_table_name, source_table_name, tenant_id, source_row_id,
                  source_position_json, row_visible, updated_at_ms)
              VALUES (?, ?, ?, ?, ?, ?, ?)",
             duckdb::params![
@@ -1063,7 +1234,7 @@ impl AnalyticsEngine {
 
     fn update_row(
         &self,
-        table_name: &str,
+        table: &TableRegistration,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<bool> {
         let tenant_id = row
@@ -1088,12 +1259,15 @@ impl AnalyticsEngine {
         let set_clause = assignment_set_clause(update_columns.iter().copied());
         let sql = format!(
             "UPDATE {} SET {set_clause} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
-            sql::quote_identifier(table_name)
+            sql::quote_identifier(table.analytics_table_name.as_str())
         );
         let mut values = update_columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(*column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value_for_column(
+                    row.get(*column).unwrap_or(&serde_json::Value::Null),
+                    column_type_for_name(table, column),
+                )
             })
             .collect::<Vec<_>>();
         values.push(json_value_to_duckdb_value(table_value));
@@ -1176,6 +1350,23 @@ impl AnalyticsEngine {
     }
 }
 
+fn execute_convergent_schema_statement(
+    conn: &Connection,
+    statement: &str,
+) -> AnalyticsEngineResult<()> {
+    match conn.execute(statement, []) {
+        Ok(_) => Ok(()),
+        Err(error) if ducklake_schema_converged_concurrently(&error) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn ducklake_schema_converged_concurrently(error: &duckdb::Error) -> bool {
+    let message = error.to_string();
+    message.contains("DuckLake transaction")
+        && message.contains("has been created by another transaction already")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngestOutcome {
     Inserted,
@@ -1210,32 +1401,32 @@ impl<'conn> BatchSqlExecutor<'conn> {
 
     fn apply_upsert(
         &mut self,
-        table_name: &str,
+        table: &TableRegistration,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<IngestOutcome> {
-        if self.update_row(table_name, row)? {
+        if self.update_row(table, row)? {
             Ok(IngestOutcome::Updated)
         } else {
-            self.insert_row(table_name, row)?;
+            self.insert_row(table, row)?;
             Ok(IngestOutcome::Inserted)
         }
     }
 
     fn insert_row(
         &mut self,
-        table_name: &str,
+        table: &TableRegistration,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<()> {
         let columns = row.keys().cloned().collect::<Vec<_>>();
         let key = BatchStatementKey {
-            table_name: table_name.to_string(),
+            table_name: table.analytics_table_name.clone(),
             columns,
         };
         if !self.inserts.contains_key(&key) {
             let placeholders = placeholder_list(key.columns.len());
             let sql = format!(
                 "INSERT INTO {} ({}) VALUES ({placeholders})",
-                sql::quote_identifier(table_name),
+                sql::quote_identifier(table.analytics_table_name.as_str()),
                 key.columns
                     .iter()
                     .map(|column| sql::quote_identifier(column))
@@ -1249,19 +1440,24 @@ impl<'conn> BatchSqlExecutor<'conn> {
             .columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value_for_column(
+                    row.get(column).unwrap_or(&serde_json::Value::Null),
+                    column_type_for_name(table, column),
+                )
             })
             .collect::<Vec<_>>();
         self.inserts
             .get_mut(&key)
-            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
+            .ok_or_else(|| {
+                AnalyticsEngineError::TableNotRegistered(table.analytics_table_name.clone())
+            })?
             .execute(duckdb::params_from_iter(values))?;
         Ok(())
     }
 
     fn update_row(
         &mut self,
-        table_name: &str,
+        table: &TableRegistration,
         row: &BTreeMap<String, serde_json::Value>,
     ) -> AnalyticsEngineResult<bool> {
         let tenant_id = row
@@ -1284,14 +1480,14 @@ impl<'conn> BatchSqlExecutor<'conn> {
         }
 
         let key = BatchStatementKey {
-            table_name: table_name.to_string(),
+            table_name: table.analytics_table_name.clone(),
             columns,
         };
         if !self.updates.contains_key(&key) {
             let set_clause = assignment_set_clause(key.columns.iter().map(String::as_str));
             let sql = format!(
                 "UPDATE {} SET {set_clause} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
-                sql::quote_identifier(table_name)
+                sql::quote_identifier(table.analytics_table_name.as_str())
             );
             self.updates
                 .insert(key.clone(), self.conn.prepare(sql.as_str())?);
@@ -1300,7 +1496,10 @@ impl<'conn> BatchSqlExecutor<'conn> {
             .columns
             .iter()
             .map(|column| {
-                json_value_to_duckdb_value(row.get(column).unwrap_or(&serde_json::Value::Null))
+                json_value_to_duckdb_value_for_column(
+                    row.get(column).unwrap_or(&serde_json::Value::Null),
+                    column_type_for_name(table, column),
+                )
             })
             .collect::<Vec<_>>();
         values.push(json_value_to_duckdb_value(table_value));
@@ -1309,7 +1508,9 @@ impl<'conn> BatchSqlExecutor<'conn> {
         let changed = self
             .updates
             .get_mut(&key)
-            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
+            .ok_or_else(|| {
+                AnalyticsEngineError::TableNotRegistered(table.analytics_table_name.clone())
+            })?
             .execute(duckdb::params_from_iter(values))?;
         Ok(changed > 0)
     }
@@ -1675,6 +1876,51 @@ fn json_value_to_duckdb_value(value: &serde_json::Value) -> duckdb::types::Value
             duckdb::types::Value::Text(value.to_string())
         }
     }
+}
+
+fn json_value_to_duckdb_value_for_column(
+    value: &serde_json::Value,
+    column_type: Option<AnalyticsColumnType>,
+) -> duckdb::types::Value {
+    if is_timestamp_column(column_type.as_ref()) {
+        return match value {
+            serde_json::Value::Number(number) => number
+                .as_i64()
+                .map_or_else(|| json_value_to_duckdb_value(value), timestamp_millis_value),
+            serde_json::Value::String(text) => text.parse::<i64>().map_or_else(
+                |_| json_value_to_duckdb_value(value),
+                timestamp_millis_value,
+            ),
+            serde_json::Value::Null => duckdb::types::Value::Null,
+            serde_json::Value::Bool(_)
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_) => json_value_to_duckdb_value(value),
+        };
+    }
+    json_value_to_duckdb_value(value)
+}
+
+fn timestamp_millis_value(value: i64) -> duckdb::types::Value {
+    duckdb::types::Value::Timestamp(TimeUnit::Millisecond, value)
+}
+
+fn is_timestamp_column(column_type: Option<&AnalyticsColumnType>) -> bool {
+    matches!(
+        column_type,
+        Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::Timestamp
+        })
+    )
+}
+
+fn column_type_for_name(
+    table: &TableRegistration,
+    column_name: &str,
+) -> Option<AnalyticsColumnType> {
+    columns_for_registration(table)
+        .into_iter()
+        .find(|column| column.column_name == column_name)
+        .map(|column| column.column_type)
 }
 
 fn assignment_set_clause<'a>(columns: impl IntoIterator<Item = &'a str>) -> String {

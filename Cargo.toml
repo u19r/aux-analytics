@@ -9,7 +9,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "02585330401d91ac7ef296f49192aabd6cbf500e" }
+alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "2d65d744d937e2f37cf3b4784f9988a49842800a" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }
@@ -22,15 +22,18 @@ analytics-storage = { path = "crates/analytics-storage" }
 anyhow = "1.0.100"
 aws-config = "1.8.16"
 aws-credential-types = "1.2.14"
+aws-credentials = { path = "/Users/ross/aux/aux-common/crates/aws-credentials" }
 aws-sdk-dynamodb = "1.99.0"
 aws-sdk-dynamodbstreams = "1.99.0"
+aws-sdk-ssm = "1.99.0"
 axum = "0.8.9"
 base64 = "0.22.1"
 clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.0"
 config = { package = "analytics-config", path = "crates/analytics-config" }
 cucumber = "0.23.0"
-duckdb = { version = "1.10502.0", default-features = false, features = ["json", "r2d2"] }
+duckdb = { version = "1.10504.0", default-features = false, features = ["r2d2"] }
+flate2 = "1.1.9"
 http-body-util = "0.1.3"
 jsonschema = { version = "0.46.4", default-features = false, features = ["resolve-file"] }
 lambda_runtime = "0.11"
@@ -44,9 +47,9 @@ schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.11.0"
-storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "d59342c405dc5353a15380057b24e137d93be15d", default-features = false }
-storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "d59342c405dc5353a15380057b24e137d93be15d" }
-storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "d59342c405dc5353a15380057b24e137d93be15d", default-features = false }
+storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "b0968c77f67fcb0c9437eec91dc4f4007cb7fbfd", default-features = false }
+storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "b0968c77f67fcb0c9437eec91dc4f4007cb7fbfd" }
+storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "b0968c77f67fcb0c9437eec91dc4f4007cb7fbfd", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full", "tracing"] }

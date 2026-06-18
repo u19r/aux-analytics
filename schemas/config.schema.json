@@ -26,6 +26,50 @@
             "string",
             "null"
           ]
+        },
+        "duckdb_threads": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "postgres_pool_acquire_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "postgres_pool_enable_thread_local_cache": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "postgres_pool_idle_timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "postgres_pool_max_connections": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "postgres_pool_wait_timeout_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -41,6 +85,17 @@
           "$ref": "#/$defs/AnalyticsHttpConfig",
           "default": {
             "ingest_endpoint_enabled": true
+          }
+        },
+        "ingest": {
+          "$ref": "#/$defs/AnalyticsIngestConfig",
+          "default": {
+            "heartbeat_interval_ms": 5000,
+            "heartbeat_ttl_ms": 3600000,
+            "lease_duration_ms": 10000,
+            "poll_interval_ms": 5000,
+            "processor_enabled": true,
+            "slot_count": 256
           }
         },
         "manifest_path": {
@@ -63,6 +118,9 @@
         "query": {
           "$ref": "#/$defs/AnalyticsQueryConfig",
           "default": {
+            "disable_duckdb_interrupt": false,
+            "lambda_query_only": false,
+            "lambda_response_compression": "none",
             "max_read_connections": 64
           }
         },
@@ -80,6 +138,7 @@
           "$ref": "#/$defs/AnalyticsSourceConfig",
           "default": {
             "poll_interval_ms": 100,
+            "poll_max_records_per_response": 1000,
             "poll_max_responses_per_interval": 160,
             "poll_max_shards": 16,
             "poll_request_timeout_ms": 5000,
@@ -98,6 +157,60 @@
         }
       },
       "type": "object"
+    },
+    "AnalyticsIngestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "heartbeat_interval_ms": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "heartbeat_ttl_ms": {
+          "default": 3600000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lease_duration_ms": {
+          "default": 10000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_interval_ms": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processor_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "processor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slot_count": {
+          "default": 256,
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "AnalyticsLambdaResponseCompression": {
+      "enum": [
+        "none",
+        "gzip_base64"
+      ],
+      "type": "string"
     },
     "AnalyticsObjectStorageConfig": {
       "additionalProperties": false,
@@ -170,11 +283,31 @@
     "AnalyticsQueryConfig": {
       "additionalProperties": false,
       "properties": {
+        "disable_duckdb_interrupt": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lambda_query_only": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lambda_response_compression": {
+          "$ref": "#/$defs/AnalyticsLambdaResponseCompression",
+          "default": "none"
+        },
         "max_read_connections": {
           "default": 64,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "max_response_size_kb": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -266,6 +399,12 @@
         "poll_interval_ms": {
           "default": 100,
           "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "poll_max_records_per_response": {
+          "default": 1000,
+          "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
@@ -711,12 +850,23 @@
         "http": {
           "ingest_endpoint_enabled": true
         },
+        "ingest": {
+          "heartbeat_interval_ms": 5000,
+          "heartbeat_ttl_ms": 3600000,
+          "lease_duration_ms": 10000,
+          "poll_interval_ms": 5000,
+          "processor_enabled": true,
+          "slot_count": 256
+        },
         "object_storage": {
           "provider": "s3",
           "scheme": "s3"
         },
         "privacy": {},
         "query": {
+          "disable_duckdb_interrupt": false,
+          "lambda_query_only": false,
+          "lambda_response_compression": "none",
           "max_read_connections": 64
         },
         "retention": {
@@ -728,6 +878,7 @@
         },
         "source": {
           "poll_interval_ms": 100,
+          "poll_max_records_per_response": 1000,
           "poll_max_responses_per_interval": 160,
           "poll_max_shards": 16,
           "poll_request_timeout_ms": 5000,

@@ -10,11 +10,12 @@ doctest = false
 
 [features]
 default = ["bundled"]
-bundled = ["duckdb/bundled"]
+bundled = []
 dynamic = []
 
 [dependencies]
 analytics-contract = { workspace = true }
+aws-credentials = { workspace = true }
 config = { workspace = true }
 duckdb = { workspace = true }
 regex = { workspace = true }

@@ -4,7 +4,10 @@ use analytics_contract::{
     AnalyticsColumn, ClusteringKey, INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN,
     INTERNAL_MISSING_RETENTION_COLUMN, PartitionKey, SortOrder,
 };
-use config::{AnalyticsObjectStorageConfig, CatalogType, RemoteCredentialsConfig, StorageBackend};
+use config::{
+    AnalyticsObjectStorageConfig, CatalogType, DuckLakeCatalogSettings, RemoteCredentialsConfig,
+    StorageBackend,
+};
 use duckdb::Connection;
 
 use crate::AnalyticsEngineResult;
@@ -16,30 +19,104 @@ pub(crate) fn configure_connection(
     backend: &StorageBackend,
 ) -> AnalyticsEngineResult<()> {
     configure_extension_directory(conn)?;
-    load_extension(conn, "json")?;
     if let StorageBackend::DuckLake {
         catalog,
         catalog_path,
         data_path,
         object_storage,
+        catalog_settings,
     } = backend
     {
         load_extension(conn, "httpfs")?;
         load_extension(conn, "ducklake")?;
         match catalog {
             CatalogType::Sqlite => load_extension(conn, "sqlite_scanner")?,
-            CatalogType::Postgres => load_extension(conn, "postgres_scanner")?,
+            CatalogType::Postgres => {
+                load_extension(conn, "postgres_scanner")?;
+                configure_postgres_catalog_pool(conn, catalog_settings)?;
+            }
         };
         if let Some(object_storage) = object_storage {
             configure_object_storage(conn, object_storage)?;
         }
-        conn.execute(
-            attach_ducklake(*catalog, catalog_path, data_path).as_str(),
-            [],
-        )?;
+        attach_ducklake_with_retry(conn, *catalog, catalog_path, data_path)?;
         conn.execute("USE dlake;", [])?;
     }
     Ok(())
+}
+
+fn attach_ducklake_with_retry(
+    conn: &Connection,
+    catalog: CatalogType,
+    catalog_path: &str,
+    data_path: &str,
+) -> AnalyticsEngineResult<()> {
+    match conn.execute(
+        attach_ducklake(catalog, catalog_path, data_path).as_str(),
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(error)
+            if catalog == CatalogType::Postgres
+                && ducklake_catalog_initialization_raced(&error) =>
+        {
+            conn.execute(attach_existing_ducklake(catalog, catalog_path).as_str(), [])?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn ducklake_catalog_initialization_raced(error: &duckdb::Error) -> bool {
+    let message = error.to_string();
+    message.contains("ducklake_metadata")
+        && (message.contains("already exists") || message.contains("duplicate key value"))
+}
+
+fn configure_postgres_catalog_pool(
+    conn: &Connection,
+    settings: &DuckLakeCatalogSettings,
+) -> AnalyticsEngineResult<()> {
+    for statement in postgres_catalog_pool_statements(settings) {
+        conn.execute(statement.as_str(), [])?;
+    }
+    Ok(())
+}
+
+pub(crate) fn postgres_catalog_pool_statements(settings: &DuckLakeCatalogSettings) -> Vec<String> {
+    let mut statements = Vec::new();
+    if let Some(threads) = settings.duckdb_threads.filter(|threads| *threads > 0) {
+        statements.push(format!("SET threads = {threads};"));
+    }
+    if let Some(max_connections) = settings
+        .postgres_pool_max_connections
+        .filter(|connections| *connections > 0)
+    {
+        statements.push(format!("SET pg_pool_max_connections = {max_connections};"));
+    }
+    if let Some(idle_timeout_ms) = settings.postgres_pool_idle_timeout_ms {
+        statements.push(format!(
+            "SET pg_pool_idle_timeout_millis = {idle_timeout_ms};"
+        ));
+    }
+    if let Some(wait_timeout_ms) = settings.postgres_pool_wait_timeout_ms {
+        statements.push(format!(
+            "SET pg_pool_wait_timeout_millis = {wait_timeout_ms};"
+        ));
+    }
+    if let Some(acquire_mode) = settings.postgres_pool_acquire_mode.as_deref() {
+        statements.push(format!(
+            "SET pg_pool_acquire_mode = '{}';",
+            escape_sql_string(acquire_mode)
+        ));
+    }
+    if let Some(enabled) = settings.postgres_pool_enable_thread_local_cache {
+        statements.push(format!(
+            "SET pg_pool_enable_thread_local_cache = {};",
+            if enabled { "true" } else { "false" }
+        ));
+    }
+    statements
 }
 
 fn configure_extension_directory(conn: &Connection) -> AnalyticsEngineResult<()> {
@@ -76,13 +153,21 @@ fn load_extension(conn: &Connection, extension: &str) -> AnalyticsEngineResult<(
     Ok(())
 }
 
-fn configure_object_storage(
+pub(crate) fn configure_object_storage(
     conn: &Connection,
     object_storage: &AnalyticsObjectStorageConfig,
 ) -> AnalyticsEngineResult<()> {
-    if object_storage.bucket.is_none() {
+    let Some(sql) = object_storage_secret_sql(object_storage) else {
         return Ok(());
-    }
+    };
+    conn.execute(sql.as_str(), [])?;
+    Ok(())
+}
+
+pub(crate) fn object_storage_secret_sql(
+    object_storage: &AnalyticsObjectStorageConfig,
+) -> Option<String> {
+    object_storage.bucket.as_ref()?;
     let mut options = Vec::new();
     if let Some(region) = object_storage.region.as_deref() {
         options.push(format!("REGION '{}'", escape_sql_string(region)));
@@ -93,15 +178,14 @@ fn configure_object_storage(
     }
     if let Some(credentials) = object_storage.credentials.as_ref() {
         append_credential_options(&mut options, credentials);
-    } else {
-        options.push("PROVIDER credential_chain".to_string());
     }
-    let sql = format!(
+    if options.is_empty() {
+        return None;
+    }
+    Some(format!(
         "CREATE OR REPLACE SECRET aux_analytics_object_store (TYPE S3, {});",
         options.join(", ")
-    );
-    conn.execute(sql.as_str(), [])?;
-    Ok(())
+    ))
 }
 
 fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCredentialsConfig) {
@@ -117,10 +201,6 @@ fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCred
         if let Some(token) = static_credentials.session_token.as_deref() {
             options.push(format!("SESSION_TOKEN '{}'", escape_sql_string(token)));
         }
-    } else if credentials.instance_keys == Some(true) {
-        options.push("PROVIDER credential_chain".to_string());
-        options.push("CHAIN 'instance'".to_string());
-        options.push("VALIDATION 'none'".to_string());
     }
 }
 
@@ -164,6 +244,31 @@ pub(crate) fn create_table(table_name: &str, columns: &[AnalyticsColumn]) -> Str
         quote_identifier(table_name),
         entries.join(", ")
     )
+}
+
+pub(crate) fn manifest_column_statements(
+    table_name: &str,
+    columns: &[AnalyticsColumn],
+) -> Vec<String> {
+    let table = quote_identifier(table_name);
+    let mut sorted_columns = columns.iter().collect::<Vec<_>>();
+    sorted_columns.sort_by(|left, right| left.column_name.cmp(&right.column_name));
+    sorted_columns
+        .into_iter()
+        .filter(|column| {
+            !matches!(
+                column.column_name.as_str(),
+                "tenant_id" | "__id" | "table_name" | SOURCE_POSITION_COLUMN
+            )
+        })
+        .map(|column| {
+            format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {} {};",
+                quote_identifier(column.column_name.as_str()),
+                column.column_type.duckdb_type()
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn retention_column_statements(table_name: &str) -> Vec<String> {
@@ -281,9 +386,21 @@ pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_pat
         CatalogType::Postgres => "postgres",
     };
     format!(
-        "ATTACH 'ducklake:{prefix}:{}' AS dlake (DATA_PATH '{}');",
+        "ATTACH 'ducklake:{prefix}:{}' AS dlake (DATA_PATH '{}', DATA_INLINING_ROW_LIMIT 0);",
         escape_sql_string(catalog_path),
         escape_sql_string(data_path)
+    )
+}
+
+pub(crate) fn attach_existing_ducklake(catalog: CatalogType, catalog_path: &str) -> String {
+    let prefix = match catalog {
+        CatalogType::Sqlite => "sqlite",
+        CatalogType::Postgres => "postgres",
+    };
+    format!(
+        "ATTACH 'ducklake:{prefix}:{}' AS dlake (CREATE_IF_NOT_EXISTS false, \
+         DATA_INLINING_ROW_LIMIT 0);",
+        escape_sql_string(catalog_path)
     )
 }
 

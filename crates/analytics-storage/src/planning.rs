@@ -6,15 +6,42 @@ use crate::error::{
     AnalyticsStorageResult,
 };
 
-#[derive(Debug, Clone)]
-pub(crate) struct SourceTablePlan {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTablePlan {
     pub(crate) source_table_name: String,
     pub(crate) analytics_table_names: Vec<String>,
     pub(crate) stream_type: AnalyticsStreamType,
     pub(crate) stream_identifier: Option<String>,
 }
 
-pub(crate) fn table_plans(
+impl SourceTablePlan {
+    #[must_use]
+    pub fn aux_storage(source_table_name: String, analytics_table_names: Vec<String>) -> Self {
+        Self {
+            source_table_name,
+            analytics_table_names,
+            stream_type: AnalyticsStreamType::AuxStorage,
+            stream_identifier: None,
+        }
+    }
+
+    #[must_use]
+    pub fn source_table_name(&self) -> &str {
+        &self.source_table_name
+    }
+
+    #[must_use]
+    pub fn analytics_table_names(&self) -> &[String] {
+        &self.analytics_table_names
+    }
+
+    #[must_use]
+    pub fn stream_type(&self) -> AnalyticsStreamType {
+        self.stream_type
+    }
+}
+
+pub fn table_plans(
     source: &AnalyticsSourceConfig,
     manifest: &AnalyticsManifest,
 ) -> AnalyticsStorageResult<Vec<SourceTablePlan>> {

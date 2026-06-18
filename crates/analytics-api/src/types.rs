@@ -247,13 +247,48 @@ pub enum SourceHealthStatus {
     Degraded,
 }
 
+/// Current phase for the source polling job state machine.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourcePollingPhase {
+    Disabled,
+    Starting,
+    WaitingForLease,
+    Standby,
+    LeaseHeld,
+    Renewing,
+    RefreshingPlan,
+    RebuildingPoller,
+    Polling,
+    Ingesting,
+    Checkpointing,
+    LeaseLost,
+    Timeout,
+    Healthy,
+    Degraded,
+}
+
 /// Current source polling and checkpoint health for diagnostics responses.
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[schema(example = json!({
     "status": "healthy",
+    "phase": "healthy",
     "poller_enabled": true,
+    "job_id": "analytics_source_polling",
+    "worker_id": "analytics-worker-1",
+    "lease_token": "analytics-worker-1-1778670000000-1",
+    "lease_until_ms": 1_778_670_300_000_u64,
+    "phase_started_at_ms": 1_778_670_000_000_u64,
     "table_count": 1,
     "last_poll_started_at_ms": 1_778_670_000_000_u64,
+    "last_registry_refresh_at_ms": 1_778_670_000_100_u64,
+    "registered_table_rows": 2,
+    "dynamic_source_table_count": 2,
+    "processor_mode": "ingest",
+    "active_processor_count": 2,
+    "owned_slot_count": 128,
+    "last_heartbeat_at_ms": 1_778_670_000_100_u64,
+    "lease_loss_count": 0,
     "last_success_at_ms": 1_778_670_000_200_u64,
     "last_error_at_ms": null,
     "last_error": null,
@@ -268,15 +303,48 @@ pub enum SourceHealthStatus {
         "shard_id": "shard-0001",
         "position": "49668899999999999999999999999999999999999999999999999999",
         "updated_at_ms": 1_778_670_000_200_u64
+    }],
+    "table_lag": [{
+        "source_table_name": "source_users",
+        "versionstamp": "00000000000000000042",
+        "lag_ms": 0,
+        "cursor_age_ms": 5000,
+        "updated_at_ms": 1_778_670_000_200_u64
     }]
 }))]
 pub struct SourceHealth {
     /// Overall poller state.
     #[schema(example = "healthy")]
     pub status: SourceHealthStatus,
+    /// Deterministic phase for the current source polling job step.
+    #[serde(default = "default_source_polling_phase")]
+    #[schema(example = "healthy")]
+    pub phase: SourcePollingPhase,
     /// Whether source polling is enabled for this process.
     #[schema(default = false, example = true)]
     pub poller_enabled: bool,
+    /// Durable job identifier used for source-polling lease ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = "analytics_source_polling")]
+    pub job_id: Option<String>,
+    /// Worker identity currently used by this process for source-polling
+    /// leases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = "analytics-worker-1")]
+    pub worker_id: Option<String>,
+    /// Fencing token for the current source-polling ownership epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = "analytics-worker-1-1778670000000-1")]
+    pub lease_token: Option<String>,
+    /// Unix epoch milliseconds when the current lease expires, if this worker
+    /// owns it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = 1_778_670_300_000_u64)]
+    pub lease_until_ms: Option<i64>,
+    /// Unix epoch milliseconds when the current phase began.
+    #[serde(default)]
+    #[schema(nullable = true, default = json!(null), example = 1_778_670_000_000_u64)]
+    pub phase_started_at_ms: Option<u128>,
     /// Number of source tables configured for polling.
     #[serde(default)]
     #[schema(default = 0, example = 1)]
@@ -285,6 +353,41 @@ pub struct SourceHealth {
     #[serde(default)]
     #[schema(nullable = true, default = json!(null), example = 1_778_670_000_000_u64)]
     pub last_poll_started_at_ms: Option<u128>,
+    /// Unix epoch milliseconds when dynamic registered-table source discovery
+    /// last refreshed.
+    #[serde(default)]
+    #[schema(nullable = true, default = json!(null), example = 1_778_670_000_100_u64)]
+    pub last_registry_refresh_at_ms: Option<u128>,
+    /// Rows returned from `analytics_registered_tables` during the most recent
+    /// dynamic source discovery refresh.
+    #[serde(default)]
+    #[schema(default = 0, example = 2)]
+    pub registered_table_rows: usize,
+    /// Concrete tenant source tables derived from the most recent dynamic
+    /// registered-table refresh.
+    #[serde(default)]
+    #[schema(default = 0, example = 2)]
+    pub dynamic_source_table_count: usize,
+    /// Current processor mode for this instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), example = "ingest")]
+    pub processor_mode: Option<String>,
+    /// Active ingest processors visible to this instance.
+    #[serde(default)]
+    #[schema(default = 0, example = 2)]
+    pub active_processor_count: usize,
+    /// Hash slots currently assigned to this processor.
+    #[serde(default)]
+    #[schema(default = 0, example = 128)]
+    pub owned_slot_count: usize,
+    /// Unix epoch milliseconds for the most recent processor heartbeat write.
+    #[serde(default)]
+    #[schema(nullable = true, default = json!(null), example = 1_778_670_000_100_u64)]
+    pub last_heartbeat_at_ms: Option<u128>,
+    /// Slot lease losses observed by this processor.
+    #[serde(default)]
+    #[schema(default = 0, example = 0)]
+    pub lease_loss_count: u64,
     /// Unix epoch milliseconds for the most recent successful poll.
     #[serde(default)]
     #[schema(nullable = true, default = json!(null), example = 1_778_670_000_200_u64)]
@@ -330,6 +433,16 @@ pub struct SourceHealth {
         "updated_at_ms": 1_778_670_000_200_u64
     }]))]
     pub checkpoints: Vec<CheckpointHealth>,
+    /// Last known lag summary by source table for hashed-range ingest.
+    #[serde(default)]
+    #[schema(default = json!([]), min_items = 0, example = json!([{
+        "source_table_name": "source_users",
+        "versionstamp": "00000000000000000042",
+        "lag_ms": 0,
+        "cursor_age_ms": 5000,
+        "updated_at_ms": 1_778_670_000_200_u64
+    }]))]
+    pub table_lag: Vec<TableLagHealth>,
 }
 
 impl SourceHealth {
@@ -337,9 +450,23 @@ impl SourceHealth {
     pub fn disabled() -> Self {
         Self {
             status: SourceHealthStatus::Disabled,
+            phase: SourcePollingPhase::Disabled,
             poller_enabled: false,
+            job_id: None,
+            worker_id: None,
+            lease_token: None,
+            lease_until_ms: None,
+            phase_started_at_ms: None,
             table_count: 0,
             last_poll_started_at_ms: None,
+            last_registry_refresh_at_ms: None,
+            registered_table_rows: 0,
+            dynamic_source_table_count: 0,
+            processor_mode: None,
+            active_processor_count: 0,
+            owned_slot_count: 0,
+            last_heartbeat_at_ms: None,
+            lease_loss_count: 0,
             last_success_at_ms: None,
             last_error_at_ms: None,
             last_error: None,
@@ -350,6 +477,7 @@ impl SourceHealth {
             total_checkpoints_saved: 0,
             total_checkpoint_errors: 0,
             checkpoints: Vec::new(),
+            table_lag: Vec::new(),
         }
     }
 
@@ -357,11 +485,33 @@ impl SourceHealth {
     pub fn starting(table_count: usize) -> Self {
         Self {
             status: SourceHealthStatus::Starting,
+            phase: SourcePollingPhase::Starting,
             poller_enabled: true,
             table_count,
             ..Self::disabled()
         }
     }
+}
+
+fn default_source_polling_phase() -> SourcePollingPhase {
+    SourcePollingPhase::Disabled
+}
+
+/// Source table lag summary for hashed-range ingest.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema, PartialEq, Eq)]
+#[schema(example = json!({
+    "source_table_name": "source_users",
+    "versionstamp": "00000000000000000042",
+    "lag_ms": 0,
+    "cursor_age_ms": 5000,
+    "updated_at_ms": 1_778_670_000_200_u64
+}))]
+pub struct TableLagHealth {
+    pub source_table_name: String,
+    pub versionstamp: String,
+    pub lag_ms: Option<u64>,
+    pub cursor_age_ms: Option<u64>,
+    pub updated_at_ms: Option<u128>,
 }
 
 /// Source checkpoint position for a single source table shard.
@@ -606,7 +756,7 @@ pub(crate) struct TenantQueryBatchRequest {
     "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
     "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
-pub(crate) struct QueryResponse {
+pub struct QueryResponse {
     /// Result rows returned by `DuckDB`.
     #[schema(min_items = 0, example = json!([{"email": "ada@example.com", "org_id": "org-a"}]))]
     pub rows: Vec<serde_json::Value>,
@@ -624,7 +774,7 @@ pub(crate) struct QueryResponse {
     "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
     "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
-pub(crate) struct QueryBatchResult {
+pub struct QueryBatchResult {
     /// Caller-owned stable name from the batch request.
     #[schema(example = "total_users")]
     pub name: String,
@@ -638,7 +788,7 @@ pub(crate) struct QueryBatchResult {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct QueryResultColumn {
+pub struct QueryResultColumn {
     pub name: String,
     pub value_type: QueryResultValueType,
     pub nullable: bool,
@@ -646,7 +796,7 @@ pub(crate) struct QueryResultColumn {
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum QueryResultValueType {
+pub enum QueryResultValueType {
     Boolean,
     String,
     I64,
@@ -658,7 +808,7 @@ pub(crate) enum QueryResultValueType {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct QueryExecutionMetadata {
+pub struct QueryExecutionMetadata {
     pub query_hash: String,
     pub row_count: u64,
     pub truncated: bool,
@@ -668,7 +818,7 @@ pub(crate) struct QueryExecutionMetadata {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) struct QuerySourceWatermark {
+pub struct QuerySourceWatermark {
     pub max_occurred_at_ms: Option<i64>,
     pub max_ingested_at_ms: Option<i64>,
 }

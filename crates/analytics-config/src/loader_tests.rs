@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use crate::{
-    DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+    AnalyticsLambdaResponseCompression, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
     loader::{
         apply_override, expand_env_placeholders, load_optional_with_overrides, merge_json,
         parse_override_value,
@@ -69,20 +69,46 @@ fn given_no_query_config_when_loaded_then_read_connection_default_is_used() {
         config.root.analytics.query.max_read_connections,
         DEFAULT_QUERY_MAX_READ_CONNECTIONS
     );
+    assert_eq!(config.root.analytics.query.max_response_size_kb, None);
+    assert_eq!(
+        config.root.analytics.query.lambda_response_compression,
+        AnalyticsLambdaResponseCompression::None
+    );
+    assert!(!config.root.analytics.query.lambda_query_only);
 }
 
 #[test]
-fn given_query_read_connection_override_when_loaded_then_value_is_used() {
+fn given_query_overrides_when_loaded_then_values_are_used() {
     let config = load_optional_with_overrides(
         None,
-        &[(
-            "analytics.query.max_read_connections".to_string(),
-            "128".to_string(),
-        )],
+        &[
+            (
+                "analytics.query.max_read_connections".to_string(),
+                "128".to_string(),
+            ),
+            (
+                "analytics.query.max_response_size_kb".to_string(),
+                "5800".to_string(),
+            ),
+            (
+                "analytics.query.lambda_response_compression".to_string(),
+                "gzip_base64".to_string(),
+            ),
+            (
+                "analytics.query.lambda_query_only".to_string(),
+                "true".to_string(),
+            ),
+        ],
     )
     .expect("config");
 
     assert_eq!(config.root.analytics.query.max_read_connections, 128);
+    assert_eq!(config.root.analytics.query.max_response_size_kb, Some(5800));
+    assert_eq!(
+        config.root.analytics.query.lambda_response_compression,
+        AnalyticsLambdaResponseCompression::GzipBase64
+    );
+    assert!(config.root.analytics.query.lambda_query_only);
 }
 
 #[test]

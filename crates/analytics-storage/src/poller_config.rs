@@ -8,6 +8,7 @@ pub struct PollerConfig {
     pub request_timeout: Duration,
     pub max_shards: usize,
     pub max_responses_per_interval: usize,
+    pub max_records_per_response: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,7 @@ impl Default for PollerConfig {
             request_timeout: Duration::from_millis(5_000),
             max_shards: 16,
             max_responses_per_interval: 160,
+            max_records_per_response: 1_000,
         }
     }
 }
@@ -35,6 +37,7 @@ impl PollerConfig {
             request_timeout: Duration::from_millis(source.poll_request_timeout_ms),
             max_shards: source.poll_max_shards,
             max_responses_per_interval: source.poll_max_responses_per_interval,
+            max_records_per_response: source.poll_max_records_per_response,
         }
     }
 

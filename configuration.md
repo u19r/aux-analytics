@@ -38,6 +38,13 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.source.tables[].table_name` | required | Source storage table name. |
 | `analytics.source.tables[].stream_type` | inherits global | Per-table stream format override. |
 | `analytics.source.tables[].stream_identifier` | none | Standard stream ARN for `storage_stream`. For `aux_storage`, table polling uses `table_name`; this field is informational/reserved. |
+| `analytics.ingest.processor_enabled` | `true` | Enables the pull-ingest processor on this instance. Set to `false` for query-only instances; they must not write processor heartbeats, acquire leases, or ingest pull-based aux-storage records. |
+| `analytics.ingest.processor_id` | none | Optional stable processor id. When omitted, the runtime generates an instance-local id. |
+| `analytics.ingest.poll_interval_ms` | `5000` | Interval between hashed-range ingest processing ticks. |
+| `analytics.ingest.heartbeat_interval_ms` | `5000` | Interval between processor heartbeat writes. |
+| `analytics.ingest.lease_duration_ms` | `10000` | Slot lease duration. Must be at least two heartbeat intervals. |
+| `analytics.ingest.heartbeat_ttl_ms` | `3600000` | TTL for stale processor heartbeat rows. Assignment ignores stale heartbeats before TTL cleanup runs. |
+| `analytics.ingest.slot_count` | `256` | Number of change-index hash slots used for aux-storage pull ingestion. |
 | `analytics.retention.enabled` | `false` | Enables the periodic retention sweeper for dynamic retention tables. Static manifest retention can compute expiry without dynamic lookup, but the sweeper must be enabled to delete expired rows continuously. |
 | `analytics.retention.sweep_interval_ms` | `60000` | Interval between retention sweeps. |
 | `analytics.retention.delete_batch_size` | `500` | Maximum expired rows deleted per batch. |
@@ -83,9 +90,15 @@ Use one of these modes:
 
 | Mode | Config | Behavior |
 | --- | --- | --- |
-| Ambient/default | omit `credentials` | Let the AWS SDK or DuckDB/DuckLake resolve credentials from the environment. |
-| Instance/workload identity | `{ "instance_keys": true }` | Use the runtime credential chain for instance, task, or workload identity. |
-| Static | `{ "static": { "access_key": "...", "secret_key": "...", "session_token": "..." } }` | Use explicit credentials. `session_token` is optional. |
+| Ambient/default | omit `credentials` | Source polling uses the AWS SDK default chain. DuckLake resolves aux-common AWS credentials before opening DuckDB and passes static S3 secret options to DuckDB. |
+| Instance/workload identity | `{ "instance_keys": true }` | Use the runtime aux-common AWS credential chain for instance, task, Lambda, or workload identity before opening DuckDB. |
+| Static | `{ "static": { "access_key": "...", "secret_key": "...", "session_token": "..." } }` | Use explicit credentials. `session_token` is optional. Static credentials are caller-managed. |
+
+DuckDB object-store setup does not use the DuckDB `aws` extension or DuckDB credential-chain
+providers. When resolved credentials include an expiry, analytics-engine keeps the expiry and
+refresh timestamp in memory. Each engine operation performs a cheap `needs_refresh` comparison and,
+when required, resolves fresh aux-common credentials and replaces the DuckDB S3 secret before
+continuing.
 
 Do not configure static credentials and `instance_keys: true` together.
 
@@ -93,9 +106,14 @@ Do not configure static credentials and `instance_keys: true` together.
 
 Polling belongs in `analytics-storage` or another adapter crate. The
 `analytics-engine` crate only accepts contract stream records. The standalone
-`aux-analytics-api` binary starts polling when `analytics.source.tables` is
-non-empty. Lambda deployments do not use this runtime because AWS event source
-mappings manage stream polling and invoke the Lambda handler with batches.
+`aux-analytics-api` binary starts polling when `analytics.ingest.processor_enabled`
+is true and source tables are configured. Lambda deployments do not use this runtime because AWS
+event source mappings manage stream polling and invoke the Lambda handler with batches. Query-only
+instances set `analytics.ingest.processor_enabled = false`; they still serve HTTP query/API traffic
+but do not participate in pull-ingest coordination.
+
+For local multi-instance proof, `examples/docker-compose-demo` runs aux-storage, two ingest
+processors, and one query-only API instance against a shared `ducklake_postgres` catalog.
 
 The resident poller:
 
@@ -144,6 +162,16 @@ Prometheus renders them with underscores:
 | `analytics.http.ingest.latency_ms` | histogram | `outcome` |
 | `analytics.http.ingest.privacy_dropped_fields_total` | counter | `policy_version` |
 | `analytics.source.privacy_dropped_fields_total` | counter | `policy_version` |
+| `analytics.ingest.processor.heartbeats_total` | counter | none |
+| `analytics.ingest.processor.active_processors` | gauge | none |
+| `analytics.ingest.processor.owned_slots` | gauge | none |
+| `analytics.ingest.processor.lease_acquire_total` | counter | none |
+| `analytics.ingest.processor.lease_lost_total` | counter | none |
+| `analytics.ingest.table.records_total` | counter | `table` |
+| `analytics.ingest.table.bytes_total` | counter | `table` |
+| `analytics.ingest.table.lag_ms` | histogram | `table` |
+| `analytics.ingest.table.cursor_age_ms` | histogram | `table` |
+| `analytics.ingest.trim.deleted_markers_total` | counter | none |
 | `analytics.privacy.policy_load_failures_total` | counter | none |
 | `analytics.retention.lookups_total` | counter | `table`, `source`, `outcome` |
 | `analytics.retention.lookup_latency_ms` | histogram | `table`, `source`, `outcome` |

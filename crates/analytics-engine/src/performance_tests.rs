@@ -23,6 +23,7 @@ const COLUMN_COUNT: usize = 48;
 const QUERY_COLUMN_COUNT: usize = 24;
 
 #[test]
+#[ignore = "performance test only"]
 fn perf_loop_engine_candidates_given_sql_projection_and_query_hot_paths_then_keeps_measured_wins() {
     let table = table_registration(COLUMN_COUNT);
     let columns = columns_for_registration(&table);
@@ -138,6 +139,7 @@ fn engine_hot_path_candidates(
 }
 
 #[test]
+#[ignore = "performance test only"]
 fn perf_loop_duckdb_query_candidates_given_identity_predicates_then_index_improves_point_queries() {
     let results = vec![
         measure_candidate(

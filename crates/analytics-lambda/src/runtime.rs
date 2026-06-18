@@ -7,7 +7,11 @@ use serde_json::Value;
 pub(crate) async fn run() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
 
-    let handler = Arc::new(AnalyticsLambdaHandler::from_env()?);
+    let handler = Arc::new(
+        AnalyticsLambdaHandler::from_env()
+            .await
+            .map_err(sanitized_lambda_error)?,
+    );
     tracing::info!("starting analytics lambda handler");
     lambda_runtime::run(service_fn(move |event| {
         let handler = Arc::clone(&handler);
@@ -24,5 +28,48 @@ async fn handle_lambda_event(
     handler
         .handle_event(event.payload)
         .await
-        .map_err(Error::from)
+        .map_err(sanitized_lambda_error)
+}
+
+fn sanitized_lambda_error(error: impl std::error::Error) -> Error {
+    Error::from(sanitize_error_message(error.to_string().as_str()))
+}
+
+fn sanitize_error_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(redact_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_token(token: &str) -> &str {
+    if token.contains("://") && token.contains('@') {
+        return "<redacted-url>";
+    }
+    if token.starts_with("pscale_pw_") {
+        return "<redacted-password>";
+    }
+    token
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_error_message;
+
+    #[test]
+    fn sanitizes_database_urls_and_planetscale_password_tokens() {
+        let message = "failed to connect to \
+                       postgresql://user:pscale_pw_secret@example.test:5432/postgres?\
+                       sslmode=require with pscale_pw_secret";
+
+        let sanitized = sanitize_error_message(message);
+
+        assert!(!sanitized.contains("postgresql://"));
+        assert!(!sanitized.contains("pscale_pw_secret"));
+        assert_eq!(
+            sanitized,
+            "failed to connect to <redacted-url> with <redacted-password>"
+        );
+    }
 }

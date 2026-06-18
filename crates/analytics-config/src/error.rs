@@ -85,6 +85,7 @@ pub enum ConfigErrorKind {
     MissingDucklakeObjectStoragePath,
     MissingManifestPath,
     InvalidSourceTableStreamType,
+    InvalidIngestConfig,
     InvalidRetentionConfig,
 }
 
@@ -119,6 +120,7 @@ impl fmt::Display for ConfigErrorKind {
             Self::InvalidSourceTableStreamType => formatter.write_str(
                 "analytics source table needs a stream_type or analytics.source.stream_type",
             ),
+            Self::InvalidIngestConfig => formatter.write_str("analytics ingest config is invalid"),
             Self::InvalidRetentionConfig => {
                 formatter.write_str("analytics retention config is invalid")
             }

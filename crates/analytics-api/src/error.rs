@@ -131,13 +131,23 @@ impl From<analytics_contract::PrivacyPolicyError> for ApiError {
 
 impl From<AnalyticsEngineError> for ApiError {
     fn from(source: AnalyticsEngineError) -> Self {
-        Self::with_source(ApiErrorKind::Engine, source)
+        let message = source.to_string();
+        Self {
+            kind: ApiErrorKind::Engine,
+            debug: ApiErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
     }
 }
 
 impl From<AnalyticsEngineAccessError> for ApiError {
     fn from(source: AnalyticsEngineAccessError) -> Self {
-        Self::with_source(ApiErrorKind::Engine, source)
+        let message = source.to_string();
+        Self {
+            kind: ApiErrorKind::Engine,
+            debug: ApiErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
     }
 }
 
@@ -161,6 +171,11 @@ impl From<metrics_exporter_prometheus::BuildError> for ApiError {
 
 impl From<analytics_storage::AnalyticsStorageError> for ApiError {
     fn from(source: analytics_storage::AnalyticsStorageError) -> Self {
-        Self::with_source(ApiErrorKind::Storage, source)
+        let message = source.to_string();
+        Self {
+            kind: ApiErrorKind::Storage,
+            debug: ApiErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
     }
 }

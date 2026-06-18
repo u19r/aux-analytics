@@ -21,6 +21,16 @@ fn given_storage_error_kind_when_formatted_then_message_names_storage_operation(
 }
 
 #[test]
+fn given_engine_error_when_converted_then_source_message_is_visible_to_operator() {
+    let error = ApiError::from(analytics_engine::AnalyticsEngineError::InvalidQuery);
+
+    assert_eq!(
+        error.to_string(),
+        "analytics engine operation failed: query must be a single read-only SELECT statement"
+    );
+}
+
+#[test]
 fn given_api_boundary_failures_when_formatted_then_operator_messages_name_the_failed_subsystem() {
     let cases = [
         (ApiErrorKind::Io, "api I/O failed"),

@@ -22,7 +22,8 @@ use crate::{
     cli::ApiCli,
     error::ApiResult,
     runtime_config::{
-        load_privacy_policy, load_serve_config, resolve_manifest_path, validate_source_config,
+        load_privacy_policy, load_serve_config, resolve_manifest_path, validate_ingest_config,
+        validate_source_config,
     },
     source_polling::spawn_source_polling,
 };
@@ -39,13 +40,15 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
     let manifest_path = resolve_manifest_path(args.manifest.as_deref(), &root)?;
     let manifest = read_manifest(manifest_path.as_str())?;
     validate_source_config(&root.analytics.source)?;
+    validate_ingest_config(&root.analytics.ingest)?;
     config::validate_retention_config(&root.analytics.retention)?;
     let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
     let (filter, source) = resolve_filter(&root.tracing);
     println!("Using log filter (source: {source}): {filter}");
     init_tracing(filter)?;
 
-    let storage_backend = config::resolve_storage_backend(&(&args.backend).into(), &root)?;
+    let backend_override = (&args.backend).into();
+    let storage_backend = config::resolve_storage_backend(&backend_override, &root)?;
     tracing::info!(
         source_table_count = root.analytics.source.tables.len(),
         "analytics source configuration loaded"
@@ -70,13 +73,18 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
             engine,
             manifest,
             retention_runtime.clone(),
-            storage_backend,
+            storage_backend.clone(),
             root.analytics.query.max_read_connections,
         )
         .with_privacy_policy(privacy_policy),
     );
     tracing::info!("analytics source polling initialization starting");
-    spawn_source_polling(&root.analytics.source, app_state.clone()).await?;
+    spawn_source_polling(
+        &root.analytics.source,
+        &root.analytics.ingest,
+        app_state.clone(),
+    )
+    .await?;
     tracing::info!("analytics source polling initialized");
     tracing::info!("analytics retention sweeper initialization starting");
     spawn_retention_sweeper(retention_runtime, app_state.clone()).await;
