@@ -1,2 +1,2 @@
 [target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/local/lib"]
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/local/lib", "-L", "native=/usr/local/lib",]

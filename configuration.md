@@ -59,8 +59,9 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.retention.tables[].tenant_policy.duration_selector.attribute_path` | required | Dot path to a numeric duration value in milliseconds in the returned item. |
 | `analytics.retention.tables[].tenant_policy.cache_ttl_ms` | `300000` | Tenant retention policy cache TTL. |
 | `analytics.privacy.policy_path` | none | Path to a versioned privacy policy JSON file. When set, startup validates the policy and HTTP ingest, source polling, and Lambda ingestion filter denied data before analytical writes. |
-| `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, or `ducklake_postgres`. |
+| `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, `ducklake_postgres`, or `ducklake_motherduck`. |
 | `analytics.catalog.connection_string` | none | DuckDB path or DuckLake catalog connection string. |
+| `analytics.catalog.motherduck_token` | none | MotherDuck service token for `ducklake_motherduck`. Use `${ENV_VAR}` expansion instead of committing a token. |
 | `analytics.object_storage.provider` | `s3` | Object store provider: `s3`, `r2`, or `generic`. |
 | `analytics.object_storage.scheme` | `s3` | URI scheme used in DuckLake `DATA_PATH`, for example `s3`. |
 | `analytics.object_storage.bucket` | none | Bucket/container name. If omitted, `path` is used directly. |
@@ -114,6 +115,32 @@ but do not participate in pull-ingest coordination.
 
 For local multi-instance proof, `examples/docker-compose-demo` runs aux-storage, two ingest
 processors, and one query-only API instance against a shared `ducklake_postgres` catalog.
+
+DuckLake with MotherDuck as the catalog uses MotherDuck BYOB own-compute mode. Create the DuckLake
+database and object-storage bucket out of band, then configure the metadata catalog and object path:
+
+```json
+{
+  "analytics": {
+    "catalog": {
+      "backend": "ducklake_motherduck",
+      "connection_string": "__ducklake_metadata_analytics_prod",
+      "motherduck_token": "${MOTHERDUCK_SERVICE_TOKEN}"
+    },
+    "object_storage": {
+      "provider": "s3",
+      "scheme": "s3",
+      "bucket": "analytics-lake",
+      "path": "prod",
+      "region": "us-east-1"
+    }
+  }
+}
+```
+
+For R2-backed MotherDuck DuckLake, use an R2 bucket path such as `r2://bucket/prefix` by setting
+`object_storage.scheme` to `r2`. MotherDuck BYOB currently supports AWS S3 and Cloudflare R2 for
+the DuckLake data path.
 
 The resident poller:
 

@@ -107,7 +107,12 @@ can own domain table registration while this repo stays agnostic.
 CLI backend flags override the configured catalog for local operation. For DuckLake backends,
 `object_storage.scheme`, `bucket`, and `path` are resolved to `scheme://bucket/path`; omitting the
 bucket leaves `path` as a local or fully qualified data path. The object store can be AWS S3,
-Cloudflare R2, or a generic S3-compatible endpoint.
+Cloudflare R2, or a generic S3-compatible endpoint. MotherDuck-backed DuckLake catalogs use the
+`ducklake_motherduck` backend, a MotherDuck metadata database such as
+`__ducklake_metadata_analytics_prod` for `analytics.catalog.connection_string`, and an optional
+`analytics.catalog.motherduck_token` value. Config string values support `${ENV_VAR}` expansion, so
+deployments can set `"motherduck_token": "${MOTHERDUCK_SERVICE_TOKEN}"` without storing the token in
+the file.
 
 Credential resolution follows the same configuration shape as aux-storage remote services:
 

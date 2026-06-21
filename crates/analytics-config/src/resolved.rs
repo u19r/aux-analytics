@@ -73,10 +73,12 @@ pub enum StorageBackend {
 pub enum CatalogType {
     Sqlite,
     Postgres,
+    MotherDuck,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DuckLakeCatalogSettings {
+    pub motherduck_token: Option<String>,
     pub duckdb_threads: Option<usize>,
     pub postgres_pool_max_connections: Option<usize>,
     pub postgres_pool_idle_timeout_ms: Option<u64>,
@@ -88,6 +90,7 @@ pub struct DuckLakeCatalogSettings {
 impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
     fn from(config: &AnalyticsCatalogConfig) -> Self {
         Self {
+            motherduck_token: config.motherduck_token.clone(),
             duckdb_threads: config.duckdb_threads,
             postgres_pool_max_connections: config.postgres_pool_max_connections,
             postgres_pool_idle_timeout_ms: config.postgres_pool_idle_timeout_ms,
@@ -128,6 +131,13 @@ pub fn resolve_storage_backend(
         }),
         AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Postgres,
+            catalog_path: connection_string.to_string(),
+            data_path: ducklake_data_path(root)?,
+            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: DuckLakeCatalogSettings::from(catalog),
+        }),
+        AnalyticsCatalogBackend::DucklakeMotherduck => Ok(StorageBackend::DuckLake {
+            catalog: CatalogType::MotherDuck,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),

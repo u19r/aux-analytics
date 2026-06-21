@@ -35,6 +35,7 @@ pub(crate) fn configure_connection(
                 load_extension(conn, "postgres_scanner")?;
                 configure_postgres_catalog_pool(conn, catalog_settings)?;
             }
+            CatalogType::MotherDuck => load_extension(conn, "motherduck")?,
         };
         if let Some(object_storage) = object_storage {
             configure_object_storage(conn, object_storage)?;
@@ -381,10 +382,7 @@ pub(crate) fn alter_table_sorted_by(
 }
 
 pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_path: &str) -> String {
-    let prefix = match catalog {
-        CatalogType::Sqlite => "sqlite",
-        CatalogType::Postgres => "postgres",
-    };
+    let (prefix, catalog_path) = ducklake_catalog_reference(catalog, catalog_path);
     format!(
         "ATTACH 'ducklake:{prefix}:{}' AS dlake (DATA_PATH '{}', DATA_INLINING_ROW_LIMIT 0);",
         escape_sql_string(catalog_path),
@@ -393,15 +391,23 @@ pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_pat
 }
 
 pub(crate) fn attach_existing_ducklake(catalog: CatalogType, catalog_path: &str) -> String {
-    let prefix = match catalog {
-        CatalogType::Sqlite => "sqlite",
-        CatalogType::Postgres => "postgres",
-    };
+    let (prefix, catalog_path) = ducklake_catalog_reference(catalog, catalog_path);
     format!(
         "ATTACH 'ducklake:{prefix}:{}' AS dlake (CREATE_IF_NOT_EXISTS false, \
          DATA_INLINING_ROW_LIMIT 0);",
         escape_sql_string(catalog_path)
     )
+}
+
+fn ducklake_catalog_reference(catalog: CatalogType, catalog_path: &str) -> (&'static str, &str) {
+    match catalog {
+        CatalogType::Sqlite => ("sqlite", catalog_path),
+        CatalogType::Postgres => ("postgres", catalog_path),
+        CatalogType::MotherDuck => (
+            "md",
+            catalog_path.strip_prefix("md:").unwrap_or(catalog_path),
+        ),
+    }
 }
 
 fn escape_sql_string(value: &str) -> String {

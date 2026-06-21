@@ -1,0 +1,6 @@
+[test-groups]
+quint-model-tests = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/(^|::)quint_/)'
+test-group = 'quint-model-tests'

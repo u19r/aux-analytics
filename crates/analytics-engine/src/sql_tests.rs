@@ -148,6 +148,7 @@ fn given_planetscale_safe_catalog_settings_when_configured_then_pool_is_limited_
         postgres_pool_wait_timeout_ms: Some(5_000),
         postgres_pool_acquire_mode: Some("wait".to_string()),
         postgres_pool_enable_thread_local_cache: Some(false),
+        ..DuckLakeCatalogSettings::default()
     });
 
     assert_eq!(

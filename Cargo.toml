@@ -22,7 +22,7 @@ analytics-storage = { path = "crates/analytics-storage" }
 anyhow = "1.0.100"
 aws-config = "1.8.16"
 aws-credential-types = "1.2.14"
-aws-credentials = { path = "/Users/ross/aux/aux-common/crates/aws-credentials" }
+aws-credentials = { git = "https://github.com/u19r/aux-common", package = "aws-credentials", rev = "2d65d744d937e2f37cf3b4784f9988a49842800a" }
 aws-sdk-dynamodb = "1.99.0"
 aws-sdk-dynamodbstreams = "1.99.0"
 aws-sdk-ssm = "1.99.0"

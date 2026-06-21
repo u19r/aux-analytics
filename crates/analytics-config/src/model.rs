@@ -560,6 +560,9 @@ pub struct AnalyticsCatalogConfig {
     pub connection_string: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
+    pub motherduck_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
     pub duckdb_threads: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
@@ -584,6 +587,7 @@ pub enum AnalyticsCatalogBackend {
     Duckdb,
     DucklakeSqlite,
     DucklakePostgres,
+    DucklakeMotherduck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

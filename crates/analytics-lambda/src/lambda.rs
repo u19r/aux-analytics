@@ -741,9 +741,10 @@ fn parse_catalog_backend(value: &str) -> Result<AnalyticsCatalogBackend, Analyti
         "duckdb" => Ok(AnalyticsCatalogBackend::Duckdb),
         "ducklake_sqlite" => Ok(AnalyticsCatalogBackend::DucklakeSqlite),
         "ducklake_postgres" => Ok(AnalyticsCatalogBackend::DucklakePostgres),
+        "ducklake_motherduck" => Ok(AnalyticsCatalogBackend::DucklakeMotherduck),
         other => Err(AnalyticsLambdaError::validation(format!(
-            "{ENV_CATALOG_BACKEND} must be one of duckdb, ducklake_sqlite, or ducklake_postgres; \
-             got {other}"
+            "{ENV_CATALOG_BACKEND} must be one of duckdb, ducklake_sqlite, ducklake_postgres, or \
+             ducklake_motherduck; got {other}"
         ))),
     }
 }
@@ -827,6 +828,13 @@ fn resolve_storage_backend_from_config(
         }),
         AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
             catalog: CatalogType::Postgres,
+            catalog_path: connection_string.to_string(),
+            data_path: ducklake_data_path(root)?,
+            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: (&root.analytics.catalog).into(),
+        }),
+        AnalyticsCatalogBackend::DucklakeMotherduck => Ok(StorageBackend::DuckLake {
+            catalog: CatalogType::MotherDuck,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),

@@ -29,10 +29,10 @@ use aws_credentials::{
     AwsResolvedCredentials, AwsStaticCredentials, resolve_default_chain_credentials_with_expiry,
 };
 use config::{
-    AnalyticsObjectStorageConfig, RemoteCredentialsConfig, RemoteStaticCredentialsConfig,
-    StorageBackend,
+    AnalyticsObjectStorageConfig, CatalogType, DuckLakeCatalogSettings, RemoteCredentialsConfig,
+    RemoteStaticCredentialsConfig, StorageBackend,
 };
-use duckdb::{Connection, OptionalExt, types::TimeUnit};
+use duckdb::{Config as DuckDbConfig, Connection, OptionalExt, types::TimeUnit};
 use thiserror::Error;
 
 use crate::{
@@ -199,7 +199,15 @@ impl AnalyticsEngine {
     pub fn connect(backend: &StorageBackend) -> AnalyticsEngineResult<Self> {
         let conn = match backend {
             StorageBackend::DuckDb { path } => Connection::open(path)?,
-            StorageBackend::DuckLake { .. } => Connection::open_in_memory()?,
+            StorageBackend::DuckLake {
+                catalog: CatalogType::Sqlite | CatalogType::Postgres,
+                ..
+            } => Connection::open_in_memory()?,
+            StorageBackend::DuckLake {
+                catalog: CatalogType::MotherDuck,
+                catalog_settings,
+                ..
+            } => Connection::open_in_memory_with_flags(motherduck_config(catalog_settings)?)?,
         };
         let (configured_backend, object_storage_credentials) =
             configure_ducklake_object_storage_credentials(backend)?;
@@ -1348,6 +1356,13 @@ impl AnalyticsEngine {
             ]))?;
         Ok(())
     }
+}
+
+fn motherduck_config(settings: &DuckLakeCatalogSettings) -> AnalyticsEngineResult<DuckDbConfig> {
+    let Some(token) = settings.motherduck_token.as_deref() else {
+        return Ok(DuckDbConfig::default());
+    };
+    Ok(DuckDbConfig::default().with("motherduck_token", token)?)
 }
 
 fn execute_convergent_schema_statement(
