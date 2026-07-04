@@ -14,8 +14,8 @@ fn resolves_ducklake_backend_from_config_with_bucket_path() {
     let root = RootConfig {
         analytics: AnalyticsConfig {
             catalog: AnalyticsCatalogConfig {
-                backend: Some(AnalyticsCatalogBackend::DucklakePostgres),
-                connection_string: Some("dbname=ducklake_catalog host=localhost".to_string()),
+                backend: Some(AnalyticsCatalogBackend::DucklakeAuxCatalog),
+                connection_string: Some("/var/lib/aux-analytics/metadata.duckdb".to_string()),
                 ..AnalyticsCatalogConfig::default()
             },
             object_storage: AnalyticsObjectStorageConfig {
@@ -37,8 +37,8 @@ fn resolves_ducklake_backend_from_config_with_bucket_path() {
             data_path,
             ..
         } => {
-            assert_eq!(catalog, CatalogType::Postgres);
-            assert_eq!(catalog_path, "dbname=ducklake_catalog host=localhost");
+            assert_eq!(catalog, CatalogType::AuxCatalog);
+            assert_eq!(catalog_path, "/var/lib/aux-analytics/metadata.duckdb");
             assert_eq!(data_path, "s3://analytics-lake/tenant-data/prod");
         }
         StorageBackend::DuckDb { .. } => panic!("expected ducklake backend"),

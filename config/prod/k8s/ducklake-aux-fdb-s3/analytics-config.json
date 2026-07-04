@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../schemas/config.schema.json",
-  "description": "Production Kubernetes aux-analytics profile using DuckLake with a Postgres catalog and S3-compatible object storage.",
+  "description": "Production Kubernetes aux-analytics profile using DuckLake with aux_catalog metadata and S3-compatible object storage.",
   "http": {
     "bind_addr": "0.0.0.0:39090"
   },
@@ -18,8 +18,8 @@
       "poll_max_responses_per_interval": 160
     },
     "catalog": {
-      "backend": "ducklake_postgres",
-      "connection_string": "${AUX_ANALYTICS_CATALOG_URI}"
+      "backend": "ducklake_aux_catalog",
+      "connection_string": "${AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG}"
     },
     "object_storage": {
       "provider": "generic",

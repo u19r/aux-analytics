@@ -2,14 +2,13 @@ use analytics_contract::{
     AnalyticsColumn, AnalyticsColumnType, ClusteringKey, PrimitiveColumnType, SortOrder,
 };
 use config::{
-    AnalyticsObjectStorageConfig, CatalogType, DuckLakeCatalogSettings, RemoteCredentialsConfig,
+    AnalyticsObjectStorageConfig, CatalogType, RemoteCredentialsConfig,
     RemoteStaticCredentialsConfig,
 };
 
 use crate::sql::{
     SOURCE_POSITION_COLUMN, alter_table_partitioned_by, alter_table_sorted_by, attach_ducklake,
-    attach_existing_ducklake, create_table, manifest_column_statements, object_storage_secret_sql,
-    postgres_catalog_pool_statements, quote_identifier,
+    create_table, manifest_column_statements, object_storage_secret_sql, quote_identifier,
 };
 
 #[test]
@@ -123,55 +122,24 @@ fn given_ducklake_paths_with_quotes_when_attached_then_literals_are_escaped() {
     assert_eq!(
         sql,
         "ATTACH 'ducklake:sqlite:catalog''s.db' AS dlake (DATA_PATH 's3://bucket/data''s', \
-         DATA_INLINING_ROW_LIMIT 0);"
+         ENCRYPTED, DATA_INLINING_ROW_LIMIT 0, AUTOMATIC_MIGRATION true);"
     );
 }
 
 #[test]
-fn given_existing_ducklake_catalog_when_attached_then_creation_is_disabled() {
-    let sql = attach_existing_ducklake(CatalogType::Postgres, "dbname=duck'lake");
+fn given_aux_catalog_when_attached_then_meta_type_is_set() {
+    let sql = attach_ducklake(
+        CatalogType::AuxCatalog,
+        "/var/lib/aux-analytics/metadata.duckdb",
+        "s3://bucket/data",
+    );
 
     assert_eq!(
         sql,
-        "ATTACH 'ducklake:postgres:dbname=duck''lake' AS dlake (CREATE_IF_NOT_EXISTS false, \
-         DATA_INLINING_ROW_LIMIT 0);"
+        "ATTACH 'ducklake:/var/lib/aux-analytics/metadata.duckdb' AS dlake (DATA_PATH \
+         's3://bucket/data', META_TYPE 'aux_catalog', ENCRYPTED, DATA_INLINING_ROW_LIMIT 0, \
+         AUTOMATIC_MIGRATION true);"
     );
-    assert!(!sql.contains("DATA_PATH"));
-}
-
-#[test]
-fn given_planetscale_safe_catalog_settings_when_configured_then_pool_is_limited_before_attach() {
-    let statements = postgres_catalog_pool_statements(&DuckLakeCatalogSettings {
-        duckdb_threads: Some(1),
-        postgres_pool_max_connections: Some(1),
-        postgres_pool_idle_timeout_ms: Some(1_000),
-        postgres_pool_wait_timeout_ms: Some(5_000),
-        postgres_pool_acquire_mode: Some("wait".to_string()),
-        postgres_pool_enable_thread_local_cache: Some(false),
-        ..DuckLakeCatalogSettings::default()
-    });
-
-    assert_eq!(
-        statements,
-        [
-            "SET threads = 1;",
-            "SET pg_pool_max_connections = 1;",
-            "SET pg_pool_idle_timeout_millis = 1000;",
-            "SET pg_pool_wait_timeout_millis = 5000;",
-            "SET pg_pool_acquire_mode = 'wait';",
-            "SET pg_pool_enable_thread_local_cache = false;",
-        ]
-    );
-}
-
-#[test]
-fn given_catalog_pool_acquire_mode_with_quote_when_configured_then_literal_is_escaped() {
-    let statements = postgres_catalog_pool_statements(&DuckLakeCatalogSettings {
-        postgres_pool_acquire_mode: Some("wa'it".to_string()),
-        ..DuckLakeCatalogSettings::default()
-    });
-
-    assert_eq!(statements, ["SET pg_pool_acquire_mode = 'wa''it';"]);
 }
 
 #[test]

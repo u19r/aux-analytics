@@ -515,15 +515,10 @@ fn given_lambda_without_manifest_path_when_resolved_then_manifest_requirement_is
 fn given_aws_lambda_env_when_applied_then_query_and_ducklake_config_are_overridden() {
     let mut root = RootConfig::default();
     let env = env_map([
-        (ENV_CATALOG_BACKEND, "ducklake_postgres"),
+        (ENV_CATALOG_BACKEND, "ducklake_aux_catalog"),
         (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
         (ENV_OBJECT_REGION, "us-east-1"),
         (ENV_CATALOG_DUCKDB_THREADS, "1"),
-        (ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS, "1"),
-        (ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS, "1000"),
-        (ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS, "5000"),
-        (ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE, "wait"),
-        (ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE, "false"),
         (ENV_QUERY_MAX_READ_CONNECTIONS, "1"),
         (ENV_QUERY_MAX_RESPONSE_SIZE_KB, "5800"),
         (ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION, "gzip_base64"),
@@ -535,7 +530,7 @@ fn given_aws_lambda_env_when_applied_then_query_and_ducklake_config_are_overridd
 
     assert_eq!(
         root.analytics.catalog.backend,
-        Some(AnalyticsCatalogBackend::DucklakePostgres)
+        Some(AnalyticsCatalogBackend::DucklakeAuxCatalog)
     );
     assert_eq!(
         root.analytics.object_storage.bucket.as_deref(),
@@ -555,28 +550,6 @@ fn given_aws_lambda_env_when_applied_then_query_and_ducklake_config_are_overridd
     );
     assert!(root.analytics.object_storage.credentials.is_none());
     assert_eq!(root.analytics.catalog.duckdb_threads, Some(1));
-    assert_eq!(
-        root.analytics.catalog.postgres_pool_max_connections,
-        Some(1)
-    );
-    assert_eq!(
-        root.analytics.catalog.postgres_pool_idle_timeout_ms,
-        Some(1_000)
-    );
-    assert_eq!(
-        root.analytics.catalog.postgres_pool_wait_timeout_ms,
-        Some(5_000)
-    );
-    assert_eq!(
-        root.analytics.catalog.postgres_pool_acquire_mode.as_deref(),
-        Some("wait")
-    );
-    assert_eq!(
-        root.analytics
-            .catalog
-            .postgres_pool_enable_thread_local_cache,
-        Some(false)
-    );
     assert_eq!(root.analytics.query.max_read_connections, 1);
     assert_eq!(root.analytics.query.max_response_size_kb, Some(5800));
     assert_eq!(
@@ -599,8 +572,8 @@ fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config
     });
     let env = env_map([
         (
-            ENV_DUCKLAKE_POSTGRES_CATALOG,
-            "postgres://catalog.example/db",
+            ENV_DUCKLAKE_AUX_CATALOG,
+            "/tmp/aux-ducklake/metadata.duckdb",
         ),
         (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
     ]);
@@ -618,8 +591,8 @@ fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config
     else {
         panic!("expected DuckLake backend");
     };
-    assert_eq!(catalog, analytics_engine::CatalogType::Postgres);
-    assert_eq!(catalog_path, "postgres://catalog.example/db");
+    assert_eq!(catalog, analytics_engine::CatalogType::AuxCatalog);
+    assert_eq!(catalog_path, "/tmp/aux-ducklake/metadata.duckdb");
     assert_eq!(data_path, "s3://analytics-bucket/warehouse");
     assert_eq!(
         object_storage
@@ -631,6 +604,35 @@ fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config
 }
 
 #[test]
+fn given_aux_catalog_env_when_backend_is_resolved_then_aux_catalog_is_used() {
+    let mut root = RootConfig::default();
+    root.analytics.object_storage.path = Some("warehouse".to_string());
+    let env = env_map([
+        (
+            ENV_DUCKLAKE_AUX_CATALOG,
+            "/tmp/aux-ducklake/metadata.duckdb",
+        ),
+        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
+    ]);
+
+    let backend =
+        resolve_storage_backend_from_env_with(&root, |key| env.get(key).cloned()).expect("backend");
+
+    let StorageBackend::DuckLake {
+        catalog,
+        catalog_path,
+        data_path,
+        ..
+    } = backend
+    else {
+        panic!("expected DuckLake backend");
+    };
+    assert_eq!(catalog, analytics_engine::CatalogType::AuxCatalog);
+    assert_eq!(catalog_path, "/tmp/aux-ducklake/metadata.duckdb");
+    assert_eq!(data_path, "s3://analytics-bucket/warehouse");
+}
+
+#[test]
 fn given_invalid_lambda_query_env_when_applied_then_validation_error_names_variable() {
     let mut root = RootConfig::default();
     let env = env_map([(ENV_QUERY_MAX_RESPONSE_SIZE_KB, "many")]);
@@ -638,45 +640,6 @@ fn given_invalid_lambda_query_env_when_applied_then_validation_error_names_varia
     let error = apply_lambda_env_config(&mut root, |key| env.get(key).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(ENV_QUERY_MAX_RESPONSE_SIZE_KB));
-}
-
-#[test]
-fn given_ssm_catalog_value_when_applied_then_ducklake_postgres_catalog_is_configured() {
-    let mut root = RootConfig::default();
-
-    apply_ssm_catalog_parameter_value(
-        &mut root,
-        "/aux-infra/test/planetscale/analytics-postgres-url",
-        "postgres://catalog.example/db",
-    )
-    .expect("catalog parameter");
-
-    assert_eq!(
-        root.analytics.catalog.backend,
-        Some(AnalyticsCatalogBackend::DucklakePostgres)
-    );
-    assert_eq!(
-        root.analytics.catalog.connection_string.as_deref(),
-        Some("postgres://catalog.example/db")
-    );
-}
-
-#[test]
-fn given_empty_ssm_catalog_value_when_applied_then_error_names_parameter() {
-    let mut root = RootConfig::default();
-
-    let error = apply_ssm_catalog_parameter_value(
-        &mut root,
-        "/aux-infra/test/planetscale/analytics-postgres-url",
-        " ",
-    )
-    .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("/aux-infra/test/planetscale/analytics-postgres-url")
-    );
 }
 
 #[test]

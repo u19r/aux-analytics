@@ -59,7 +59,7 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.retention.tables[].tenant_policy.duration_selector.attribute_path` | required | Dot path to a numeric duration value in milliseconds in the returned item. |
 | `analytics.retention.tables[].tenant_policy.cache_ttl_ms` | `300000` | Tenant retention policy cache TTL. |
 | `analytics.privacy.policy_path` | none | Path to a versioned privacy policy JSON file. When set, startup validates the policy and HTTP ingest, source polling, and Lambda ingestion filter denied data before analytical writes. |
-| `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, `ducklake_postgres`, or `ducklake_motherduck`. |
+| `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, `ducklake_aux_catalog`, or `ducklake_motherduck`. |
 | `analytics.catalog.connection_string` | none | DuckDB path or DuckLake catalog connection string. |
 | `analytics.catalog.motherduck_token` | none | MotherDuck service token for `ducklake_motherduck`. Use `${ENV_VAR}` expansion instead of committing a token. |
 | `analytics.object_storage.provider` | `s3` | Object store provider: `s3`, `r2`, or `generic`. |
@@ -69,6 +69,10 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.object_storage.endpoint_url` | none | S3-compatible endpoint URL for R2, MinIO, or another generic bucket service. |
 | `analytics.object_storage.region` | none | Object store region. Use `auto` for Cloudflare R2. |
 | `analytics.object_storage.credentials` | none | Credential chain configuration. See below. |
+
+DuckLake backends always request DuckLake encrypted mode when attaching the catalog. New catalogs
+write encrypted data files. Existing unencrypted catalogs are rejected by DuckLake and need an
+explicit migration or recreation.
 
 ## Credential Chain
 
@@ -114,7 +118,7 @@ instances set `analytics.ingest.processor_enabled = false`; they still serve HTT
 but do not participate in pull-ingest coordination.
 
 For local multi-instance proof, `examples/docker-compose-demo` runs aux-storage, two ingest
-processors, and one query-only API instance against a shared `ducklake_postgres` catalog.
+processors, and one query-only API instance against a shared DuckLake catalog.
 
 DuckLake with MotherDuck as the catalog uses MotherDuck BYOB own-compute mode. Create the DuckLake
 database and object-storage bucket out of band, then configure the metadata catalog and object path:
@@ -288,8 +292,8 @@ DuckLake on R2:
       ]
     },
     "catalog": {
-      "backend": "ducklake_postgres",
-      "connection_string": "dbname=ducklake_catalog host=localhost"
+      "backend": "ducklake_aux_catalog",
+      "connection_string": "/var/lib/aux-analytics/metadata.duckdb"
     },
     "object_storage": {
       "provider": "r2",

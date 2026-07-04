@@ -6,8 +6,6 @@ use analytics_api::{
 };
 use analytics_contract::{AnalyticsManifest, PrivacyPolicy, StructuredQuery};
 use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
-use aws_config::BehaviorVersion;
-use aws_sdk_ssm::Client as SsmClient;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::{
     AnalyticsCatalogBackend, AnalyticsLambdaResponseCompression, RootConfig,
@@ -24,25 +22,13 @@ const ENV_CONFIG_PATH: &str = "AUX_ANALYTICS_CONFIG";
 const ENV_MANIFEST_PATH: &str = "AUX_ANALYTICS_MANIFEST";
 const ENV_DUCKDB: &str = "AUX_ANALYTICS_DUCKDB";
 const ENV_DUCKLAKE_SQLITE_CATALOG: &str = "AUX_ANALYTICS_DUCKLAKE_SQLITE_CATALOG";
-const ENV_DUCKLAKE_POSTGRES_CATALOG: &str = "AUX_ANALYTICS_DUCKLAKE_POSTGRES_CATALOG";
-const ENV_DUCKLAKE_POSTGRES_CATALOG_PARAMETER: &str =
-    "AUX_ANALYTICS_DUCKLAKE_POSTGRES_CATALOG_PARAMETER";
+const ENV_DUCKLAKE_AUX_CATALOG: &str = "AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG";
 const ENV_DUCKLAKE_DATA_PATH: &str = "AUX_ANALYTICS_DUCKLAKE_DATA_PATH";
 const ENV_CATALOG_BACKEND: &str = "AUX_ANALYTICS_CATALOG_BACKEND";
 const ENV_S3_BUCKET: &str = "AUX_ANALYTICS_S3_BUCKET";
 const ENV_S3_PREFIX: &str = "AUX_ANALYTICS_S3_PREFIX";
 const ENV_OBJECT_REGION: &str = "AUX_ANALYTICS_OBJECT_REGION";
 const ENV_CATALOG_DUCKDB_THREADS: &str = "AUX_ANALYTICS_CATALOG_DUCKDB_THREADS";
-const ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS: &str =
-    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS";
-const ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS: &str =
-    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS";
-const ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS: &str =
-    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS";
-const ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE: &str =
-    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_ACQUIRE_MODE";
-const ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE: &str =
-    "AUX_ANALYTICS_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE";
 const ENV_QUERY_MAX_READ_CONNECTIONS: &str = "AUX_ANALYTICS_QUERY_MAX_READ_CONNECTIONS";
 const ENV_QUERY_MAX_RESPONSE_SIZE_KB: &str = "AUX_ANALYTICS_QUERY_MAX_RESPONSE_SIZE_KB";
 const ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION: &str =
@@ -74,8 +60,6 @@ pub enum AnalyticsLambdaError {
     },
     #[error("schema error: {0}")]
     Schema(String),
-    #[error("ssm error: {0}")]
-    Ssm(String),
     #[error("privacy policy error: {0}")]
     PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("query task failed: {0}")]
@@ -91,10 +75,6 @@ impl AnalyticsLambdaError {
 
     fn validation(message: impl Into<String>) -> Self {
         Self::Validation(message.into())
-    }
-
-    fn ssm(message: impl Into<String>) -> Self {
-        Self::Ssm(message.into())
     }
 }
 
@@ -141,7 +121,6 @@ impl AnalyticsLambdaHandler {
         let config = load_optional_with_overrides(config_path.as_deref(), &[])?;
         let mut root = config.root.clone();
         apply_lambda_env_config(&mut root, optional_env)?;
-        apply_ssm_catalog_parameter_from_env(&mut root).await?;
         let manifest_path =
             resolve_manifest_path(optional_env(ENV_MANIFEST_PATH).as_deref(), &root)?;
         let manifest = read_manifest(manifest_path.as_str())?;
@@ -586,9 +565,9 @@ fn resolve_storage_backend_from_env_with(
             catalog_settings: (&root.analytics.catalog).into(),
         });
     }
-    if let Some(catalog_path) = env(ENV_DUCKLAKE_POSTGRES_CATALOG) {
+    if let Some(catalog_path) = env(ENV_DUCKLAKE_AUX_CATALOG) {
         return Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::Postgres,
+            catalog: CatalogType::AuxCatalog,
             catalog_path,
             data_path: required_env_with(ENV_DUCKLAKE_DATA_PATH, &env)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
@@ -596,57 +575,6 @@ fn resolve_storage_backend_from_env_with(
         });
     }
     resolve_storage_backend_from_config(root)
-}
-
-async fn apply_ssm_catalog_parameter_from_env(
-    root: &mut RootConfig,
-) -> Result<(), AnalyticsLambdaError> {
-    let Some(parameter_name) = optional_env(ENV_DUCKLAKE_POSTGRES_CATALOG_PARAMETER) else {
-        return Ok(());
-    };
-    let catalog = fetch_ssm_parameter_value(parameter_name.as_str()).await?;
-    apply_ssm_catalog_parameter_value(root, parameter_name.as_str(), catalog.as_str())
-}
-
-async fn fetch_ssm_parameter_value(parameter_name: &str) -> Result<String, AnalyticsLambdaError> {
-    let sdk_config = aws_config::defaults(BehaviorVersion::latest()).load().await;
-    let client = SsmClient::new(&sdk_config);
-    let output = client
-        .get_parameter()
-        .name(parameter_name)
-        .with_decryption(true)
-        .send()
-        .await
-        .map_err(|source| {
-            AnalyticsLambdaError::ssm(format!(
-                "failed to read SSM parameter {parameter_name}: {source}"
-            ))
-        })?;
-    output
-        .parameter()
-        .and_then(|parameter| parameter.value())
-        .map(str::to_string)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            AnalyticsLambdaError::ssm(format!(
-                "SSM parameter {parameter_name} did not contain a non-empty value"
-            ))
-        })
-}
-
-fn apply_ssm_catalog_parameter_value(
-    root: &mut RootConfig,
-    parameter_name: &str,
-    catalog_connection_string: &str,
-) -> Result<(), AnalyticsLambdaError> {
-    if catalog_connection_string.trim().is_empty() {
-        return Err(AnalyticsLambdaError::ssm(format!(
-            "SSM parameter {parameter_name} did not contain a non-empty value"
-        )));
-    }
-    root.analytics.catalog.backend = Some(AnalyticsCatalogBackend::DucklakePostgres);
-    root.analytics.catalog.connection_string = Some(catalog_connection_string.to_string());
-    Ok(())
 }
 
 fn apply_lambda_env_config(
@@ -676,35 +604,6 @@ fn apply_lambda_env_config(
         root.analytics.catalog.duckdb_threads = Some(parse_usize_env(
             ENV_CATALOG_DUCKDB_THREADS,
             threads.as_str(),
-        )?);
-    }
-    if let Some(max_connections) = env(ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS) {
-        root.analytics.catalog.postgres_pool_max_connections = Some(parse_usize_env(
-            ENV_CATALOG_POSTGRES_POOL_MAX_CONNECTIONS,
-            max_connections.as_str(),
-        )?);
-    }
-    if let Some(idle_timeout) = env(ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS) {
-        root.analytics.catalog.postgres_pool_idle_timeout_ms = Some(parse_u64_env(
-            ENV_CATALOG_POSTGRES_POOL_IDLE_TIMEOUT_MS,
-            idle_timeout.as_str(),
-        )?);
-    }
-    if let Some(wait_timeout) = env(ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS) {
-        root.analytics.catalog.postgres_pool_wait_timeout_ms = Some(parse_u64_env(
-            ENV_CATALOG_POSTGRES_POOL_WAIT_TIMEOUT_MS,
-            wait_timeout.as_str(),
-        )?);
-    }
-    if let Some(acquire_mode) = env(ENV_CATALOG_POSTGRES_POOL_ACQUIRE_MODE) {
-        root.analytics.catalog.postgres_pool_acquire_mode = Some(acquire_mode);
-    }
-    if let Some(thread_local_cache) = env(ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE) {
-        root.analytics
-            .catalog
-            .postgres_pool_enable_thread_local_cache = Some(parse_bool_env(
-            ENV_CATALOG_POSTGRES_POOL_ENABLE_THREAD_LOCAL_CACHE,
-            thread_local_cache.as_str(),
         )?);
     }
     if let Some(max_read_connections) = env(ENV_QUERY_MAX_READ_CONNECTIONS) {
@@ -740,11 +639,11 @@ fn parse_catalog_backend(value: &str) -> Result<AnalyticsCatalogBackend, Analyti
     match value.trim() {
         "duckdb" => Ok(AnalyticsCatalogBackend::Duckdb),
         "ducklake_sqlite" => Ok(AnalyticsCatalogBackend::DucklakeSqlite),
-        "ducklake_postgres" => Ok(AnalyticsCatalogBackend::DucklakePostgres),
+        "ducklake_aux_catalog" => Ok(AnalyticsCatalogBackend::DucklakeAuxCatalog),
         "ducklake_motherduck" => Ok(AnalyticsCatalogBackend::DucklakeMotherduck),
         other => Err(AnalyticsLambdaError::validation(format!(
-            "{ENV_CATALOG_BACKEND} must be one of duckdb, ducklake_sqlite, ducklake_postgres, or \
-             ducklake_motherduck; got {other}"
+            "{ENV_CATALOG_BACKEND} must be one of duckdb, ducklake_sqlite, ducklake_aux_catalog, \
+             or ducklake_motherduck; got {other}"
         ))),
     }
 }
@@ -764,12 +663,6 @@ fn parse_lambda_response_compression(
 
 fn parse_usize_env(name: &str, value: &str) -> Result<usize, AnalyticsLambdaError> {
     value.trim().parse::<usize>().map_err(|source| {
-        AnalyticsLambdaError::validation(format!("{name} must be a positive integer: {source}"))
-    })
-}
-
-fn parse_u64_env(name: &str, value: &str) -> Result<u64, AnalyticsLambdaError> {
-    value.trim().parse::<u64>().map_err(|source| {
         AnalyticsLambdaError::validation(format!("{name} must be a positive integer: {source}"))
     })
 }
@@ -826,8 +719,8 @@ fn resolve_storage_backend_from_config(
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
             catalog_settings: (&root.analytics.catalog).into(),
         }),
-        AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::Postgres,
+        AnalyticsCatalogBackend::DucklakeAuxCatalog => Ok(StorageBackend::DuckLake {
+            catalog: CatalogType::AuxCatalog,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),

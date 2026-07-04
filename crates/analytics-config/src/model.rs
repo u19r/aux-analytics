@@ -564,21 +564,6 @@ pub struct AnalyticsCatalogConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
     pub duckdb_threads: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub postgres_pool_max_connections: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub postgres_pool_idle_timeout_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub postgres_pool_wait_timeout_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub postgres_pool_acquire_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub postgres_pool_enable_thread_local_cache: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -586,7 +571,7 @@ pub struct AnalyticsCatalogConfig {
 pub enum AnalyticsCatalogBackend {
     Duckdb,
     DucklakeSqlite,
-    DucklakePostgres,
+    DucklakeAuxCatalog,
     DucklakeMotherduck,
 }
 

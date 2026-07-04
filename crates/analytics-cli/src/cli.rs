@@ -71,7 +71,7 @@ Configuration model:
 Backend selection:
   --duckdb PATH uses a local DuckDB database.
   --ducklake-sqlite-catalog PATH uses DuckLake with a SQLite catalog.
-  --ducklake-postgres-catalog CONNECTION uses DuckLake with a PostgreSQL catalog.
+  --ducklake-aux-catalog PATH uses DuckLake with an aux metadata catalog.
   --ducklake-data-path PATH configures the DuckLake data/object location.
 
 Safety model:

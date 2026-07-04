@@ -5,24 +5,24 @@ pub(crate) struct BackendArgs {
     #[arg(
         long,
         value_name = "PATH",
-        conflicts_with_all = ["ducklake_sqlite_catalog", "ducklake_postgres_catalog"],
+        conflicts_with_all = ["ducklake_sqlite_catalog", "ducklake_aux_catalog"],
         help = "Use a local DuckDB database at PATH"
     )]
     pub(crate) duckdb: Option<String>,
     #[arg(
         long,
         value_name = "PATH",
-        conflicts_with = "ducklake_postgres_catalog",
+        conflicts_with_all = ["ducklake_aux_catalog"],
         help = "Use DuckLake with a SQLite catalog file"
     )]
     pub(crate) ducklake_sqlite_catalog: Option<String>,
     #[arg(
         long,
-        value_name = "CONNECTION",
-        conflicts_with = "ducklake_sqlite_catalog",
-        help = "Use DuckLake with a PostgreSQL catalog connection string"
+        value_name = "PATH",
+        conflicts_with_all = ["ducklake_sqlite_catalog"],
+        help = "Use DuckLake with an aux catalog metadata path"
     )]
-    pub(crate) ducklake_postgres_catalog: Option<String>,
+    pub(crate) ducklake_aux_catalog: Option<String>,
     #[arg(
         long,
         value_name = "PATH_OR_URI",
@@ -36,7 +36,7 @@ impl From<&BackendArgs> for config::BackendOverride {
         Self {
             duckdb: args.duckdb.clone(),
             ducklake_sqlite_catalog: args.ducklake_sqlite_catalog.clone(),
-            ducklake_postgres_catalog: args.ducklake_postgres_catalog.clone(),
+            ducklake_aux_catalog: args.ducklake_aux_catalog.clone(),
             ducklake_data_path: args.ducklake_data_path.clone(),
         }
     }

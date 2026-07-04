@@ -37,8 +37,10 @@ const PROMETHEUS_UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
     let config = load_serve_config(&args)?;
     let root = config.root.clone();
-    let manifest_path = resolve_manifest_path(args.manifest.as_deref(), &root)?;
-    let manifest = read_manifest(manifest_path.as_str())?;
+    let manifest = match resolve_manifest_path(args.manifest.as_deref(), &root)? {
+        Some(manifest_path) => read_manifest(manifest_path.as_str())?,
+        None => analytics_contract::AnalyticsManifest::new(Vec::new()),
+    };
     validate_source_config(&root.analytics.source)?;
     validate_ingest_config(&root.analytics.ingest)?;
     config::validate_retention_config(&root.analytics.retention)?;

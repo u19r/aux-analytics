@@ -4,10 +4,7 @@ use analytics_contract::{
     AnalyticsColumn, ClusteringKey, INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN,
     INTERNAL_MISSING_RETENTION_COLUMN, PartitionKey, SortOrder,
 };
-use config::{
-    AnalyticsObjectStorageConfig, CatalogType, DuckLakeCatalogSettings, RemoteCredentialsConfig,
-    StorageBackend,
-};
+use config::{AnalyticsObjectStorageConfig, CatalogType, RemoteCredentialsConfig, StorageBackend};
 use duckdb::Connection;
 
 use crate::AnalyticsEngineResult;
@@ -24,17 +21,14 @@ pub(crate) fn configure_connection(
         catalog_path,
         data_path,
         object_storage,
-        catalog_settings,
+        ..
     } = backend
     {
         load_extension(conn, "httpfs")?;
         load_extension(conn, "ducklake")?;
         match catalog {
             CatalogType::Sqlite => load_extension(conn, "sqlite_scanner")?,
-            CatalogType::Postgres => {
-                load_extension(conn, "postgres_scanner")?;
-                configure_postgres_catalog_pool(conn, catalog_settings)?;
-            }
+            CatalogType::AuxCatalog => {}
             CatalogType::MotherDuck => load_extension(conn, "motherduck")?,
         };
         if let Some(object_storage) = object_storage {
@@ -57,67 +51,8 @@ fn attach_ducklake_with_retry(
         [],
     ) {
         Ok(_) => Ok(()),
-        Err(error)
-            if catalog == CatalogType::Postgres
-                && ducklake_catalog_initialization_raced(&error) =>
-        {
-            conn.execute(attach_existing_ducklake(catalog, catalog_path).as_str(), [])?;
-            Ok(())
-        }
         Err(error) => Err(error.into()),
     }
-}
-
-fn ducklake_catalog_initialization_raced(error: &duckdb::Error) -> bool {
-    let message = error.to_string();
-    message.contains("ducklake_metadata")
-        && (message.contains("already exists") || message.contains("duplicate key value"))
-}
-
-fn configure_postgres_catalog_pool(
-    conn: &Connection,
-    settings: &DuckLakeCatalogSettings,
-) -> AnalyticsEngineResult<()> {
-    for statement in postgres_catalog_pool_statements(settings) {
-        conn.execute(statement.as_str(), [])?;
-    }
-    Ok(())
-}
-
-pub(crate) fn postgres_catalog_pool_statements(settings: &DuckLakeCatalogSettings) -> Vec<String> {
-    let mut statements = Vec::new();
-    if let Some(threads) = settings.duckdb_threads.filter(|threads| *threads > 0) {
-        statements.push(format!("SET threads = {threads};"));
-    }
-    if let Some(max_connections) = settings
-        .postgres_pool_max_connections
-        .filter(|connections| *connections > 0)
-    {
-        statements.push(format!("SET pg_pool_max_connections = {max_connections};"));
-    }
-    if let Some(idle_timeout_ms) = settings.postgres_pool_idle_timeout_ms {
-        statements.push(format!(
-            "SET pg_pool_idle_timeout_millis = {idle_timeout_ms};"
-        ));
-    }
-    if let Some(wait_timeout_ms) = settings.postgres_pool_wait_timeout_ms {
-        statements.push(format!(
-            "SET pg_pool_wait_timeout_millis = {wait_timeout_ms};"
-        ));
-    }
-    if let Some(acquire_mode) = settings.postgres_pool_acquire_mode.as_deref() {
-        statements.push(format!(
-            "SET pg_pool_acquire_mode = '{}';",
-            escape_sql_string(acquire_mode)
-        ));
-    }
-    if let Some(enabled) = settings.postgres_pool_enable_thread_local_cache {
-        statements.push(format!(
-            "SET pg_pool_enable_thread_local_cache = {};",
-            if enabled { "true" } else { "false" }
-        ));
-    }
-    statements
 }
 
 fn configure_extension_directory(conn: &Connection) -> AnalyticsEngineResult<()> {
@@ -150,8 +85,22 @@ fn load_extension(conn: &Connection, extension: &str) -> AnalyticsEngineResult<(
         )?;
         return Ok(());
     }
-    conn.execute(format!("LOAD {extension};").as_str(), [])?;
-    Ok(())
+    match conn.execute(format!("LOAD {extension};").as_str(), []) {
+        Ok(_) => Ok(()),
+        Err(error) if duckdb_extension_missing(&error) => {
+            conn.execute(format!("INSTALL {extension};").as_str(), [])?;
+            conn.execute(format!("LOAD {extension};").as_str(), [])?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn duckdb_extension_missing(error: &duckdb::Error) -> bool {
+    let message = error.to_string();
+    message.contains("Extension")
+        && message.contains("not found")
+        && message.contains("Install it first")
 }
 
 pub(crate) fn configure_object_storage(
@@ -382,31 +331,31 @@ pub(crate) fn alter_table_sorted_by(
 }
 
 pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_path: &str) -> String {
-    let (prefix, catalog_path) = ducklake_catalog_reference(catalog, catalog_path);
+    let catalog_reference = ducklake_catalog_reference(catalog, catalog_path);
+    let meta_type = ducklake_meta_type(catalog);
     format!(
-        "ATTACH 'ducklake:{prefix}:{}' AS dlake (DATA_PATH '{}', DATA_INLINING_ROW_LIMIT 0);",
-        escape_sql_string(catalog_path),
-        escape_sql_string(data_path)
+        "ATTACH 'ducklake:{}' AS dlake (DATA_PATH '{}'{meta_type}, ENCRYPTED, \
+         DATA_INLINING_ROW_LIMIT 0, AUTOMATIC_MIGRATION true);",
+        escape_sql_string(catalog_reference.as_str()),
+        escape_sql_string(data_path),
     )
 }
 
-pub(crate) fn attach_existing_ducklake(catalog: CatalogType, catalog_path: &str) -> String {
-    let (prefix, catalog_path) = ducklake_catalog_reference(catalog, catalog_path);
-    format!(
-        "ATTACH 'ducklake:{prefix}:{}' AS dlake (CREATE_IF_NOT_EXISTS false, \
-         DATA_INLINING_ROW_LIMIT 0);",
-        escape_sql_string(catalog_path)
-    )
-}
-
-fn ducklake_catalog_reference(catalog: CatalogType, catalog_path: &str) -> (&'static str, &str) {
+fn ducklake_catalog_reference(catalog: CatalogType, catalog_path: &str) -> String {
     match catalog {
-        CatalogType::Sqlite => ("sqlite", catalog_path),
-        CatalogType::Postgres => ("postgres", catalog_path),
-        CatalogType::MotherDuck => (
-            "md",
+        CatalogType::Sqlite => format!("sqlite:{catalog_path}"),
+        CatalogType::AuxCatalog => catalog_path.to_string(),
+        CatalogType::MotherDuck => format!(
+            "md:{}",
             catalog_path.strip_prefix("md:").unwrap_or(catalog_path),
         ),
+    }
+}
+
+fn ducklake_meta_type(catalog: CatalogType) -> &'static str {
+    match catalog {
+        CatalogType::AuxCatalog => ", META_TYPE 'aux_catalog'",
+        CatalogType::Sqlite | CatalogType::MotherDuck => "",
     }
 }
 

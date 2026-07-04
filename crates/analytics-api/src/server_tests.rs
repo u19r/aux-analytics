@@ -4,7 +4,7 @@ use config::{MetricsConfig, RootConfig, Tracing};
 use serde_json::json;
 
 use crate::{
-    runtime_config::load_privacy_policy,
+    runtime_config::{load_privacy_policy, resolve_manifest_path},
     server::{
         CorsOrigins, FilterSource, cors_origins, endpoint_config, metrics_endpoint_config,
         parse_shutdown_grace_period, resolve_filter,
@@ -81,6 +81,15 @@ fn given_no_valid_cors_origins_when_resolved_then_no_origin_policy_is_added() {
     root.http.cors.allow_origins = vec!["https://bad.example\ninjected".to_string()];
 
     assert_eq!(cors_origins(&root), CorsOrigins::None);
+}
+
+#[test]
+fn given_no_manifest_path_when_api_server_resolves_manifest_then_empty_startup_is_allowed() {
+    let root = RootConfig::default();
+
+    let path = resolve_manifest_path(None, &root).expect("manifest path resolution");
+
+    assert_eq!(path, None);
 }
 
 #[test]

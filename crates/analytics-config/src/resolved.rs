@@ -11,7 +11,7 @@ use crate::{
 pub struct BackendOverride {
     pub duckdb: Option<String>,
     pub ducklake_sqlite_catalog: Option<String>,
-    pub ducklake_postgres_catalog: Option<String>,
+    pub ducklake_aux_catalog: Option<String>,
     pub ducklake_data_path: Option<String>,
 }
 
@@ -20,7 +20,7 @@ impl BackendOverride {
     pub fn has_backend(&self) -> bool {
         self.duckdb.is_some()
             || self.ducklake_sqlite_catalog.is_some()
-            || self.ducklake_postgres_catalog.is_some()
+            || self.ducklake_aux_catalog.is_some()
     }
 
     fn storage_backend(&self) -> Result<StorageBackend, ConfigError> {
@@ -36,9 +36,9 @@ impl BackendOverride {
                 catalog_settings: DuckLakeCatalogSettings::default(),
             });
         }
-        if let Some(catalog_path) = self.ducklake_postgres_catalog.as_ref() {
+        if let Some(catalog_path) = self.ducklake_aux_catalog.as_ref() {
             return Ok(StorageBackend::DuckLake {
-                catalog: CatalogType::Postgres,
+                catalog: CatalogType::AuxCatalog,
                 catalog_path: catalog_path.clone(),
                 data_path: self.required_ducklake_data_path()?,
                 object_storage: None,
@@ -72,7 +72,7 @@ pub enum StorageBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogType {
     Sqlite,
-    Postgres,
+    AuxCatalog,
     MotherDuck,
 }
 
@@ -80,11 +80,6 @@ pub enum CatalogType {
 pub struct DuckLakeCatalogSettings {
     pub motherduck_token: Option<String>,
     pub duckdb_threads: Option<usize>,
-    pub postgres_pool_max_connections: Option<usize>,
-    pub postgres_pool_idle_timeout_ms: Option<u64>,
-    pub postgres_pool_wait_timeout_ms: Option<u64>,
-    pub postgres_pool_acquire_mode: Option<String>,
-    pub postgres_pool_enable_thread_local_cache: Option<bool>,
 }
 
 impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
@@ -92,11 +87,6 @@ impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
         Self {
             motherduck_token: config.motherduck_token.clone(),
             duckdb_threads: config.duckdb_threads,
-            postgres_pool_max_connections: config.postgres_pool_max_connections,
-            postgres_pool_idle_timeout_ms: config.postgres_pool_idle_timeout_ms,
-            postgres_pool_wait_timeout_ms: config.postgres_pool_wait_timeout_ms,
-            postgres_pool_acquire_mode: config.postgres_pool_acquire_mode.clone(),
-            postgres_pool_enable_thread_local_cache: config.postgres_pool_enable_thread_local_cache,
         }
     }
 }
@@ -129,8 +119,8 @@ pub fn resolve_storage_backend(
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),
             catalog_settings: DuckLakeCatalogSettings::from(catalog),
         }),
-        AnalyticsCatalogBackend::DucklakePostgres => Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::Postgres,
+        AnalyticsCatalogBackend::DucklakeAuxCatalog => Ok(StorageBackend::DuckLake {
+            catalog: CatalogType::AuxCatalog,
             catalog_path: connection_string.to_string(),
             data_path: ducklake_data_path(root)?,
             object_storage: Some(Box::new(root.analytics.object_storage.clone())),

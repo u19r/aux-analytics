@@ -20,12 +20,15 @@ pub(crate) struct ApiCli {
 
 #[derive(Debug, Args)]
 pub(crate) struct BackendArgs {
-    #[arg(long, conflicts_with_all = ["ducklake_sqlite_catalog", "ducklake_postgres_catalog"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["ducklake_sqlite_catalog", "ducklake_aux_catalog"]
+    )]
     pub(crate) duckdb: Option<String>,
-    #[arg(long, conflicts_with = "ducklake_postgres_catalog")]
+    #[arg(long, conflicts_with_all = ["ducklake_aux_catalog"])]
     pub(crate) ducklake_sqlite_catalog: Option<String>,
-    #[arg(long, conflicts_with = "ducklake_sqlite_catalog")]
-    pub(crate) ducklake_postgres_catalog: Option<String>,
+    #[arg(long, conflicts_with_all = ["ducklake_sqlite_catalog"])]
+    pub(crate) ducklake_aux_catalog: Option<String>,
     #[arg(long)]
     pub(crate) ducklake_data_path: Option<String>,
 }
@@ -35,7 +38,7 @@ impl From<&BackendArgs> for config::BackendOverride {
         Self {
             duckdb: args.duckdb.clone(),
             ducklake_sqlite_catalog: args.ducklake_sqlite_catalog.clone(),
-            ducklake_postgres_catalog: args.ducklake_postgres_catalog.clone(),
+            ducklake_aux_catalog: args.ducklake_aux_catalog.clone(),
             ducklake_data_path: args.ducklake_data_path.clone(),
         }
     }

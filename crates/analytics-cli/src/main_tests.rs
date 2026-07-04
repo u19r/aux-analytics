@@ -17,8 +17,8 @@ fn config_resolves_ducklake_backend_with_object_storage_path() {
                 ..AnalyticsSourceConfig::default()
             },
             catalog: AnalyticsCatalogConfig {
-                backend: Some(AnalyticsCatalogBackend::DucklakePostgres),
-                connection_string: Some("dbname=ducklake_catalog host=localhost".to_string()),
+                backend: Some(AnalyticsCatalogBackend::DucklakeAuxCatalog),
+                connection_string: Some("/var/lib/aux-analytics/metadata.duckdb".to_string()),
                 ..Default::default()
             },
             object_storage: AnalyticsObjectStorageConfig {
@@ -41,8 +41,8 @@ fn config_resolves_ducklake_backend_with_object_storage_path() {
             data_path,
             ..
         } => {
-            assert_eq!(catalog, analytics_engine::CatalogType::Postgres);
-            assert_eq!(catalog_path, "dbname=ducklake_catalog host=localhost");
+            assert_eq!(catalog, analytics_engine::CatalogType::AuxCatalog);
+            assert_eq!(catalog_path, "/var/lib/aux-analytics/metadata.duckdb");
             assert_eq!(data_path, "s3://analytics-lake/tenant-data/prod");
         }
         other @ analytics_engine::StorageBackend::DuckDb { .. } => {
@@ -63,7 +63,7 @@ fn cli_backend_args_override_config_backend() {
     let backend_args = BackendArgs {
         duckdb: Some("local.duckdb".to_string()),
         ducklake_sqlite_catalog: None,
-        ducklake_postgres_catalog: None,
+        ducklake_aux_catalog: None,
         ducklake_data_path: None,
     };
 
@@ -242,7 +242,7 @@ fn empty_backend_args() -> BackendArgs {
     BackendArgs {
         duckdb: None,
         ducklake_sqlite_catalog: None,
-        ducklake_postgres_catalog: None,
+        ducklake_aux_catalog: None,
         ducklake_data_path: None,
     }
 }

@@ -47,7 +47,7 @@ fn redact_token(token: &str) -> &str {
     if token.contains("://") && token.contains('@') {
         return "<redacted-url>";
     }
-    if token.starts_with("pscale_pw_") {
+    if token.starts_with("secret_") {
         return "<redacted-password>";
     }
     token
@@ -58,15 +58,14 @@ mod tests {
     use super::sanitize_error_message;
 
     #[test]
-    fn sanitizes_database_urls_and_planetscale_password_tokens() {
-        let message = "failed to connect to \
-                       postgresql://user:pscale_pw_secret@example.test:5432/postgres?\
-                       sslmode=require with pscale_pw_secret";
+    fn sanitizes_database_urls_and_password_tokens() {
+        let message = "failed to connect to db://user:secret_token@example.test:1234/catalog with \
+                       secret_token";
 
         let sanitized = sanitize_error_message(message);
 
-        assert!(!sanitized.contains("postgresql://"));
-        assert!(!sanitized.contains("pscale_pw_secret"));
+        assert!(!sanitized.contains("db://"));
+        assert!(!sanitized.contains("secret_token"));
         assert_eq!(
             sanitized,
             "failed to connect to <redacted-url> with <redacted-password>"

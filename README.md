@@ -86,8 +86,8 @@ can own domain table registration while this repo stays agnostic.
       ]
     },
     "catalog": {
-      "backend": "ducklake_postgres",
-      "connection_string": "dbname=ducklake_catalog host=localhost"
+      "backend": "ducklake_aux_catalog",
+      "connection_string": "/var/lib/aux-analytics/metadata.duckdb"
     },
     "object_storage": {
       "provider": "r2",
@@ -114,6 +114,10 @@ Cloudflare R2, or a generic S3-compatible endpoint. MotherDuck-backed DuckLake c
 deployments can set `"motherduck_token": "${MOTHERDUCK_SERVICE_TOKEN}"` without storing the token in
 the file.
 
+DuckLake data files are attached with DuckLake encrypted mode enabled. New DuckLake catalogs write
+encrypted Parquet files and keep generated file keys in the trusted catalog. Existing unencrypted
+catalogs will fail to attach under this runtime and should be migrated or recreated before use.
+
 Credential resolution follows the same configuration shape as aux-storage remote services:
 
 - omit `analytics.source.credentials` to let the AWS SDK use its default credential chain for
@@ -139,7 +143,7 @@ For aux-storage pull deployments, ingest-capable instances coordinate through au
 slot lease, progress, and change-index tables. Set `analytics.ingest.processor_enabled = false` on
 query-only instances; they serve HTTP reads but do not write heartbeats, acquire slot leases, or poll
 aux-storage. The Docker Compose demo runs two processors and one query-only instance against a
-shared Postgres-backed DuckLake catalog.
+shared FoundationDB-backed aux DuckLake catalog.
 
 ## Retention
 
@@ -241,7 +245,7 @@ Environment variables:
 - `AUX_ANALYTICS_MANIFEST`: optional manifest path override.
 - `AUX_ANALYTICS_DUCKDB`: optional DuckDB path override.
 - `AUX_ANALYTICS_DUCKLAKE_SQLITE_CATALOG`: optional DuckLake SQLite catalog override.
-- `AUX_ANALYTICS_DUCKLAKE_POSTGRES_CATALOG`: optional DuckLake Postgres catalog override.
+- `AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG`: optional DuckLake aux catalog metadata path override.
 - `AUX_ANALYTICS_DUCKLAKE_DATA_PATH`: required when a DuckLake env override is used.
 
 Example unscoped SQL query event:

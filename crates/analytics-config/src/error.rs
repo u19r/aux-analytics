@@ -98,7 +98,7 @@ impl fmt::Display for ConfigErrorKind {
             Self::InvalidOverridePath => formatter.write_str("invalid override path"),
             Self::MissingBackend => formatter.write_str(
                 "one backend is required: --duckdb, --ducklake-sqlite-catalog, or \
-                 --ducklake-postgres-catalog",
+                 --ducklake-aux-catalog",
             ),
             Self::MissingDucklakeDataPath => {
                 formatter.write_str("--ducklake-data-path is required for DuckLake backends")

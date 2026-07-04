@@ -2,7 +2,7 @@ use std::{fs, path::Path, sync::Arc};
 
 use analytics_contract::PrivacyPolicy;
 use config::{
-    ConfigError, load_optional_with_overrides, parse_override_args,
+    ConfigError, ConfigErrorKind, load_optional_with_overrides, parse_override_args,
     resolve_manifest_path as config_resolve_manifest_path,
     validate_ingest_config as config_validate_ingest_config,
     validate_source_config as config_validate_source_config,
@@ -27,8 +27,12 @@ pub(crate) fn load_serve_config(args: &ApiCli) -> Result<Arc<config::Config>, Co
 pub(crate) fn resolve_manifest_path(
     manifest_arg: Option<&str>,
     root: &config::RootConfig,
-) -> ApiResult<String> {
-    config_resolve_manifest_path(manifest_arg, root).map_err(ApiError::from)
+) -> ApiResult<Option<String>> {
+    match config_resolve_manifest_path(manifest_arg, root) {
+        Ok(path) => Ok(Some(path)),
+        Err(err) if err.kind() == ConfigErrorKind::MissingManifestPath => Ok(None),
+        Err(err) => Err(ApiError::from(err)),
+    }
 }
 
 pub(crate) fn validate_source_config(source: &config::AnalyticsSourceConfig) -> ApiResult<()> {

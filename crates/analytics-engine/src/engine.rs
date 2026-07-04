@@ -200,7 +200,7 @@ impl AnalyticsEngine {
         let conn = match backend {
             StorageBackend::DuckDb { path } => Connection::open(path)?,
             StorageBackend::DuckLake {
-                catalog: CatalogType::Sqlite | CatalogType::Postgres,
+                catalog: CatalogType::Sqlite | CatalogType::AuxCatalog,
                 ..
             } => Connection::open_in_memory()?,
             StorageBackend::DuckLake {
