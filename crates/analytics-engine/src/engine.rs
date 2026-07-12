@@ -23,7 +23,7 @@ use analytics_contract::{
     AnalyticsColumn, AnalyticsColumnType, AnalyticsManifest, MergeDecision, PrimitiveColumnType,
     PrivacyPolicy, ProjectionColumn, RetentionPolicy, RetentionTimestamp, SourceMutation,
     SourcePosition, SourcePositionError, StorageStreamRecord, StructuredQuery, TableRegistration,
-    merge_decision,
+    TenantRangePurgeRequest, TenantRangePurgeResponse, merge_decision,
 };
 use aws_credentials::{
     AwsResolvedCredentials, AwsStaticCredentials, resolve_default_chain_credentials_with_expiry,
@@ -91,6 +91,8 @@ pub enum AnalyticsEngineError {
     InvalidRetentionPeriod,
     #[error("retention period overflowed unix epoch milliseconds")]
     RetentionOverflow,
+    #[error("tenant range purge request is invalid: {0}")]
+    InvalidRangePurge(String),
     #[error(transparent)]
     DuckDb(#[from] duckdb::Error),
     #[error(transparent)]
@@ -729,6 +731,91 @@ impl AnalyticsEngine {
             i64::try_from(batch_size).unwrap_or(i64::MAX)
         ])?;
         Ok(changed as u64)
+    }
+
+    /// Deletes one bounded, tenant-scoped range and returns an opaque `__id`
+    /// checkpoint for the next chunk. The table and predicate columns are
+    /// validated by the contract before being interpolated into SQL; values
+    /// remain bound parameters. `complete` is true only when this scan found
+    /// no further matching rows after the supplied cursor.
+    pub fn purge_tenant_range(
+        &self,
+        request: &TenantRangePurgeRequest,
+    ) -> AnalyticsEngineResult<TenantRangePurgeResponse> {
+        request
+            .validate()
+            .map_err(|error| AnalyticsEngineError::InvalidRangePurge(error.to_string()))?;
+        self.refresh_object_storage_credentials_if_needed()?;
+
+        let table = sql::quote_identifier(request.table_name.as_str());
+        let timestamp = sql::quote_identifier(request.timestamp_column.as_str());
+        // `request.table_name` names the physical analytics table selected in
+        // the FROM clause. Each row's `table_name` column is source metadata
+        // and may differ (for example, `metric_points_v1_stream`), so using
+        // the request value as a row predicate would silently purge nothing.
+        // The physical table plus tenant predicate is the ownership boundary.
+        let mut predicates = vec![
+            "tenant_id = ?".to_string(),
+            format!("{timestamp} >= ?"),
+            format!("{timestamp} < ?"),
+        ];
+        let mut values = vec![
+            duckdb::types::Value::Text(request.tenant_id.clone()),
+            duckdb::types::Value::BigInt(request.start_ms),
+            duckdb::types::Value::BigInt(request.end_ms),
+        ];
+        for (column, value) in &request.equals {
+            let column = sql::quote_identifier(column.as_str());
+            match value {
+                Some(value) => {
+                    predicates.push(format!("{column} = ?"));
+                    values.push(duckdb::types::Value::Text(value.clone()));
+                }
+                None => predicates.push(format!("{column} IS NULL")),
+            }
+        }
+        if let Some(cursor) = request.cursor.as_deref() {
+            predicates.push("__id > ?".to_string());
+            values.push(duckdb::types::Value::Text(cursor.to_string()));
+        }
+        let select_sql = format!(
+            "SELECT __id FROM {table} WHERE {} ORDER BY __id ASC LIMIT ?",
+            predicates.join(" AND ")
+        );
+        values.push(duckdb::types::Value::BigInt(i64::from(request.limit)));
+        let ids = self
+            .conn
+            .prepare(select_sql.as_str())?
+            .query_map(duckdb::params_from_iter(values), |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        if ids.is_empty() {
+            return Ok(TenantRangePurgeResponse {
+                rows_deleted: 0,
+                cursor: request.cursor.clone(),
+                complete: true,
+            });
+        }
+
+        // Delete the selected chunk in one statement. This keeps the worker
+        // bounded by `limit` while avoiding one round trip per analytics row.
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let delete_sql = format!(
+            "DELETE FROM {table} WHERE tenant_id = ? AND __id IN ({placeholders})"
+        );
+        let mut delete_values = Vec::with_capacity(ids.len().saturating_add(1));
+        delete_values.push(duckdb::types::Value::Text(request.tenant_id.clone()));
+        delete_values.extend(ids.iter().cloned().map(duckdb::types::Value::Text));
+        let rows_deleted = self
+            .conn
+            .prepare(delete_sql.as_str())?
+            .execute(duckdb::params_from_iter(delete_values))?
+            as u64;
+        let cursor = ids.last().cloned();
+        Ok(TenantRangePurgeResponse {
+            rows_deleted,
+            cursor,
+            complete: false,
+        })
     }
 
     pub fn missing_retention_count(&self, table_name: &str) -> AnalyticsEngineResult<u64> {

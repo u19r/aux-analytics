@@ -8,7 +8,7 @@ use analytics_contract::{
     ProjectionColumn, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
     QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity, SortOrder,
     SourcePosition, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
-    TenantSelector,
+    TenantRangePurgeRequest, TenantSelector,
 };
 use analytics_fixtures::{
     generic_items_manifest, legacy_item, metric_points_manifest, storage_key, user_item,
@@ -1128,6 +1128,86 @@ fn expanded_metric_wal_point_uses_tenant_attribute_for_materialization() {
         .expect("query materialized WAL metric point");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["quantity"], 7);
+}
+
+#[test]
+fn tenant_range_purge_deletes_only_matching_tenant_series_and_resumes_by_cursor() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    for (tenant_id, event_id, series_name, occurred_at_ms) in [
+        ("tenant_01", "purge-1", "requests", 1_000_i64),
+        ("tenant_01", "purge-2", "requests", 2_000_i64),
+        ("tenant_02", "purge-3", "requests", 1_000_i64),
+        ("tenant_01", "purge-4", "other", 1_000_i64),
+    ] {
+        let mut item = metric_point_item(event_id, "standard", "1");
+        item.insert(
+            "tenant_id".to_string(),
+            StorageValue::S(tenant_id.to_string()),
+        );
+        item.insert(
+            "series_name".to_string(),
+            StorageValue::S(series_name.to_string()),
+        );
+        item.insert(
+            "occurred_at_ms".to_string(),
+            StorageValue::N(occurred_at_ms.to_string()),
+        );
+        engine
+            .ingest_stream_record(
+                &manifest,
+                "metric_points_v1",
+                event_id.as_bytes(),
+                StorageStreamRecord {
+                    sequence_number: event_id.to_string(),
+                    keys: HashMap::new(),
+                    old_image: None,
+                    new_image: Some(item),
+                },
+            )
+            .expect("ingest metric point");
+    }
+
+    let request = TenantRangePurgeRequest {
+        table_name: "metric_points_v1".to_string(),
+        tenant_id: "tenant_01".to_string(),
+        timestamp_column: "occurred_at_ms".to_string(),
+        start_ms: 0,
+        end_ms: 3_000,
+        equals: BTreeMap::from([("series_name".to_string(), Some("requests".to_string()))]),
+        cursor: None,
+        limit: 1,
+    };
+    let first = engine.purge_tenant_range(&request).expect("first purge");
+    assert_eq!(first.rows_deleted, 1);
+    assert!(!first.complete);
+    let second = engine
+        .purge_tenant_range(&TenantRangePurgeRequest {
+            cursor: first.cursor.clone(),
+            ..request.clone()
+        })
+        .expect("second purge");
+    assert_eq!(second.rows_deleted, 1);
+    assert!(!second.complete);
+    let third = engine
+        .purge_tenant_range(&TenantRangePurgeRequest {
+            cursor: second.cursor.clone(),
+            ..request
+        })
+        .expect("completion check");
+    assert_eq!(third.rows_deleted, 0);
+    assert!(third.complete);
+
+    let rows = engine
+        .query_unscoped_sql_json(
+            "select tenant_id, series_name, event_id from metric_points_v1 order by tenant_id, event_id",
+        )
+        .expect("query remaining rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["tenant_id"], "tenant_01");
+    assert_eq!(rows[0]["series_name"], "other");
+    assert_eq!(rows[1]["tenant_id"], "tenant_02");
 }
 
 #[test]

@@ -4,7 +4,9 @@ use analytics_api::{
     AnalyticsEngineAccess, IngestStreamRecordRequest, QueryBatchResult, QueryResponseBuildError,
     build_query_batch_result, build_query_response,
 };
-use analytics_contract::{AnalyticsManifest, PrivacyPolicy, StructuredQuery};
+use analytics_contract::{
+    AnalyticsManifest, PrivacyPolicy, StructuredQuery, TenantRangePurgeRequest,
+};
 use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::{
@@ -260,6 +262,14 @@ impl AnalyticsLambdaHandler {
                 let results = self.query_tenant_batch(target_tenant_id, queries).await?;
                 self.query_response(QueryBatchLambdaResponse { results })
             }
+            AnalyticsLambdaEvent::TenantRangePurge { request } => {
+                self.ensure_ingest_allowed()?;
+                let response = self
+                    .engine
+                    .with_write(|engine| engine.purge_tenant_range(&request))
+                    .await?;
+                Ok(json!(response))
+            }
             AnalyticsLambdaEvent::Ingest {
                 analytics_table_name,
                 request,
@@ -453,6 +463,10 @@ pub enum AnalyticsLambdaEvent {
     TenantQueryBatch {
         target_tenant_id: String,
         queries: Vec<TenantQueryBatchItem>,
+    },
+    TenantRangePurge {
+        #[serde(flatten)]
+        request: TenantRangePurgeRequest,
     },
     Ingest {
         analytics_table_name: String,

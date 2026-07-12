@@ -9,7 +9,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "db5471efedc9f8860ccf896b04db28fa57658d09" }
+alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "ae3f4b27a8c0c1baa3eaa785b36d0ca12b842cf2" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }
@@ -47,9 +47,9 @@ schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.11.0"
-storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "1317d0ae2c6df7e7686347b1ac87ea28d7a1854c", default-features = false }
-storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "1317d0ae2c6df7e7686347b1ac87ea28d7a1854c" }
-storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "1317d0ae2c6df7e7686347b1ac87ea28d7a1854c", default-features = false }
+storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "a91b6b8ad6f8fbe1bfe651c40c1061f87184603b", default-features = false }
+storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "a91b6b8ad6f8fbe1bfe651c40c1061f87184603b" }
+storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "a91b6b8ad6f8fbe1bfe651c40c1061f87184603b", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full", "tracing"] }

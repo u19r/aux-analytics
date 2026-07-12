@@ -1,6 +1,8 @@
 use std::{fmt, sync::Arc, time::Instant};
 
-use analytics_contract::{AnalyticsManifest, TableRegistration};
+use analytics_contract::{
+    AnalyticsManifest, TableRegistration, TenantRangePurgeRequest, TenantRangePurgeResponse,
+};
 use analytics_engine::{AnalyticsEngineError, IngestOutcome, StreamRecordBatchItem};
 use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
@@ -103,7 +105,8 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
             post(unscoped_structured_query),
         )
         .route("/tenant-query", post(tenant_query))
-        .route("/tenant-query-batch", post(tenant_query_batch));
+        .route("/tenant-query-batch", post(tenant_query_batch))
+        .route("/tenant-range-purge", post(tenant_range_purge));
     if endpoint_config.ingest_enabled {
         router = router
             .route("/ingest/{analytics_table_name}", post(ingest_stream_record))
@@ -772,6 +775,34 @@ pub(crate) async fn ingest_stream_record_batch(
             record_ingest_metrics("error", started);
             error_response(StatusCode::BAD_REQUEST, &err.to_string())
         }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/tenant-range-purge",
+    request_body = TenantRangePurgeRequest,
+    responses(
+        (status = 200, body = TenantRangePurgeResponse, description = "Deleted one bounded tenant-scoped analytics range"),
+        (status = 400, body = ErrorResponse, description = "Invalid range purge request or deletion failure")
+    ),
+    tag = "Analytics"
+)]
+pub(crate) async fn tenant_range_purge(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let request = match validate_json::<TenantRangePurgeRequest>(payload) {
+        Ok(request) => request,
+        Err(err) => return err.into_response(),
+    };
+    match app_state
+        .engine
+        .with_write(|engine| engine.purge_tenant_range(&request))
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(err) => error_response(StatusCode::BAD_REQUEST, &err.to_string()),
     }
 }
 

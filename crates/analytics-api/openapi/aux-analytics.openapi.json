@@ -3212,6 +3212,86 @@
         ],
         "type": "object"
       },
+      "TenantRangePurgeRequest": {
+        "description": "A bounded, tenant-scoped delete operation over one analytical table.\n\n`equals` contains exact column predicates. `None` means SQL `IS NULL` and\n`Some(value)` means SQL equality. The cursor is an opaque `__id` checkpoint\nreturned by the engine; callers must persist it and pass it back unchanged.",
+        "properties": {
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "end_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "equals": {
+            "type": "object"
+          },
+          "limit": {
+            "default": 1000,
+            "format": "int32",
+            "maximum": 10000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "start_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "table_name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "tenant_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timestamp_column": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table_name",
+          "tenant_id",
+          "timestamp_column",
+          "start_ms",
+          "end_ms"
+        ],
+        "type": "object"
+      },
+      "TenantRangePurgeResponse": {
+        "description": "Result of one bounded purge chunk.",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows_deleted": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rows_deleted",
+          "complete"
+        ],
+        "type": "object"
+      },
       "TenantSelector": {
         "description": "Tenant id extraction rule.",
         "oneOf": [
@@ -3933,6 +4013,46 @@
               }
             },
             "description": "Invalid request or query"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
+    "/tenant-range-purge": {
+      "post": {
+        "operationId": "tenant_range_purge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantRangePurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantRangePurgeResponse"
+                }
+              }
+            },
+            "description": "Deleted one bounded tenant-scoped analytics range"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid range purge request or deletion failure"
           }
         },
         "tags": [

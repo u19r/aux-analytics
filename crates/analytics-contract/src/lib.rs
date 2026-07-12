@@ -4,6 +4,7 @@ mod loader;
 mod manifest;
 mod privacy_policy;
 mod query;
+mod range_purge;
 mod source_position;
 mod storage;
 
@@ -13,6 +14,7 @@ pub use loader::*;
 pub use manifest::*;
 pub use privacy_policy::*;
 pub use query::*;
+pub use range_purge::*;
 pub use source_position::*;
 pub use storage::*;
 
