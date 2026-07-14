@@ -300,7 +300,16 @@ are selected:
     "row_count": 1,
     "truncated": false,
     "tables": ["orders"],
-    "elapsed_ms": 4
+    "elapsed_ms": 4,
+    "plan_shape": {
+      "logical_source_count": 1,
+      "join_count": 0,
+      "filter_count": 0,
+      "group_expression_count": 1,
+      "order_expression_count": 1,
+      "aggregate_count": 1,
+      "conditional_expression_count": 0
+    }
   },
   "source_watermark": {
     "max_occurred_at_ms": null,
@@ -308,6 +317,32 @@ are selected:
   }
 }
 ```
+
+Conditional expressions classify rows during the same aggregate query. Branches are ordered, each
+branch combines its registered-column comparisons with `AND`, and results are same-type scalar
+literals. Select and group by the identical expression:
+
+```json
+{
+  "kind": "conditional",
+  "branches": [
+    {
+      "all": [
+        { "column_name": "occurred_at_ms", "operator": "gte", "value": 1000 },
+        { "column_name": "occurred_at_ms", "operator": "lt", "value": 2000 },
+        { "column_name": "ingested_at_ms", "operator": "gt", "value": 3000 }
+      ],
+      "then_value": "late"
+    }
+  ],
+  "else_value": "standard"
+}
+```
+
+The logical plan shape is derived from the validated request and never contains query literals or
+raw SQL. It is not a physical DuckDB profile: exact scanned-row counts are intentionally omitted
+because the current execution API cannot collect them reliably without global profiling state or
+executing the query twice.
 
 ## Generic Table With Tenant Metadata
 

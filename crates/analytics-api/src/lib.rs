@@ -17,7 +17,7 @@ pub use router::{
     router_with_config, server_router, server_router_with_config, server_router_with_metrics,
 };
 pub use types::{
-    AppState, CheckpointHealth, IngestStreamRecordRequest, QueryBatchResult, QueryResponse,
-    RetentionHealth, RetentionHealthStatus, SourceHealth, SourceHealthStatus, SourcePollingPhase,
-    TableLagHealth,
+    AppState, CheckpointHealth, IngestStreamRecordRequest, QueryBatchResult, QueryPlanShape,
+    QueryResponse, RetentionHealth, RetentionHealthStatus, SourceHealth, SourceHealthStatus,
+    SourcePollingPhase, TableLagHealth,
 };

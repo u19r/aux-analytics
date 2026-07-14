@@ -786,7 +786,9 @@ impl AnalyticsEngine {
         let ids = self
             .conn
             .prepare(select_sql.as_str())?
-            .query_map(duckdb::params_from_iter(values), |row| row.get::<_, String>(0))?
+            .query_map(duckdb::params_from_iter(values), |row| {
+                row.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         if ids.is_empty() {
             return Ok(TenantRangePurgeResponse {
@@ -799,17 +801,15 @@ impl AnalyticsEngine {
         // Delete the selected chunk in one statement. This keeps the worker
         // bounded by `limit` while avoiding one round trip per analytics row.
         let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
-        let delete_sql = format!(
-            "DELETE FROM {table} WHERE tenant_id = ? AND __id IN ({placeholders})"
-        );
+        let delete_sql =
+            format!("DELETE FROM {table} WHERE tenant_id = ? AND __id IN ({placeholders})");
         let mut delete_values = Vec::with_capacity(ids.len().saturating_add(1));
         delete_values.push(duckdb::types::Value::Text(request.tenant_id.clone()));
         delete_values.extend(ids.iter().cloned().map(duckdb::types::Value::Text));
         let rows_deleted = self
             .conn
             .prepare(delete_sql.as_str())?
-            .execute(duckdb::params_from_iter(delete_values))?
-            as u64;
+            .execute(duckdb::params_from_iter(delete_values))? as u64;
         let cursor = ids.last().cloned();
         Ok(TenantRangePurgeResponse {
             rows_deleted,

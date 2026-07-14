@@ -5,10 +5,11 @@ use std::{
 
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, ClusteringKey, PrimitiveColumnType, PrivacyPolicy,
-    ProjectionColumn, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
-    QueryPredicate, QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity, SortOrder,
-    SourcePosition, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
-    TenantRangePurgeRequest, TenantSelector,
+    ProjectionColumn, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
+    QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryOrder, QueryPredicate,
+    QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity, SortOrder, SourcePosition,
+    StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration, TenantRangePurgeRequest,
+    TenantSelector,
 };
 use analytics_fixtures::{
     generic_items_manifest, legacy_item, metric_points_manifest, storage_key, user_item,
@@ -1201,7 +1202,8 @@ fn tenant_range_purge_deletes_only_matching_tenant_series_and_resumes_by_cursor(
 
     let rows = engine
         .query_unscoped_sql_json(
-            "select tenant_id, series_name, event_id from metric_points_v1 order by tenant_id, event_id",
+            "select tenant_id, series_name, event_id from metric_points_v1 order by tenant_id, \
+             event_id",
         )
         .expect("query remaining rows");
     assert_eq!(rows.len(), 2);
@@ -1255,6 +1257,80 @@ fn metric_fact_layout_executes_core_meter_query_shapes() {
     assert_eq!(evidence.len(), 2);
     assert_eq!(evidence[0]["event_id"], "evt_read");
     assert_eq!(evidence[0]["occurred_at_ms"], 1782863999000_i64);
+}
+
+#[test]
+fn conditional_grouping_classifies_boundary_and_late_arrival_rows_in_one_query() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    for (event_id, occurred_at_ms, ingested_at_ms, value) in [
+        ("standard", 1_000_i64, 3_000_i64, "10"),
+        ("late", 1_999_i64, 3_001_i64, "20"),
+        ("next_window", 2_000_i64, 4_000_i64, "30"),
+    ] {
+        let mut item = metric_point_item(event_id, "standard", value);
+        item.insert(
+            "occurred_at_ms".to_string(),
+            StorageValue::N(occurred_at_ms.to_string()),
+        );
+        item.insert(
+            "ingested_at_ms".to_string(),
+            StorageValue::N(ingested_at_ms.to_string()),
+        );
+        engine
+            .ingest_stream_record(
+                &manifest,
+                "metric_points_v1",
+                event_id.as_bytes(),
+                StorageStreamRecord {
+                    sequence_number: event_id.to_string(),
+                    keys: HashMap::new(),
+                    old_image: None,
+                    new_image: Some(item),
+                },
+            )
+            .expect("ingest classified metric point");
+    }
+
+    let classification = metric_late_arrival_classification();
+    let rows = engine
+        .query_tenant_structured_json(
+            &manifest,
+            &StructuredQuery {
+                analytics_table_name: "metric_points_v1".to_string(),
+                table_alias: Some("m".to_string()),
+                joins: Vec::new(),
+                select: vec![
+                    QuerySelect::Expression {
+                        expression: classification.clone(),
+                        alias: "usage_class".to_string(),
+                    },
+                    QuerySelect::Sum {
+                        expression: QueryExpression::Column {
+                            table_alias: Some("m".to_string()),
+                            column_name: "value_i64".to_string(),
+                        },
+                        alias: "quantity".to_string(),
+                    },
+                ],
+                filters: Vec::new(),
+                group_by: vec![classification.clone()],
+                order_by: vec![QueryOrder {
+                    expression: classification,
+                    direction: Some(SortOrder::Asc),
+                }],
+                limit: Some(2),
+            },
+            "tenant_01",
+        )
+        .expect("conditional aggregate query");
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["usage_class"], "late_arrival");
+    assert_eq!(rows[0]["quantity"], 20);
+    assert_eq!(rows[1]["usage_class"], "standard");
+    assert_eq!(rows[1]["quantity"], 40);
 }
 
 #[test]
@@ -1796,6 +1872,35 @@ fn metric_grouped_query() -> StructuredQuery {
         }],
         order_by: Vec::new(),
         limit: Some(1000),
+    }
+}
+
+fn metric_late_arrival_classification() -> QueryExpression {
+    QueryExpression::Conditional {
+        branches: vec![QueryConditionalBranch {
+            all: vec![
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "occurred_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Gte,
+                    value: serde_json::json!(1_000),
+                },
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "occurred_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Lt,
+                    value: serde_json::json!(2_000),
+                },
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "ingested_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Gt,
+                    value: serde_json::json!(3_000),
+                },
+            ],
+            then_value: serde_json::json!("late_arrival"),
+        }],
+        else_value: serde_json::json!("standard"),
     }
 }
 

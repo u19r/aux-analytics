@@ -1,5 +1,6 @@
 use analytics_contract::{
-    AnalyticsManifest, JoinPolicy, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
+    AnalyticsManifest, JoinPolicy, QueryColumnComparison, QueryComparisonOperator,
+    QueryConditionalBranch, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
     QueryOrder, QueryPredicate, QuerySelect, RowIdentity, SortOrder, StructuredQuery,
     TableRegistration, TableScope, TenantSelector,
 };
@@ -204,6 +205,86 @@ fn given_unregistered_column_when_query_is_compiled_then_query_is_rejected() {
 }
 
 #[test]
+fn given_conditional_grouping_when_compiled_then_registered_columns_and_literals_are_safe() {
+    let expression = conditional_expression("late'; DROP TABLE users; --");
+    let sql = structured_query_sql(
+        &conditional_table(),
+        &StructuredQuery {
+            analytics_table_name: "metric_points_v1".to_string(),
+            table_alias: Some("m".to_string()),
+            joins: Vec::new(),
+            select: vec![
+                QuerySelect::Expression {
+                    expression: expression.clone(),
+                    alias: "usage_class".to_string(),
+                },
+                QuerySelect::Sum {
+                    expression: QueryExpression::Column {
+                        table_alias: Some("m".to_string()),
+                        column_name: "value_i64".to_string(),
+                    },
+                    alias: "quantity".to_string(),
+                },
+            ],
+            filters: Vec::new(),
+            group_by: vec![expression],
+            order_by: Vec::new(),
+            limit: None,
+        },
+    )
+    .expect("conditional query compiles");
+
+    assert_eq!(
+        sql,
+        "SELECT CASE WHEN (\"m\".\"occurred_at_ms\" >= 1000 AND \"m\".\"occurred_at_ms\" < 2000 \
+         AND \"m\".\"ingested_at_ms\" > 3000) THEN 'late''; DROP TABLE users; --' ELSE 'standard' \
+         END AS \"usage_class\", sum(\"m\".\"value_i64\") AS \"quantity\" FROM \
+         \"metric_points_v1\" AS \"m\" GROUP BY CASE WHEN (\"m\".\"occurred_at_ms\" >= 1000 AND \
+         \"m\".\"occurred_at_ms\" < 2000 AND \"m\".\"ingested_at_ms\" > 3000) THEN 'late''; DROP \
+         TABLE users; --' ELSE 'standard' END"
+    );
+}
+
+#[test]
+fn given_conditional_with_unregistered_column_when_compiled_then_query_is_rejected() {
+    let expression = QueryExpression::Conditional {
+        branches: vec![QueryConditionalBranch {
+            all: vec![QueryColumnComparison {
+                table_alias: Some("m".to_string()),
+                column_name: "secret_timestamp".to_string(),
+                operator: QueryComparisonOperator::Gt,
+                value: json!(3000),
+            }],
+            then_value: json!("late"),
+        }],
+        else_value: json!("standard"),
+    };
+    let error = structured_query_sql(
+        &conditional_table(),
+        &StructuredQuery {
+            analytics_table_name: "metric_points_v1".to_string(),
+            table_alias: Some("m".to_string()),
+            joins: Vec::new(),
+            select: vec![QuerySelect::Expression {
+                expression,
+                alias: "usage_class".to_string(),
+            }],
+            filters: Vec::new(),
+            group_by: Vec::new(),
+            order_by: Vec::new(),
+            limit: None,
+        },
+    )
+    .expect_err("unregistered conditional column should fail");
+
+    assert!(
+        error
+            .to_string()
+            .contains("column secret_timestamp is not registered")
+    );
+}
+
+#[test]
 fn given_joined_structured_query_when_compiled_then_alias_qualified_sql_is_generated() {
     let sql = structured_query_sql_for_manifest(&joined_manifest(), &joined_query()).unwrap();
 
@@ -309,6 +390,46 @@ fn given_unbounded_global_reference_join_when_compiled_then_query_is_rejected() 
 
 fn joined_manifest() -> AnalyticsManifest {
     analytics_fixtures::metric_points_manifest()
+}
+
+fn conditional_table() -> TableRegistration {
+    let mut table = table();
+    table.analytics_table_name = "metric_points_v1".to_string();
+    table.projection_attribute_names = Some(vec![
+        "occurred_at_ms".to_string(),
+        "ingested_at_ms".to_string(),
+        "value_i64".to_string(),
+    ]);
+    table
+}
+
+fn conditional_expression(late_value: &str) -> QueryExpression {
+    QueryExpression::Conditional {
+        branches: vec![QueryConditionalBranch {
+            all: vec![
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "occurred_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Gte,
+                    value: json!(1000),
+                },
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "occurred_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Lt,
+                    value: json!(2000),
+                },
+                QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "ingested_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Gt,
+                    value: json!(3000),
+                },
+            ],
+            then_value: json!(late_value),
+        }],
+        else_value: json!("standard"),
+    }
 }
 
 fn joined_query() -> StructuredQuery {

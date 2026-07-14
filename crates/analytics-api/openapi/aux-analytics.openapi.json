@@ -926,6 +926,15 @@
           ],
           "execution": {
             "elapsed_ms": 7,
+            "plan_shape": {
+              "aggregate_count": 1,
+              "conditional_expression_count": 0,
+              "filter_count": 0,
+              "group_expression_count": 0,
+              "join_count": 0,
+              "logical_source_count": 1,
+              "order_expression_count": 0
+            },
             "query_hash": "sha256:example",
             "row_count": 1,
             "tables": [
@@ -983,12 +992,81 @@
         ],
         "type": "object"
       },
+      "QueryColumnComparison": {
+        "description": "Safe comparison between a registered column and a JSON literal.",
+        "properties": {
+          "column_name": {
+            "example": "ingested_at_ms",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "operator": {
+            "$ref": "#/components/schemas/QueryComparisonOperator"
+          },
+          "table_alias": {
+            "default": null,
+            "example": "m",
+            "maxLength": 255,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "column_name",
+          "operator",
+          "value"
+        ],
+        "type": "object"
+      },
+      "QueryComparisonOperator": {
+        "description": "Operator supported by a conditional column comparison.",
+        "enum": [
+          "eq",
+          "not_eq",
+          "gt",
+          "gte",
+          "lt",
+          "lte"
+        ],
+        "type": "string"
+      },
+      "QueryConditionalBranch": {
+        "description": "One ordered branch of a conditional structured expression.",
+        "properties": {
+          "all": {
+            "description": "Comparisons combined with AND.",
+            "items": {
+              "$ref": "#/components/schemas/QueryColumnComparison"
+            },
+            "maxItems": 16,
+            "minItems": 1,
+            "type": "array"
+          },
+          "then_value": {
+            "description": "Scalar result returned when all comparisons match."
+          }
+        },
+        "required": [
+          "all",
+          "then_value"
+        ],
+        "type": "object"
+      },
       "QueryExecutionMetadata": {
         "properties": {
           "elapsed_ms": {
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "plan_shape": {
+            "$ref": "#/components/schemas/QueryPlanShape",
+            "description": "Sanitized logical shape derived from the validated structured query.\nThis does not claim physical row-scan counts, which are backend and\noptimizer dependent."
           },
           "query_hash": {
             "type": "string"
@@ -1013,7 +1091,8 @@
           "row_count",
           "truncated",
           "tables",
-          "elapsed_ms"
+          "elapsed_ms",
+          "plan_shape"
         ],
         "type": "object"
       },
@@ -1090,6 +1169,34 @@
             "required": [
               "document_column",
               "path",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Ordered CASE-style classification with literal results. Each branch\ncombines its comparisons with AND; the first matching branch wins.",
+            "properties": {
+              "branches": {
+                "items": {
+                  "$ref": "#/components/schemas/QueryConditionalBranch"
+                },
+                "maxItems": 32,
+                "minItems": 1,
+                "type": "array"
+              },
+              "else_value": {
+                "description": "Scalar result used when no branch matches."
+              },
+              "kind": {
+                "enum": [
+                  "conditional"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "branches",
+              "else_value",
               "kind"
             ],
             "type": "object"
@@ -1181,6 +1288,56 @@
         },
         "required": [
           "expression"
+        ],
+        "type": "object"
+      },
+      "QueryPlanShape": {
+        "description": "Bounded, literal-free logical query shape for performance evidence.",
+        "properties": {
+          "aggregate_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conditional_expression_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "filter_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "group_expression_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "join_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "logical_source_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "order_expression_count": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "logical_source_count",
+          "join_count",
+          "filter_count",
+          "group_expression_count",
+          "order_expression_count",
+          "aggregate_count",
+          "conditional_expression_count"
         ],
         "type": "object"
       },
@@ -1385,6 +1542,15 @@
           ],
           "execution": {
             "elapsed_ms": 7,
+            "plan_shape": {
+              "aggregate_count": 0,
+              "conditional_expression_count": 0,
+              "filter_count": 1,
+              "group_expression_count": 0,
+              "join_count": 0,
+              "logical_source_count": 1,
+              "order_expression_count": 0
+            },
             "query_hash": "sha256:example",
             "row_count": 1,
             "tables": [
@@ -1559,6 +1725,33 @@
             "required": [
               "document_column",
               "path",
+              "alias",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Select any supported structured expression.",
+            "properties": {
+              "alias": {
+                "description": "Required output alias for the expression.",
+                "example": "classification",
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              "expression": {
+                "$ref": "#/components/schemas/QueryExpression"
+              },
+              "kind": {
+                "enum": [
+                  "expression"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
               "alias",
               "kind"
             ],

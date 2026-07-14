@@ -13,11 +13,19 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct TenantRangePurgeRequest {
-    #[schema(min_length = 1, max_length = 255, pattern = r"^[A-Za-z_][A-Za-z0-9_]*$")]
+    #[schema(
+        min_length = 1,
+        max_length = 255,
+        pattern = r"^[A-Za-z_][A-Za-z0-9_]*$"
+    )]
     pub table_name: String,
     #[schema(min_length = 1, max_length = 255)]
     pub tenant_id: String,
-    #[schema(min_length = 1, max_length = 255, pattern = r"^[A-Za-z_][A-Za-z0-9_]*$")]
+    #[schema(
+        min_length = 1,
+        max_length = 255,
+        pattern = r"^[A-Za-z_][A-Za-z0-9_]*$"
+    )]
     pub timestamp_column: String,
     pub start_ms: i64,
     pub end_ms: i64,
@@ -99,8 +107,9 @@ fn validate_identifier(field: &'static str, value: &str) -> Result<(), RangePurg
 
 #[cfg(test)]
 mod tests {
-    use super::{RangePurgeValidationError, TenantRangePurgeRequest};
     use std::collections::BTreeMap;
+
+    use super::{RangePurgeValidationError, TenantRangePurgeRequest};
 
     fn request() -> TenantRangePurgeRequest {
         TenantRangePurgeRequest {

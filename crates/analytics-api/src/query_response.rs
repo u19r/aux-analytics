@@ -1,11 +1,11 @@
 use std::time::Instant;
 
-use analytics_contract::StructuredQuery;
+use analytics_contract::{QueryExpression, QuerySelect, StructuredQuery};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::types::{
-    QueryBatchResult, QueryExecutionMetadata, QueryResponse, QueryResultColumn,
+    QueryBatchResult, QueryExecutionMetadata, QueryPlanShape, QueryResponse, QueryResultColumn,
     QueryResultValueType, QuerySourceWatermark,
 };
 
@@ -60,7 +60,77 @@ fn execution_metadata(
         truncated: query.limit.is_some_and(|limit| row_count >= limit as usize),
         tables: participating_tables(query),
         elapsed_ms: started.elapsed().as_millis() as u64,
+        plan_shape: plan_shape(query),
     })
+}
+
+fn plan_shape(query: &StructuredQuery) -> QueryPlanShape {
+    QueryPlanShape {
+        logical_source_count: count_u32(query.joins.len().saturating_add(1)),
+        join_count: count_u32(query.joins.len()),
+        filter_count: count_u32(query.filters.len()),
+        group_expression_count: count_u32(query.group_by.len()),
+        order_expression_count: count_u32(query.order_by.len()),
+        aggregate_count: count_u32(
+            query
+                .select
+                .iter()
+                .filter(|select| {
+                    matches!(
+                        select,
+                        QuerySelect::Count { .. }
+                            | QuerySelect::Sum { .. }
+                            | QuerySelect::Min { .. }
+                            | QuerySelect::Max { .. }
+                            | QuerySelect::Avg { .. }
+                            | QuerySelect::CountDistinct { .. }
+                    )
+                })
+                .count(),
+        ),
+        conditional_expression_count: count_u32(
+            query
+                .select
+                .iter()
+                .filter_map(select_expression)
+                .chain(query.filters.iter().map(predicate_expression))
+                .chain(query.group_by.iter())
+                .chain(query.order_by.iter().map(|order| &order.expression))
+                .filter(|expression| matches!(expression, QueryExpression::Conditional { .. }))
+                .count(),
+        ),
+    }
+}
+
+fn select_expression(select: &QuerySelect) -> Option<&QueryExpression> {
+    match select {
+        QuerySelect::Expression { expression, .. }
+        | QuerySelect::Sum { expression, .. }
+        | QuerySelect::Min { expression, .. }
+        | QuerySelect::Max { expression, .. }
+        | QuerySelect::Avg { expression, .. }
+        | QuerySelect::CountDistinct { expression, .. } => Some(expression),
+        QuerySelect::Column { .. }
+        | QuerySelect::DocumentPath { .. }
+        | QuerySelect::Count { .. } => None,
+    }
+}
+
+fn predicate_expression(predicate: &analytics_contract::QueryPredicate) -> &QueryExpression {
+    match predicate {
+        analytics_contract::QueryPredicate::Eq { expression, .. }
+        | analytics_contract::QueryPredicate::NotEq { expression, .. }
+        | analytics_contract::QueryPredicate::Gt { expression, .. }
+        | analytics_contract::QueryPredicate::Gte { expression, .. }
+        | analytics_contract::QueryPredicate::Lt { expression, .. }
+        | analytics_contract::QueryPredicate::Lte { expression, .. }
+        | analytics_contract::QueryPredicate::IsNull { expression }
+        | analytics_contract::QueryPredicate::IsNotNull { expression } => expression,
+    }
+}
+
+fn count_u32(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 fn participating_tables(query: &StructuredQuery) -> Vec<String> {
@@ -125,4 +195,71 @@ fn looks_like_decimal(value: &str) -> bool {
         && value
             .chars()
             .all(|character| character.is_ascii_digit() || matches!(character, '.' | '-'))
+}
+
+#[cfg(test)]
+mod tests {
+    use analytics_contract::{
+        QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch, QueryExpression,
+        QuerySelect, StructuredQuery,
+    };
+    use serde_json::json;
+
+    use super::build_query_response;
+
+    #[test]
+    fn given_conditional_aggregate_when_response_is_built_then_plan_shape_is_bounded_and_sanitized()
+    {
+        let classification = QueryExpression::Conditional {
+            branches: vec![QueryConditionalBranch {
+                all: vec![QueryColumnComparison {
+                    table_alias: Some("m".to_string()),
+                    column_name: "ingested_at_ms".to_string(),
+                    operator: QueryComparisonOperator::Gt,
+                    value: json!("sensitive-cutoff"),
+                }],
+                then_value: json!("sensitive-class"),
+            }],
+            else_value: json!("other-class"),
+        };
+        let query = StructuredQuery {
+            analytics_table_name: "metric_points_v1".to_string(),
+            table_alias: Some("m".to_string()),
+            joins: Vec::new(),
+            select: vec![
+                QuerySelect::Expression {
+                    expression: classification.clone(),
+                    alias: "usage_class".to_string(),
+                },
+                QuerySelect::Sum {
+                    expression: QueryExpression::Column {
+                        table_alias: Some("m".to_string()),
+                        column_name: "value_i64".to_string(),
+                    },
+                    alias: "quantity".to_string(),
+                },
+            ],
+            filters: Vec::new(),
+            group_by: vec![classification],
+            order_by: Vec::new(),
+            limit: Some(2),
+        };
+
+        let response = build_query_response(
+            vec![json!({"usage_class": "other-class", "quantity": 10})],
+            &query,
+            std::time::Instant::now(),
+        )
+        .expect("response metadata");
+
+        assert_eq!(response.execution.plan_shape.logical_source_count, 1);
+        assert_eq!(response.execution.plan_shape.aggregate_count, 1);
+        assert_eq!(
+            response.execution.plan_shape.conditional_expression_count,
+            2
+        );
+        let encoded = serde_json::to_string(&response.execution.plan_shape).expect("serialize");
+        assert!(!encoded.contains("sensitive-cutoff"));
+        assert!(!encoded.contains("sensitive-class"));
+    }
 }

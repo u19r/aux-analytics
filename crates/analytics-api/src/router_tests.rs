@@ -525,6 +525,39 @@ async fn tenant_query_endpoint_requires_target_tenant_id() {
 }
 
 #[tokio::test]
+async fn tenant_query_endpoint_rejects_empty_conditional_branches_in_json_schema() {
+    let response = post_json(
+        test_router(),
+        "/tenant-query",
+        json!({
+            "target_tenant_id": "tenant_01",
+            "query": {
+                "analytics_table_name": "users",
+                "select": [{
+                    "kind": "expression",
+                    "expression": {
+                        "kind": "conditional",
+                        "branches": [],
+                        "else_value": "standard"
+                    },
+                    "alias": "usage_class"
+                }]
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("schema validation")),
+        "{body:?}"
+    );
+}
+
+#[tokio::test]
 async fn ingest_endpoint_rejects_requests_that_fail_generated_schema() {
     let response = post_json(
         test_router(),

@@ -1,6 +1,7 @@
 use analytics_contract::{
-    AnalyticsManifest, QueryExpression, QueryJoin, QueryJoinKind, QueryOrder, QueryPredicate,
-    QuerySelect, SortOrder, StructuredQuery, TableRegistration, TableScope,
+    AnalyticsManifest, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
+    QueryExpression, QueryJoin, QueryJoinKind, QueryOrder, QueryPredicate, QuerySelect, SortOrder,
+    StructuredQuery, TableRegistration, TableScope,
 };
 
 use crate::{
@@ -16,7 +17,7 @@ struct QueryTable<'a> {
 }
 
 struct ResolvedExpression {
-    table_alias: String,
+    table_alias: Option<String>,
     sql: String,
     signature: ExpressionSignature,
 }
@@ -31,6 +32,9 @@ enum ExpressionSignature {
         table_alias: String,
         document_column: String,
         path: String,
+    },
+    Conditional {
+        sql: String,
     },
 }
 
@@ -189,7 +193,15 @@ impl<'a> QueryCompiler<'a> {
             .map(|predicate| {
                 let left = self.resolve_expression(&predicate.left)?;
                 let right = self.resolve_expression(&predicate.right)?;
-                if left.table_alias == right.table_alias {
+                let (Some(left_alias), Some(right_alias)) =
+                    (left.table_alias.as_deref(), right.table_alias.as_deref())
+                else {
+                    return Err(AnalyticsEngineError::InvalidStructuredQuery(
+                        "join predicate expressions must each reference one registered table"
+                            .to_string(),
+                    ));
+                };
+                if left_alias == right_alias {
                     return Err(AnalyticsEngineError::InvalidStructuredQuery(
                         "join predicate must compare two table aliases".to_string(),
                     ));
@@ -226,6 +238,10 @@ impl<'a> QueryCompiler<'a> {
                 let expression =
                     self.resolve_document_path(table_alias.as_deref(), document_column, path)?;
                 Ok(alias_sql(expression.sql.as_str(), alias))
+            }
+            QuerySelect::Expression { expression, alias } => {
+                let expression = self.expression_sql(expression)?;
+                Ok(alias_sql(expression.as_str(), alias))
             }
             QuerySelect::Count { alias } => Ok(alias_sql("count(*)", alias)),
             QuerySelect::Sum { expression, alias } => {
@@ -334,7 +350,68 @@ impl<'a> QueryCompiler<'a> {
                 document_column,
                 path,
             } => self.resolve_document_path(table_alias.as_deref(), document_column, path),
+            QueryExpression::Conditional {
+                branches,
+                else_value,
+            } => self.resolve_conditional(branches, else_value),
         }
+    }
+
+    fn resolve_conditional(
+        &self,
+        branches: &[QueryConditionalBranch],
+        else_value: &serde_json::Value,
+    ) -> AnalyticsEngineResult<ResolvedExpression> {
+        let mut sql = String::from("CASE");
+        for branch in branches {
+            sql.push_str(" WHEN ");
+            sql.push_str(self.conditional_branch_sql(branch)?.as_str());
+            sql.push_str(" THEN ");
+            sql.push_str(literal_sql(&branch.then_value)?.as_str());
+        }
+        sql.push_str(" ELSE ");
+        sql.push_str(literal_sql(else_value)?.as_str());
+        sql.push_str(" END");
+        Ok(ResolvedExpression {
+            table_alias: None,
+            signature: ExpressionSignature::Conditional { sql: sql.clone() },
+            sql,
+        })
+    }
+
+    fn conditional_branch_sql(
+        &self,
+        branch: &QueryConditionalBranch,
+    ) -> AnalyticsEngineResult<String> {
+        branch
+            .all
+            .iter()
+            .map(|comparison| self.column_comparison_sql(comparison))
+            .collect::<AnalyticsEngineResult<Vec<_>>>()
+            .map(|comparisons| format!("({})", comparisons.join(" AND ")))
+    }
+
+    fn column_comparison_sql(
+        &self,
+        comparison: &QueryColumnComparison,
+    ) -> AnalyticsEngineResult<String> {
+        let column = self.resolve_column(
+            comparison.table_alias.as_deref(),
+            comparison.column_name.as_str(),
+        )?;
+        let operator = match comparison.operator {
+            QueryComparisonOperator::Eq => "=",
+            QueryComparisonOperator::NotEq => "<>",
+            QueryComparisonOperator::Gt => ">",
+            QueryComparisonOperator::Gte => ">=",
+            QueryComparisonOperator::Lt => "<",
+            QueryComparisonOperator::Lte => "<=",
+        };
+        Ok(format!(
+            "{} {operator} {}",
+            column.sql,
+            literal_sql(&comparison.value)?
+        ))
     }
 
     fn resolve_column(
@@ -344,7 +421,7 @@ impl<'a> QueryCompiler<'a> {
     ) -> AnalyticsEngineResult<ResolvedExpression> {
         let table = self.resolve_table_for_column(table_alias, column_name)?;
         Ok(ResolvedExpression {
-            table_alias: table.alias.clone(),
+            table_alias: Some(table.alias.clone()),
             sql: table.column_sql(column_name),
             signature: ExpressionSignature::Column {
                 table_alias: table.alias.clone(),
@@ -364,7 +441,7 @@ impl<'a> QueryCompiler<'a> {
         json_path.push_str("$.");
         json_path.push_str(path);
         Ok(ResolvedExpression {
-            table_alias: table.alias.clone(),
+            table_alias: Some(table.alias.clone()),
             sql: format!(
                 "json_extract_string({}, '{}')",
                 table.column_sql(document_column),
@@ -596,6 +673,7 @@ fn non_aggregate_select_expression(select: &QuerySelect) -> Option<QueryExpressi
             document_column: document_column.clone(),
             path: path.clone(),
         }),
+        QuerySelect::Expression { expression, .. } => Some(expression.clone()),
         QuerySelect::Count { .. }
         | QuerySelect::Sum { .. }
         | QuerySelect::Min { .. }

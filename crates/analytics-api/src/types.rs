@@ -753,7 +753,22 @@ pub(crate) struct TenantQueryBatchRequest {
 #[schema(example = json!({
     "rows": [{"email": "ada@example.com", "org_id": "org-a"}],
     "columns": [{"name": "email", "value_type": "string", "nullable": false}],
-    "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
+    "execution": {
+        "query_hash": "sha256:example",
+        "row_count": 1,
+        "truncated": false,
+        "tables": ["users"],
+        "elapsed_ms": 7,
+        "plan_shape": {
+            "logical_source_count": 1,
+            "join_count": 0,
+            "filter_count": 1,
+            "group_expression_count": 0,
+            "order_expression_count": 0,
+            "aggregate_count": 0,
+            "conditional_expression_count": 0
+        }
+    },
     "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
 pub struct QueryResponse {
@@ -771,7 +786,22 @@ pub struct QueryResponse {
     "name": "total_users",
     "rows": [{"count": 42}],
     "columns": [{"name": "count", "value_type": "i64", "nullable": false}],
-    "execution": {"query_hash": "sha256:example", "row_count": 1, "truncated": false, "tables": ["users"], "elapsed_ms": 7},
+    "execution": {
+        "query_hash": "sha256:example",
+        "row_count": 1,
+        "truncated": false,
+        "tables": ["users"],
+        "elapsed_ms": 7,
+        "plan_shape": {
+            "logical_source_count": 1,
+            "join_count": 0,
+            "filter_count": 0,
+            "group_expression_count": 0,
+            "order_expression_count": 0,
+            "aggregate_count": 1,
+            "conditional_expression_count": 0
+        }
+    },
     "source_watermark": {"max_occurred_at_ms": null, "max_ingested_at_ms": null}
 }))]
 pub struct QueryBatchResult {
@@ -814,6 +844,23 @@ pub struct QueryExecutionMetadata {
     pub truncated: bool,
     pub tables: Vec<String>,
     pub elapsed_ms: u64,
+    /// Sanitized logical shape derived from the validated structured query.
+    /// This does not claim physical row-scan counts, which are backend and
+    /// optimizer dependent.
+    pub plan_shape: QueryPlanShape,
+}
+
+/// Bounded, literal-free logical query shape for performance evidence.
+#[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct QueryPlanShape {
+    pub logical_source_count: u32,
+    pub join_count: u32,
+    pub filter_count: u32,
+    pub group_expression_count: u32,
+    pub order_expression_count: u32,
+    pub aggregate_count: u32,
+    pub conditional_expression_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
