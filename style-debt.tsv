@@ -1,0 +1,6 @@
+rule	path	symbol-or--	metric	owner	reason	removal	approved-by
+FILE001	crates/analytics-api/src/router.rs	-	physical-lines=1099	aux-analytics	mixed-responsibility-risk	physical-lines<=500-at-owner-boundaries	maintainer-2026-07-15
+FILE001	crates/analytics-api/src/types.rs	-	physical-lines=1104	aux-analytics	mixed-responsibility-risk	physical-lines<=500-at-owner-boundaries	maintainer-2026-07-15
+FILE001	crates/analytics-engine/src/engine.rs	-	physical-lines=2049	aux-analytics	mixed-responsibility-risk	physical-lines<=500-at-owner-boundaries	maintainer-2026-07-15
+FILE001	crates/analytics-operations/src/check_sources.rs	-	physical-lines=1351	aux-analytics	mixed-responsibility-risk	physical-lines<=500-at-owner-boundaries	maintainer-2026-07-15
+FILE001	crates/analytics-storage/src/aux_storage_client.rs	-	physical-lines=1138	aux-analytics	mixed-responsibility-risk	physical-lines<=500-at-owner-boundaries	maintainer-2026-07-15

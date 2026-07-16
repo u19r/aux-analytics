@@ -76,6 +76,97 @@ fn given_structured_query_when_compiled_then_literals_and_identifiers_are_escape
 }
 
 #[test]
+fn given_dense_prefix_search_when_compiled_then_duckdb_applies_range_order_and_limit() {
+    let mut users = table();
+    users.projection_attribute_names = Some(vec![
+        "id".to_string(),
+        "analytics_search_name".to_string(),
+    ]);
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![
+            QuerySelect::Column {
+                table_alias: None,
+                column_name: "id".to_string(),
+                alias: None,
+            },
+            QuerySelect::Column {
+                table_alias: None,
+                column_name: "analytics_search_name".to_string(),
+                alias: None,
+            },
+        ],
+        filters: vec![
+            QueryPredicate::Gte {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "analytics_search_name".to_string(),
+                },
+                value: json!("ann"),
+            },
+            QueryPredicate::Lt {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "analytics_search_name".to_string(),
+                },
+                value: json!("ano"),
+            },
+        ],
+        group_by: Vec::new(),
+        order_by: vec![
+            QueryOrder {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "analytics_search_name".to_string(),
+                },
+                direction: Some(SortOrder::Asc),
+            },
+            QueryOrder {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "id".to_string(),
+                },
+                direction: Some(SortOrder::Asc),
+            },
+        ],
+        limit: Some(25),
+    };
+    let sql = structured_query_sql(&users, &query).unwrap();
+    assert!(sql.contains(
+        "WHERE \"analytics_search_name\" >= 'ann' AND \"analytics_search_name\" < 'ano'"
+    ));
+    assert!(sql.ends_with(
+        "ORDER BY \"analytics_search_name\" ASC, \"id\" ASC LIMIT 25"
+    ));
+
+    let connection = duckdb::Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE users (id VARCHAR, analytics_search_name VARCHAR); \
+             INSERT INTO users \
+             SELECT 'user-' || lpad(i::VARCHAR, 4, '0'), \
+                    'ann' || lpad(i::VARCHAR, 4, '0') \
+             FROM range(1500) AS rows(i); \
+             INSERT INTO users VALUES ('before', 'amy'), ('after', 'ano');",
+        )
+        .unwrap();
+    let mut statement = connection.prepare(&sql).unwrap();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(rows.len(), 25);
+    assert_eq!(rows.first().unwrap(), &("user-0000".to_string(), "ann0000".to_string()));
+    assert_eq!(rows.last().unwrap(), &("user-0024".to_string(), "ann0024".to_string()));
+}
+
+#[test]
 fn given_tenant_scoped_structured_query_when_compiled_then_tenant_filter_is_injected() {
     let sql = tenant_scoped_structured_query_sql(
         &table(),
