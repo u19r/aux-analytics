@@ -354,6 +354,7 @@ fn lambda_malformed_path_accepted() -> Result<bool> {
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: Some(1),
+            offset: None,
         },
     })));
     Ok(result.is_ok())
@@ -424,6 +425,7 @@ fn tenant_query_body() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     }
 }
 

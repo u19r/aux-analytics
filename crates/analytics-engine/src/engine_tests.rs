@@ -806,6 +806,7 @@ fn structured_queries_compile_from_registered_manifest_columns() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             },
         )
         .expect("structured query");
@@ -1024,6 +1025,7 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: None,
+                offset: None,
             },
             "tenant-a",
         )
@@ -1321,6 +1323,7 @@ fn conditional_grouping_classifies_boundary_and_late_arrival_rows_in_one_query()
                     direction: Some(SortOrder::Asc),
                 }],
                 limit: Some(2),
+                offset: None,
             },
             "tenant_01",
         )
@@ -1408,6 +1411,7 @@ fn partition_key_prefix_selector_maps_aux_storage_namespace_prefix_to_tenant_id(
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: None,
+                offset: None,
             },
             "t_2X6Z455H5ZBWSRK6D51ASR0",
         )
@@ -1449,6 +1453,7 @@ fn structured_queries_read_document_paths_from_generic_tables() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             },
         )
         .expect("structured query");
@@ -1843,6 +1848,7 @@ fn metric_sum_query(series_name: &str) -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     }
 }
 
@@ -1872,6 +1878,7 @@ fn metric_grouped_query() -> StructuredQuery {
         }],
         order_by: Vec::new(),
         limit: Some(1000),
+        offset: None,
     }
 }
 
@@ -1956,6 +1963,7 @@ fn metric_three_dimension_query() -> StructuredQuery {
             direction: Some(analytics_contract::SortOrder::Asc),
         }],
         limit: Some(1000),
+        offset: None,
     }
 }
 
@@ -1975,6 +1983,7 @@ fn metric_distinct_query() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     }
 }
 
@@ -1994,6 +2003,7 @@ fn metric_decimal_query() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     }
 }
 
@@ -2029,6 +2039,7 @@ fn metric_evidence_query() -> StructuredQuery {
             direction: Some(analytics_contract::SortOrder::Asc),
         }],
         limit: Some(100),
+        offset: None,
     }
 }
 
@@ -2112,5 +2123,6 @@ fn joined_metric_query() -> StructuredQuery {
             direction: Some(analytics_contract::SortOrder::Asc),
         }],
         limit: Some(1000),
+        offset: None,
     }
 }

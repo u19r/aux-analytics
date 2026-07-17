@@ -111,6 +111,7 @@ async fn lambda_runs_structured_queries() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }))
         .await
@@ -163,6 +164,7 @@ async fn lambda_runs_tenant_scoped_queries() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: None,
+                offset: None,
             }
         }))
         .await
@@ -192,6 +194,7 @@ async fn lambda_runs_tenant_scoped_queries() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: None,
+                offset: None,
             }
         }))
         .await
@@ -236,6 +239,7 @@ async fn lambda_tenant_query_batch_returns_named_results() {
                         group_by: Vec::new(),
                         order_by: Vec::new(),
                         limit: Some(1),
+                        offset: None,
                     },
                 },
                 {
@@ -253,6 +257,7 @@ async fn lambda_tenant_query_batch_returns_named_results() {
                         group_by: Vec::new(),
                         order_by: Vec::new(),
                         limit: Some(1),
+                        offset: None,
                     },
                 },
             ],
@@ -485,6 +490,7 @@ fn email_query(limit: Option<u32>) -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit,
+        offset: None,
     }
 }
 

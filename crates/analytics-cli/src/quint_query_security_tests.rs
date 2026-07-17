@@ -493,6 +493,7 @@ fn tenant_query_body() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     }
 }
 
@@ -511,6 +512,7 @@ fn malformed_path_query() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     }
 }
 

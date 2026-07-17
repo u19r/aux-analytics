@@ -470,6 +470,7 @@ fn malformed_document_path_rejected_by_engine() -> Result<bool> {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     };
     Ok(matches!(
         engine.query_tenant_structured_json(&manifest, &query, "tenant-a"),
@@ -494,6 +495,7 @@ fn unregistered_structured_column_rejected_by_engine() -> Result<bool> {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: Some(1),
+        offset: None,
     };
     Ok(matches!(
         engine.query_tenant_structured_json(&manifest, &query, "tenant-a"),
@@ -538,6 +540,7 @@ fn tenant_scoped_structured_query_rows(target_tenant_id: &str) -> Result<Vec<ser
                                             group_by: Vec::new(),
                                             order_by: Vec::new(),
                                             limit: None,
+                                            offset: None,
                                         }
                                     })
                         .to_string(),

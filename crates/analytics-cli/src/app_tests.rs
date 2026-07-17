@@ -1525,5 +1525,6 @@ fn email_query() -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     }
 }

@@ -8,6 +8,9 @@ use crate::{SortOrder, StructuredQueryValidationError};
 const MAX_STRUCTURED_QUERY_JOINS: usize = 2;
 const MAX_CONDITIONAL_BRANCHES: usize = 32;
 const MAX_CONDITIONAL_COMPARISONS: usize = 16;
+const MAX_DOCUMENT_PREDICATE_BRANCHES: usize = 32;
+const MAX_DOCUMENT_PREDICATE_DEPTH: usize = 32;
+const MAX_DOCUMENT_PREDICATE_NODES: usize = 256;
 const MAX_QUERY_IDENTIFIER_LEN: usize = 255;
 
 /// Structured query tree compiled to safe SQL by the analytics engine.
@@ -69,6 +72,10 @@ pub struct StructuredQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(nullable = true, default = json!(null), minimum = 1, maximum = 100_000, example = 100)]
     pub limit: Option<u32>,
+    /// Optional number of matching rows to skip before applying `limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), minimum = 0, maximum = 100_000, example = 100)]
+    pub offset: Option<u32>,
 }
 
 impl StructuredQuery {
@@ -329,6 +336,11 @@ pub enum QueryExpression {
         #[schema(min_length = 1, max_length = 1024, example = "profile.email")]
         path: String,
     },
+    /// Unicode lowercase normalization for case-insensitive ordering.
+    Lower {
+        #[schema(value_type = Object)]
+        expression: Box<QueryExpression>,
+    },
     /// Ordered CASE-style classification with literal results. Each branch
     /// combines its comparisons with AND; the first matching branch wins.
     Conditional {
@@ -366,6 +378,7 @@ impl QueryExpression {
                 validate_query_identifier("expression document_column", document_column)?;
                 validate_query_path(path)
             }
+            Self::Lower { expression } => expression.validate_shape(),
             Self::Conditional {
                 branches,
                 else_value,
@@ -486,6 +499,160 @@ fn conditional_literal_kind(
     }
 }
 
+/// String comparison supported inside a registered JSON document predicate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryStringOperator {
+    Eq,
+    NotEq,
+    Contains,
+    StartsWith,
+    EndsWith,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+/// Bounded predicate evaluated relative to a registered JSON document or one
+/// element selected by `ArrayAny`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum QueryDocumentPredicate {
+    Constant {
+        value: bool,
+    },
+    Exists {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    NonEmpty {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    Compare {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        operator: QueryComparisonOperator,
+        #[schema(value_type = serde_json::Value, example = true)]
+        value: serde_json::Value,
+    },
+    String {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        operator: QueryStringOperator,
+        value: String,
+        #[serde(default)]
+        case_sensitive: bool,
+    },
+    TimestampString {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        operator: QueryStringOperator,
+        value: String,
+    },
+    AffixedString {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        operator: QueryStringOperator,
+        value: String,
+        prefix: String,
+        suffix: String,
+        #[serde(default)]
+        case_sensitive: bool,
+    },
+    All {
+        #[schemars(length(min = 1, max = 32))]
+        #[schema(min_items = 1, max_items = 32)]
+        #[schema(value_type = Vec<Object>)]
+        predicates: Vec<QueryDocumentPredicate>,
+    },
+    Any {
+        #[schemars(length(min = 1, max = 32))]
+        #[schema(min_items = 1, max_items = 32)]
+        #[schema(value_type = Vec<Object>)]
+        predicates: Vec<QueryDocumentPredicate>,
+    },
+    Not {
+        #[schema(value_type = Object)]
+        predicate: Box<QueryDocumentPredicate>,
+    },
+    ArrayAny {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[schema(value_type = Object)]
+        predicate: Box<QueryDocumentPredicate>,
+    },
+}
+
+impl QueryDocumentPredicate {
+    fn validate_shape(
+        &self,
+        depth: usize,
+        nodes: &mut usize,
+    ) -> Result<(), StructuredQueryValidationError> {
+        if depth >= MAX_DOCUMENT_PREDICATE_DEPTH {
+            return Err(StructuredQueryValidationError::DocumentPredicateTooDeep {
+                maximum: MAX_DOCUMENT_PREDICATE_DEPTH,
+            });
+        }
+        *nodes = nodes.saturating_add(1);
+        if *nodes > MAX_DOCUMENT_PREDICATE_NODES {
+            return Err(
+                StructuredQueryValidationError::TooManyDocumentPredicateNodes {
+                    actual: *nodes,
+                    maximum: MAX_DOCUMENT_PREDICATE_NODES,
+                },
+            );
+        }
+        match self {
+            Self::Constant { .. } => Ok(()),
+            Self::Exists { path }
+            | Self::NonEmpty { path }
+            | Self::Compare { path, .. }
+            | Self::String { path, .. }
+            | Self::TimestampString { path, .. }
+            | Self::AffixedString { path, .. } => validate_optional_document_path(path.as_deref()),
+            Self::All { predicates } | Self::Any { predicates } => {
+                validate_document_predicate_branches(predicates)?;
+                for predicate in predicates {
+                    predicate.validate_shape(depth + 1, nodes)?;
+                }
+                Ok(())
+            }
+            Self::Not { predicate } | Self::ArrayAny { predicate, .. } => {
+                if let Self::ArrayAny { path, .. } = self {
+                    validate_optional_document_path(path.as_deref())?;
+                }
+                predicate.validate_shape(depth + 1, nodes)
+            }
+        }
+    }
+}
+
+fn validate_document_predicate_branches(
+    predicates: &[QueryDocumentPredicate],
+) -> Result<(), StructuredQueryValidationError> {
+    if predicates.is_empty() {
+        return Err(StructuredQueryValidationError::EmptyDocumentPredicate);
+    }
+    if predicates.len() > MAX_DOCUMENT_PREDICATE_BRANCHES {
+        return Err(
+            StructuredQueryValidationError::TooManyDocumentPredicateBranches {
+                actual: predicates.len(),
+                maximum: MAX_DOCUMENT_PREDICATE_BRANCHES,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_optional_document_path(
+    path: Option<&str>,
+) -> Result<(), StructuredQueryValidationError> {
+    path.map_or(Ok(()), validate_query_path)
+}
+
 /// Structured predicate used in WHERE clauses.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -548,6 +715,14 @@ pub enum QueryPredicate {
         /// Expression to test.
         expression: QueryExpression,
     },
+    /// Predicate over one registered JSON document column.
+    DocumentMatches {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        table_alias: Option<String>,
+        document_column: String,
+        #[schema(no_recursion)]
+        predicate: QueryDocumentPredicate,
+    },
 }
 
 impl QueryPredicate {
@@ -561,6 +736,19 @@ impl QueryPredicate {
             | Self::Lte { expression, .. }
             | Self::IsNull { expression }
             | Self::IsNotNull { expression } => expression.validate_shape(),
+            Self::DocumentMatches {
+                table_alias,
+                document_column,
+                predicate,
+            } => {
+                validate_optional_query_identifier(
+                    "document predicate table_alias",
+                    table_alias.as_deref(),
+                )?;
+                validate_query_identifier("document predicate document_column", document_column)?;
+                let mut nodes = 0;
+                predicate.validate_shape(0, &mut nodes)
+            }
         }
     }
 }

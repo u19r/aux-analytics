@@ -70,6 +70,7 @@ async fn backend_aware_duckdb_file_serves_concurrent_reads_from_writer_data() {
                             group_by: Vec::new(),
                             order_by: Vec::new(),
                             limit: Some(1),
+                            offset: None,
                         },
                         "tenant_01",
                     )

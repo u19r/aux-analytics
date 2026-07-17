@@ -976,6 +976,7 @@ fn seeded_structured_query_engine() -> (AnalyticsEngine, AnalyticsManifest, Stru
             direction: None,
         }],
         limit: Some(500),
+        offset: None,
     };
     (engine, manifest, query)
 }
@@ -1157,5 +1158,6 @@ fn structured_query(count: usize) -> StructuredQuery {
             direction: None,
         }],
         limit: Some(100),
+        offset: None,
     }
 }

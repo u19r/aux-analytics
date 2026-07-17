@@ -36,6 +36,7 @@ pub fn build() -> utoipa::openapi::OpenApi {
             analytics_contract::QueryColumnComparison,
             analytics_contract::QueryComparisonOperator,
             analytics_contract::QueryConditionalBranch,
+            analytics_contract::QueryDocumentPredicate,
             analytics_contract::QueryExpression,
             analytics_contract::QueryOrder,
             analytics_contract::QueryPredicate,

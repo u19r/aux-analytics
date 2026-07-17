@@ -1,8 +1,8 @@
 use analytics_contract::{
     AnalyticsManifest, JoinPolicy, QueryColumnComparison, QueryComparisonOperator,
-    QueryConditionalBranch, QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate,
-    QueryOrder, QueryPredicate, QuerySelect, RowIdentity, SortOrder, StructuredQuery,
-    TableRegistration, TableScope, TenantSelector,
+    QueryConditionalBranch, QueryDocumentPredicate, QueryExpression, QueryJoin, QueryJoinKind,
+    QueryJoinPredicate, QueryOrder, QueryPredicate, QuerySelect, QueryStringOperator, RowIdentity,
+    SortOrder, StructuredQuery, TableRegistration, TableScope, TenantSelector,
 };
 use serde_json::json;
 
@@ -64,6 +64,7 @@ fn given_structured_query_when_compiled_then_literals_and_identifiers_are_escape
                 direction: Some(SortOrder::Desc),
             }],
             limit: Some(10),
+            offset: None,
         },
     )
     .unwrap();
@@ -130,6 +131,7 @@ fn given_dense_prefix_search_when_compiled_then_duckdb_applies_range_order_and_l
             },
         ],
         limit: Some(25),
+        offset: None,
     };
     let sql = structured_query_sql(&users, &query).unwrap();
     assert!(sql.contains(
@@ -194,6 +196,7 @@ fn given_tenant_scoped_structured_query_when_compiled_then_tenant_filter_is_inje
                 direction: Some(SortOrder::Asc),
             }],
             limit: Some(10),
+            offset: None,
         },
         "tenant_01",
     )
@@ -223,6 +226,7 @@ fn given_empty_target_tenant_when_tenant_scoped_query_is_compiled_then_query_is_
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
         "",
     )
@@ -255,6 +259,7 @@ fn given_document_path_query_when_compiled_then_only_registered_document_column_
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     )
     .unwrap();
@@ -264,6 +269,145 @@ fn given_document_path_query_when_compiled_then_only_registered_document_column_
         "SELECT json_extract_string(\"item\", '$.profile.email') AS \"email\" FROM \"users\" \
          WHERE json_extract_string(\"item\", '$.profile.email') IS NOT NULL"
     );
+}
+
+#[test]
+fn given_nested_document_filter_when_executed_then_array_members_and_offset_are_applied() {
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::DocumentPath {
+            table_alias: None,
+            document_column: "item".to_string(),
+            path: "user_name".to_string(),
+            alias: "user_name".to_string(),
+        }],
+        filters: vec![QueryPredicate::DocumentMatches {
+            table_alias: None,
+            document_column: "item".to_string(),
+            predicate: QueryDocumentPredicate::All {
+                predicates: vec![
+                    QueryDocumentPredicate::ArrayAny {
+                        path: Some("emails".to_string()),
+                        predicate: Box::new(QueryDocumentPredicate::All {
+                            predicates: vec![
+                                QueryDocumentPredicate::String {
+                                    path: Some("type".to_string()),
+                                    operator: QueryStringOperator::Eq,
+                                    value: "WORK".to_string(),
+                                    case_sensitive: false,
+                                },
+                                QueryDocumentPredicate::String {
+                                    path: Some("value".to_string()),
+                                    operator: QueryStringOperator::EndsWith,
+                                    value: "@company.com".to_string(),
+                                    case_sensitive: false,
+                                },
+                            ],
+                        }),
+                    },
+                    QueryDocumentPredicate::TimestampString {
+                        path: Some("created_at".to_string()),
+                        operator: QueryStringOperator::StartsWith,
+                        value: "2025-02-01T00:00:00".to_string(),
+                    },
+                    QueryDocumentPredicate::AffixedString {
+                        path: Some("_v".to_string()),
+                        operator: QueryStringOperator::StartsWith,
+                        value: "W/\"1".to_string(),
+                        prefix: "W/\"".to_string(),
+                        suffix: "\"".to_string(),
+                        case_sensitive: false,
+                    },
+                ],
+            },
+        }],
+        group_by: Vec::new(),
+        order_by: vec![QueryOrder {
+            expression: QueryExpression::Lower {
+                expression: Box::new(QueryExpression::DocumentPath {
+                    table_alias: None,
+                    document_column: "item".to_string(),
+                    path: "user_name".to_string(),
+                }),
+            },
+            direction: Some(SortOrder::Asc),
+        }],
+        limit: Some(1),
+        offset: Some(1),
+    };
+    query.validate_shape().expect("nested query is bounded");
+    let sql = structured_query_sql(&table(), &query).expect("nested query compiles");
+    assert!(sql.contains("EXISTS (SELECT 1 FROM json_each("));
+    assert!(sql.ends_with("LIMIT 1 OFFSET 1"));
+
+    let connection = duckdb::Connection::open_in_memory().expect("open DuckDB");
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE users (item JSON, email VARCHAR, org_id VARCHAR);
+            INSERT INTO users VALUES
+              ('{"user_name":"Ada","_v":1,"created_at":1738368000000,"emails":[{"type":"work","value":"ada@company.com"}]}', NULL, NULL),
+              ('{"user_name":"bob","_v":12,"created_at":1738368000123,"emails":[{"type":"WORK","value":"bob@company.com"}]}', NULL, NULL),
+              ('{"user_name":"Cara","_v":2,"created_at":1738454400000,"emails":[{"type":"home","value":"cara@company.com"}]}', NULL, NULL);
+            "#,
+        )
+        .expect("seed users");
+    let selected = connection
+        .query_row(&sql, [], |row| row.get::<_, String>(0))
+        .expect("execute nested query");
+    assert_eq!(selected, "bob");
+}
+
+#[test]
+fn given_group_member_document_filter_when_executed_then_only_matching_groups_are_returned() {
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::DocumentPath {
+            table_alias: None,
+            document_column: "item".to_string(),
+            path: "id".to_string(),
+            alias: "id".to_string(),
+        }],
+        filters: vec![QueryPredicate::DocumentMatches {
+            table_alias: None,
+            document_column: "item".to_string(),
+            predicate: QueryDocumentPredicate::ArrayAny {
+                path: Some("members".to_string()),
+                predicate: Box::new(QueryDocumentPredicate::String {
+                    path: Some("user_id".to_string()),
+                    operator: QueryStringOperator::Eq,
+                    value: "u_target's".to_string(),
+                    case_sensitive: false,
+                }),
+            },
+        }],
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(10),
+        offset: None,
+    };
+    let sql = structured_query_sql(&table(), &query).expect("member query compiles");
+    assert!(sql.contains("u_target''s"));
+
+    let connection = duckdb::Connection::open_in_memory().expect("open DuckDB");
+    connection
+        .execute_batch(
+            r#"
+            CREATE TABLE users (item JSON, email VARCHAR, org_id VARCHAR);
+            INSERT INTO users VALUES
+              ('{"id":"g_match","members":[{"user_id":"u_target''s"}]}', NULL, NULL),
+              ('{"id":"g_other","members":[{"user_id":"u_other"}]}', NULL, NULL);
+            "#,
+        )
+        .expect("seed groups");
+    let selected = connection
+        .query_row(&sql, [], |row| row.get::<_, String>(0))
+        .expect("execute member query");
+    assert_eq!(selected, "g_match");
 }
 
 #[test]
@@ -283,6 +427,7 @@ fn given_unregistered_column_when_query_is_compiled_then_query_is_rejected() {
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     )
     .unwrap_err();
@@ -320,6 +465,7 @@ fn given_conditional_grouping_when_compiled_then_registered_columns_and_literals
             group_by: vec![expression],
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     )
     .expect("conditional query compiles");
@@ -363,6 +509,7 @@ fn given_conditional_with_unregistered_column_when_compiled_then_query_is_reject
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     )
     .expect_err("unregistered conditional column should fail");
@@ -568,5 +715,6 @@ fn joined_query() -> StructuredQuery {
         }],
         order_by: Vec::new(),
         limit: Some(1000),
+        offset: None,
     }
 }

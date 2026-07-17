@@ -1,9 +1,9 @@
 use serde_json::json;
 
 use crate::{
-    QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch, QueryExpression,
-    QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryOrder, QueryPredicate, QuerySelect,
-    SortOrder, StructuredQuery, StructuredQueryValidationError,
+    QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch, QueryDocumentPredicate,
+    QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryOrder, QueryPredicate,
+    QuerySelect, QueryStringOperator, SortOrder, StructuredQuery, StructuredQueryValidationError,
 };
 
 #[test]
@@ -209,6 +209,7 @@ fn given_conditional_classification_when_serialized_then_contract_is_explicit_an
         group_by: vec![expression],
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     };
 
     query.validate_shape().expect("conditional query is valid");
@@ -325,6 +326,51 @@ fn given_invalid_conditional_shapes_when_validating_then_they_are_rejected() {
 }
 
 #[test]
+fn given_document_predicate_when_serialized_then_nested_contract_and_offset_are_explicit() {
+    let query = document_query(QueryDocumentPredicate::ArrayAny {
+        path: Some("emails".to_string()),
+        predicate: Box::new(QueryDocumentPredicate::String {
+            path: Some("value".to_string()),
+            operator: QueryStringOperator::Contains,
+            value: "@example.com".to_string(),
+            case_sensitive: false,
+        }),
+    });
+
+    query.validate_shape().expect("document query is valid");
+    let encoded = serde_json::to_value(query).expect("document query serializes");
+    assert_eq!(encoded["filters"][0]["kind"], "document_matches");
+    assert_eq!(encoded["filters"][0]["predicate"]["kind"], "array_any");
+    assert_eq!(
+        encoded["filters"][0]["predicate"]["predicate"]["operator"],
+        "contains"
+    );
+    assert_eq!(encoded["offset"], 5);
+}
+
+#[test]
+fn given_unbounded_document_predicates_when_validating_then_they_are_rejected() {
+    let empty = document_query(QueryDocumentPredicate::All {
+        predicates: Vec::new(),
+    });
+    assert_eq!(
+        empty.validate_shape(),
+        Err(StructuredQueryValidationError::EmptyDocumentPredicate)
+    );
+
+    let mut nested = QueryDocumentPredicate::Constant { value: true };
+    for _ in 0..32 {
+        nested = QueryDocumentPredicate::Not {
+            predicate: Box::new(nested),
+        };
+    }
+    assert_eq!(
+        document_query(nested).validate_shape(),
+        Err(StructuredQueryValidationError::DocumentPredicateTooDeep { maximum: 32 })
+    );
+}
+
+#[test]
 fn given_structured_query_schema_when_generated_then_conditional_bounds_are_described() {
     let schema = serde_json::to_value(schemars::schema_for!(StructuredQuery))
         .expect("structured query schema serializes");
@@ -351,6 +397,29 @@ fn expression_query(expression: QueryExpression) -> StructuredQuery {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
+    }
+}
+
+fn document_query(predicate: QueryDocumentPredicate) -> StructuredQuery {
+    StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::Column {
+            table_alias: None,
+            column_name: "item".to_string(),
+            alias: None,
+        }],
+        filters: vec![QueryPredicate::DocumentMatches {
+            table_alias: None,
+            document_column: "item".to_string(),
+            predicate,
+        }],
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(10),
+        offset: Some(5),
     }
 }
 
@@ -433,5 +502,6 @@ fn joined_query() -> StructuredQuery {
             direction: Some(SortOrder::Asc),
         }],
         limit: Some(1000),
+        offset: None,
     }
 }

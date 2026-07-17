@@ -630,6 +630,7 @@ fn structured_query_serializes_to_stable_contract() {
             direction: Some(SortOrder::Asc),
         }],
         limit: Some(10),
+        offset: None,
     };
 
     query.validate_shape().expect("valid query");
@@ -650,6 +651,7 @@ fn structured_query_rejects_empty_select() {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     };
 
     assert!(matches!(

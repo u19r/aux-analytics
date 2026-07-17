@@ -65,9 +65,11 @@ impl std::error::Error for ManifestValidationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StructuredQueryValidationError {
+    DocumentPredicateTooDeep { maximum: usize },
     DuplicateAlias(String),
     EmptyConditionalBranch,
     EmptyConditionalExpression,
+    EmptyDocumentPredicate,
     EmptyField(&'static str),
     EmptySelect,
     IncompatibleConditionalLiteral,
@@ -76,6 +78,8 @@ pub enum StructuredQueryValidationError {
     MissingJoinPredicate(String),
     TooManyConditionalBranches { actual: usize, maximum: usize },
     TooManyConditionalComparisons { actual: usize, maximum: usize },
+    TooManyDocumentPredicateBranches { actual: usize, maximum: usize },
+    TooManyDocumentPredicateNodes { actual: usize, maximum: usize },
     TooManyJoins { actual: usize, maximum: usize },
     UnsupportedConditionalLiteral,
 }
@@ -83,6 +87,10 @@ pub enum StructuredQueryValidationError {
 impl std::fmt::Display for StructuredQueryValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DocumentPredicateTooDeep { maximum } => write!(
+                f,
+                "document predicate exceeds the maximum nesting depth of {maximum}"
+            ),
             Self::DuplicateAlias(alias) => {
                 write!(f, "query alias {alias} is declared more than once")
             }
@@ -97,6 +105,9 @@ impl std::fmt::Display for StructuredQueryValidationError {
                     f,
                     "conditional query expression must contain at least one branch"
                 )
+            }
+            Self::EmptyDocumentPredicate => {
+                write!(f, "document predicate branch must not be empty")
             }
             Self::EmptyField(field) => write!(f, "query field {field} must not be empty"),
             Self::EmptySelect => write!(f, "structured query must select at least one field"),
@@ -118,6 +129,14 @@ impl std::fmt::Display for StructuredQueryValidationError {
             Self::TooManyConditionalComparisons { actual, maximum } => write!(
                 f,
                 "conditional query branch has {actual} comparisons but supports at most {maximum}"
+            ),
+            Self::TooManyDocumentPredicateBranches { actual, maximum } => write!(
+                f,
+                "document predicate has {actual} branches but supports at most {maximum}"
+            ),
+            Self::TooManyDocumentPredicateNodes { actual, maximum } => write!(
+                f,
+                "document predicate has {actual} nodes but supports at most {maximum}"
             ),
             Self::TooManyJoins { actual, maximum } => {
                 write!(

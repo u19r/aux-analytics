@@ -202,6 +202,7 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }),
     )
@@ -229,6 +230,7 @@ async fn tenant_query_endpoint_returns_json_rows_after_ingest() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }),
     )
@@ -277,6 +279,7 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                         group_by: Vec::new(),
                         order_by: Vec::new(),
                         limit: Some(1),
+                        offset: None,
                     }
                 },
                 {
@@ -300,6 +303,7 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                         group_by: Vec::new(),
                         order_by: Vec::new(),
                         limit: Some(1),
+                        offset: None,
                     }
                 }
             ]
@@ -332,6 +336,7 @@ async fn tenant_query_batch_endpoint_returns_named_results_after_ingest() {
                     group_by: Vec::new(),
                     order_by: Vec::new(),
                     limit: Some(1),
+                    offset: None,
                 }
             }]
         }),
@@ -385,6 +390,7 @@ async fn ingest_endpoint_applies_configured_privacy_policy() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }),
     )
@@ -508,6 +514,7 @@ async fn tenant_query_endpoint_requires_target_tenant_id() {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }),
     )
@@ -747,6 +754,7 @@ async fn assert_query_email(router: Router, expected_email: &str) {
                 group_by: Vec::new(),
                 order_by: Vec::new(),
                 limit: Some(1),
+                offset: None,
             }
         }),
     )

@@ -93,7 +93,7 @@ fn plan_shape(query: &StructuredQuery) -> QueryPlanShape {
                 .select
                 .iter()
                 .filter_map(select_expression)
-                .chain(query.filters.iter().map(predicate_expression))
+                .chain(query.filters.iter().filter_map(predicate_expression))
                 .chain(query.group_by.iter())
                 .chain(query.order_by.iter().map(|order| &order.expression))
                 .filter(|expression| matches!(expression, QueryExpression::Conditional { .. }))
@@ -116,7 +116,9 @@ fn select_expression(select: &QuerySelect) -> Option<&QueryExpression> {
     }
 }
 
-fn predicate_expression(predicate: &analytics_contract::QueryPredicate) -> &QueryExpression {
+fn predicate_expression(
+    predicate: &analytics_contract::QueryPredicate,
+) -> Option<&QueryExpression> {
     match predicate {
         analytics_contract::QueryPredicate::Eq { expression, .. }
         | analytics_contract::QueryPredicate::NotEq { expression, .. }
@@ -125,7 +127,8 @@ fn predicate_expression(predicate: &analytics_contract::QueryPredicate) -> &Quer
         | analytics_contract::QueryPredicate::Lt { expression, .. }
         | analytics_contract::QueryPredicate::Lte { expression, .. }
         | analytics_contract::QueryPredicate::IsNull { expression }
-        | analytics_contract::QueryPredicate::IsNotNull { expression } => expression,
+        | analytics_contract::QueryPredicate::IsNotNull { expression } => Some(expression),
+        analytics_contract::QueryPredicate::DocumentMatches { .. } => None,
     }
 }
 
@@ -243,6 +246,7 @@ mod tests {
             group_by: vec![classification],
             order_by: Vec::new(),
             limit: Some(2),
+            offset: None,
         };
 
         let response = build_query_response(

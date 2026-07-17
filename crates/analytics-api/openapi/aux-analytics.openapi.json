@@ -1057,6 +1057,281 @@
         ],
         "type": "object"
       },
+      "QueryDocumentPredicate": {
+        "description": "Bounded predicate evaluated relative to a registered JSON document or one\nelement selected by `ArrayAny`.",
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "constant"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "exists"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "non_empty"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "compare"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/QueryComparisonOperator"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {}
+            },
+            "required": [
+              "operator",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "case_sensitive": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "string"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/QueryStringOperator"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operator",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "timestamp_string"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/QueryStringOperator"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operator",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "case_sensitive": {
+                "type": "boolean"
+              },
+              "kind": {
+                "enum": [
+                  "affixed_string"
+                ],
+                "type": "string"
+              },
+              "operator": {
+                "$ref": "#/components/schemas/QueryStringOperator"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prefix": {
+                "type": "string"
+              },
+              "suffix": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "operator",
+              "value",
+              "prefix",
+              "suffix",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "all"
+                ],
+                "type": "string"
+              },
+              "predicates": {
+                "items": {
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "predicates",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "any"
+                ],
+                "type": "string"
+              },
+              "predicates": {
+                "items": {
+                  "type": "object"
+                },
+                "maxItems": 32,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "predicates",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "not"
+                ],
+                "type": "string"
+              },
+              "predicate": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "predicate",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "array_any"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "predicate": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "predicate",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "QueryExecutionMetadata": {
         "properties": {
           "elapsed_ms": {
@@ -1169,6 +1444,25 @@
             "required": [
               "document_column",
               "path",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Unicode lowercase normalization for case-insensitive ordering.",
+            "properties": {
+              "expression": {
+                "type": "object"
+              },
+              "kind": {
+                "enum": [
+                  "lower"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "expression",
               "kind"
             ],
             "type": "object"
@@ -1524,6 +1818,35 @@
             },
             "required": [
               "expression",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Predicate over one registered JSON document column.",
+            "properties": {
+              "document_column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "document_matches"
+                ],
+                "type": "string"
+              },
+              "predicate": {
+                "$ref": "#/components/schemas/QueryDocumentPredicate"
+              },
+              "table_alias": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "document_column",
+              "predicate",
               "kind"
             ],
             "type": "object"
@@ -1925,6 +2248,21 @@
           }
         },
         "type": "object"
+      },
+      "QueryStringOperator": {
+        "description": "String comparison supported inside a registered JSON document predicate.",
+        "enum": [
+          "eq",
+          "not_eq",
+          "contains",
+          "starts_with",
+          "ends_with",
+          "gt",
+          "gte",
+          "lt",
+          "lte"
+        ],
+        "type": "string"
       },
       "ReadyResponse": {
         "description": "Readiness response.",
@@ -2836,6 +3174,18 @@
             "format": "int32",
             "maximum": 100000,
             "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "description": "Optional number of matching rows to skip before applying `limit`.",
+            "example": 100,
+            "format": "int32",
+            "maximum": 100000,
+            "minimum": 0,
             "type": [
               "integer",
               "null"

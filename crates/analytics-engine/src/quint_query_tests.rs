@@ -239,6 +239,7 @@ fn check_structured_query_compiled() -> Result<QueryResult> {
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: Some(10),
+            offset: None,
         },
     )?;
     if sql.contains("\"email\" AS \"user\"\"email\"")
@@ -270,6 +271,7 @@ fn check_document_path_compiled() -> Result<QueryResult> {
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     )?;
     if sql.contains("json_extract_string(\"item\", '$.profile.email') AS \"email\"") {
@@ -295,6 +297,7 @@ fn check_unregistered_column_rejected() -> Result<QueryResult> {
             group_by: Vec::new(),
             order_by: Vec::new(),
             limit: None,
+            offset: None,
         },
     );
     if error.is_err() {
@@ -316,6 +319,7 @@ fn check_empty_select_rejected() -> Result<QueryResult> {
         group_by: Vec::new(),
         order_by: Vec::new(),
         limit: None,
+        offset: None,
     };
     if query.validate_shape().is_err() {
         Ok(QueryResult::EmptySelectRejected)
