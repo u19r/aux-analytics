@@ -78,10 +78,8 @@ fn given_structured_query_when_compiled_then_literals_and_identifiers_are_escape
 #[test]
 fn given_dense_prefix_search_when_compiled_then_duckdb_applies_range_order_and_limit() {
     let mut users = table();
-    users.projection_attribute_names = Some(vec![
-        "id".to_string(),
-        "analytics_search_name".to_string(),
-    ]);
+    users.projection_attribute_names =
+        Some(vec!["id".to_string(), "analytics_search_name".to_string()]);
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
         table_alias: None,
@@ -137,19 +135,14 @@ fn given_dense_prefix_search_when_compiled_then_duckdb_applies_range_order_and_l
     assert!(sql.contains(
         "WHERE \"analytics_search_name\" >= 'ann' AND \"analytics_search_name\" < 'ano'"
     ));
-    assert!(sql.ends_with(
-        "ORDER BY \"analytics_search_name\" ASC, \"id\" ASC LIMIT 25"
-    ));
+    assert!(sql.ends_with("ORDER BY \"analytics_search_name\" ASC, \"id\" ASC LIMIT 25"));
 
     let connection = duckdb::Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
-            "CREATE TABLE users (id VARCHAR, analytics_search_name VARCHAR); \
-             INSERT INTO users \
-             SELECT 'user-' || lpad(i::VARCHAR, 4, '0'), \
-                    'ann' || lpad(i::VARCHAR, 4, '0') \
-             FROM range(1500) AS rows(i); \
-             INSERT INTO users VALUES ('before', 'amy'), ('after', 'ano');",
+            "CREATE TABLE users (id VARCHAR, analytics_search_name VARCHAR); INSERT INTO users \
+             SELECT 'user-' || lpad(i::VARCHAR, 4, '0'), 'ann' || lpad(i::VARCHAR, 4, '0') FROM \
+             range(1500) AS rows(i); INSERT INTO users VALUES ('before', 'amy'), ('after', 'ano');",
         )
         .unwrap();
     let mut statement = connection.prepare(&sql).unwrap();
@@ -162,8 +155,14 @@ fn given_dense_prefix_search_when_compiled_then_duckdb_applies_range_order_and_l
         .unwrap();
 
     assert_eq!(rows.len(), 25);
-    assert_eq!(rows.first().unwrap(), &("user-0000".to_string(), "ann0000".to_string()));
-    assert_eq!(rows.last().unwrap(), &("user-0024".to_string(), "ann0024".to_string()));
+    assert_eq!(
+        rows.first().unwrap(),
+        &("user-0000".to_string(), "ann0000".to_string())
+    );
+    assert_eq!(
+        rows.last().unwrap(),
+        &("user-0024".to_string(), "ann0024".to_string())
+    );
 }
 
 #[test]
