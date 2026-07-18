@@ -46,6 +46,26 @@ fn manifest_serializes_to_stable_snake_case_contract() {
 }
 
 #[test]
+fn given_no_document_column_when_manifest_round_trips_then_explicit_null_is_preserved() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "tenant_01",
+            "analytics_table_name": "metric_points_v1",
+            "document_column": null
+        }]
+    }))
+    .expect("manifest with explicit null document column");
+
+    let encoded = serde_json::to_value(&manifest).expect("encode manifest");
+    let decoded: AnalyticsManifest =
+        serde_json::from_value(encoded.clone()).expect("decode manifest");
+
+    assert!(encoded["tables"][0]["document_column"].is_null());
+    assert_eq!(decoded.tables[0].document_column, None);
+}
+
+#[test]
 fn manifest_deserializes_table_without_retention() {
     let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
         "version": MANIFEST_VERSION,

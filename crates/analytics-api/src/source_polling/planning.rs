@@ -224,6 +224,9 @@ pub(crate) fn registered_rows_to_source_table_plans(
         let Some(registration) = registered_analytics_tables.get(analytics_table_name) else {
             continue;
         };
+        if registration.document_column.is_none() {
+            continue;
+        }
         if source_table_name.trim().is_empty()
             || analytics_table_name == REGISTERED_TABLES_TABLE_NAME
         {

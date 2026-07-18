@@ -523,6 +523,26 @@ fn given_registered_table_rows_when_source_plans_are_built_then_concrete_tenant_
 }
 
 #[test]
+fn given_direct_ingestion_registration_when_source_plans_are_built_then_it_is_not_polled() {
+    let mut direct = prefixed_table_registration("n", "n", "metric_points_v1");
+    direct.document_column = None;
+    let manifest = AnalyticsManifest::new(vec![
+        table_registration("nsystem", "analytics_registered_tables"),
+        direct,
+    ]);
+    let rows = vec![serde_json::json!({
+        "tenant_id": "t_tenantabc",
+        "db_table_name": "ntenantabc",
+        "analytics_table_name": "metric_points_v1",
+        "status": "Ready"
+    })];
+
+    let plans = registered_rows_to_source_table_plans(&manifest, &rows);
+
+    assert!(plans.is_empty());
+}
+
+#[test]
 fn given_multiple_tenant_source_rows_when_source_plans_are_built_then_logical_table_is_shared() {
     let manifest = AnalyticsManifest::new(vec![
         table_registration("nsystem", "analytics_registered_tables"),

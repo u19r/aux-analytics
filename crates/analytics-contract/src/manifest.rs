@@ -138,13 +138,11 @@ pub struct TableRegistration {
     #[serde(default)]
     #[schema(default = json!({"kind": "record_key"}), example = json!({"kind": "attribute", "attribute_name": "id"}))]
     pub row_identity: RowIdentity,
-    /// JSON document column containing the full source item. Set null to omit
-    /// the full document. Must not use the built-in output column names
-    /// `tenant_id`, `table_name`, or `__id`.
-    #[serde(
-        default = "default_document_column",
-        skip_serializing_if = "Option::is_none"
-    )]
+    /// JSON document column containing the full source item. Set null for a
+    /// direct-ingestion table that source polling must not consume. Must not
+    /// use the built-in output column names `tenant_id`, `table_name`, or
+    /// `__id`.
+    #[serde(default = "default_document_column")]
     #[schema(
         nullable = true,
         default = "item",
