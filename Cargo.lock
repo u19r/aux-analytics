@@ -46,7 +46,7 @@ dependencies = [
 [[package]]
 name = "alloc-counter"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-common?rev=2d7b4e57522f75ffaabc458bed889f8b46b73b6a#2d7b4e57522f75ffaabc458bed889f8b46b73b6a"
+source = "git+https://github.com/u19r/aux-common?rev=8191f1e95744d89a8aaaaa69df32eede0bdcfba7#8191f1e95744d89a8aaaaa69df32eede0bdcfba7"
 dependencies = [
  "alloc-counter-macros",
  "serde",
@@ -56,7 +56,7 @@ dependencies = [
 [[package]]
 name = "alloc-counter-macros"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-common?rev=2d7b4e57522f75ffaabc458bed889f8b46b73b6a#2d7b4e57522f75ffaabc458bed889f8b46b73b6a"
+source = "git+https://github.com/u19r/aux-common?rev=8191f1e95744d89a8aaaaa69df32eede0bdcfba7#8191f1e95744d89a8aaaaa69df32eede0bdcfba7"
 dependencies = [
  "quote",
  "syn 2.0.118",
@@ -72,6 +72,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "analytics-api"
 version = "0.1.0"
 dependencies = [
+ "alloc-counter",
  "analytics-config",
  "analytics-contract",
  "analytics-engine",

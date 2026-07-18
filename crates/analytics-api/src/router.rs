@@ -3,7 +3,10 @@ use std::{fmt, sync::Arc, time::Instant};
 use analytics_contract::{
     AnalyticsManifest, TableRegistration, TenantRangePurgeRequest, TenantRangePurgeResponse,
 };
-use analytics_engine::{AnalyticsEngineError, IngestOutcome, StreamRecordBatchItem};
+use analytics_engine::{
+    AnalyticsEngineError, IngestOutcome, StreamRecordBatchItem, prepare_tenant_structured_query,
+    prepare_unscoped_structured_query,
+};
 use analytics_operations::{OperationId, OperationStatus, OperationStore};
 use axum::{
     Json, Router,
@@ -13,15 +16,13 @@ use axum::{
     routing::{get, post},
 };
 use metrics_exporter_prometheus::PrometheusHandle;
-use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
 use crate::{
     AnalyticsEngineAccess, AnalyticsEngineAccessError, QueryResponseBuildError,
     build_query_batch_result, build_query_response,
-    request_validation::openapi_request_validator,
+    request_validation::{RequestValidators, ValidatedJson},
     types::{
         AppState, DiagnosticsResponse, ErrorResponse, HealthResponse, IngestBatchResponse,
         IngestResponse, IngestStreamRecordBatchRequest, IngestStreamRecordRequest,
@@ -116,7 +117,7 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
             );
     }
     router
-        .layer(axum::middleware::from_fn(openapi_request_validator))
+        .layer(axum::Extension(RequestValidators::compile()))
         .with_state(app_state)
 }
 
@@ -380,7 +381,7 @@ pub(crate) async fn cancel_operation(
 )]
 pub(crate) async fn manifest(State(app_state): State<Arc<AppState>>) -> Json<Value> {
     let manifest = app_state.manifest.read().await.clone();
-    Json(serde_json::to_value(manifest).unwrap_or_else(|_| json!({})))
+    Json(serde_json::to_value(manifest.as_ref()).unwrap_or_else(|_| json!({})))
 }
 
 #[utoipa::path(
@@ -395,13 +396,9 @@ pub(crate) async fn manifest(State(app_state): State<Arc<AppState>>) -> Json<Val
 )]
 pub(crate) async fn register_table(
     State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(table): ValidatedJson<TableRegistration>,
 ) -> Response {
-    let table = match validate_json::<TableRegistration>(payload) {
-        Ok(table) => table,
-        Err(err) => return err.into_response(),
-    };
-    let mut candidate_manifest = app_state.manifest.read().await.clone();
+    let mut candidate_manifest = app_state.manifest.read().await.as_ref().clone();
     upsert_manifest_table(&mut candidate_manifest, table.clone());
     if let Err(err) = candidate_manifest.validate() {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
@@ -413,7 +410,7 @@ pub(crate) async fn register_table(
     {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
     }
-    *app_state.manifest.write().await = candidate_manifest;
+    *app_state.manifest.write().await = Arc::new(candidate_manifest);
     Json(table).into_response()
 }
 
@@ -440,16 +437,9 @@ fn upsert_manifest_table(manifest: &mut AnalyticsManifest, table: TableRegistrat
 )]
 pub(crate) async fn unscoped_sql_query(
     State(_app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<UnscopedSqlQueryRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<UnscopedSqlQueryRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_query_metrics("raw", "validation_error", started);
-            return err.into_response();
-        }
-    };
     let _sql_len = request.sql.len();
     record_query_metrics("raw", "rejected", started);
     error_response(
@@ -471,25 +461,22 @@ pub(crate) async fn unscoped_sql_query(
 )]
 pub(crate) async fn unscoped_structured_query(
     State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<UnscopedStructuredQueryRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<UnscopedStructuredQueryRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_query_metrics("unscoped_structured", "validation_error", started);
-            return err.into_response();
-        }
-    };
     let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
-        .with_read(|engine| engine.query_unscoped_structured_json(&manifest, &request.query))
+        .with_read(|engine| {
+            let prepared = prepare_unscoped_structured_query(&manifest, &request.query)?;
+            let rows = engine.query_prepared_structured_json(&prepared)?;
+            Ok::<_, AnalyticsEngineError>((rows, prepared))
+        })
         .await
     {
-        Ok(Ok(rows)) => {
+        Ok(Ok((rows, prepared))) => {
             record_query_metrics("unscoped_structured", "success", started);
-            match build_query_response(rows, &request.query, started) {
+            match build_query_response(rows, prepared.metadata(), started) {
                 Ok(response) => Json(response).into_response(),
                 Err(err) => error_response(StatusCode::BAD_REQUEST, &err.to_string()),
             }
@@ -517,31 +504,26 @@ pub(crate) async fn unscoped_structured_query(
 )]
 pub(crate) async fn tenant_query(
     State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<TenantQueryRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<TenantQueryRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_query_metrics("tenant_structured", "validation_error", started);
-            return err.into_response();
-        }
-    };
     let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
         .with_read(|engine| {
-            engine.query_tenant_structured_json(
+            let prepared = prepare_tenant_structured_query(
                 &manifest,
                 &request.query,
                 request.target_tenant_id.as_str(),
-            )
+            )?;
+            let rows = engine.query_prepared_structured_json(&prepared)?;
+            Ok::<_, AnalyticsEngineError>((rows, prepared))
         })
         .await
     {
-        Ok(Ok(rows)) => {
+        Ok(Ok((rows, prepared))) => {
             record_query_metrics("tenant_structured", "success", started);
-            match build_query_response(rows, &request.query, started) {
+            match build_query_response(rows, prepared.metadata(), started) {
                 Ok(response) => Json(response).into_response(),
                 Err(err) => error_response(StatusCode::BAD_REQUEST, &err.to_string()),
             }
@@ -569,16 +551,9 @@ pub(crate) async fn tenant_query(
 )]
 pub(crate) async fn tenant_query_batch(
     State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<TenantQueryBatchRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<TenantQueryBatchRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_query_metrics("tenant_structured_batch", "validation_error", started);
-            return err.into_response();
-        }
-    };
     if request.queries.is_empty() {
         record_query_metrics("tenant_structured_batch", "validation_error", started);
         return error_response(
@@ -587,7 +562,7 @@ pub(crate) async fn tenant_query_batch(
         );
     }
 
-    let manifest = Arc::new(app_state.manifest.read().await.clone());
+    let manifest = app_state.manifest.read().await.clone();
     match execute_tenant_query_batch(
         app_state.engine.clone(),
         manifest,
@@ -621,16 +596,9 @@ pub(crate) async fn tenant_query_batch(
 pub(crate) async fn ingest_stream_record(
     State(app_state): State<Arc<AppState>>,
     Path(analytics_table_name): Path<String>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<IngestStreamRecordRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<IngestStreamRecordRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_ingest_metrics("validation_error", started);
-            return err.into_response();
-        }
-    };
     let (record_key, record) = request.into_contract_record();
     let manifest = app_state.manifest.read().await.clone();
     let retention = if let Some(runtime) = app_state.retention.as_ref() {
@@ -712,16 +680,9 @@ pub(crate) async fn ingest_stream_record(
 pub(crate) async fn ingest_stream_record_batch(
     State(app_state): State<Arc<AppState>>,
     Path(analytics_table_name): Path<String>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<IngestStreamRecordBatchRequest>,
 ) -> Response {
     let started = Instant::now();
-    let request = match validate_json::<IngestStreamRecordBatchRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => {
-            record_ingest_metrics("validation_error", started);
-            return err.into_response();
-        }
-    };
     if request.records.is_empty() {
         record_ingest_metrics("validation_error", started);
         return error_response(
@@ -790,12 +751,8 @@ pub(crate) async fn ingest_stream_record_batch(
 )]
 pub(crate) async fn tenant_range_purge(
     State(app_state): State<Arc<AppState>>,
-    Json(payload): Json<Value>,
+    ValidatedJson(request): ValidatedJson<TenantRangePurgeRequest>,
 ) -> Response {
-    let request = match validate_json::<TenantRangePurgeRequest>(payload) {
-        Ok(request) => request,
-        Err(err) => return err.into_response(),
-    };
     match app_state
         .engine
         .with_write(|engine| engine.purge_tenant_range(&request))
@@ -819,16 +776,18 @@ async fn execute_tenant_query_batch(
         let target_tenant_id = target_tenant_id.clone();
         tasks.spawn(async move {
             let started = Instant::now();
-            let rows = engine
+            let (rows, prepared) = engine
                 .with_read(|engine| {
-                    engine.query_tenant_structured_json(
+                    let prepared = prepare_tenant_structured_query(
                         manifest.as_ref(),
                         &item.query,
                         target_tenant_id.as_str(),
-                    )
+                    )?;
+                    let rows = engine.query_prepared_structured_json(&prepared)?;
+                    Ok::<_, AnalyticsEngineError>((rows, prepared))
                 })
                 .await??;
-            let response = build_query_batch_result(item.name, rows, &item.query, started)?;
+            let response = build_query_batch_result(item.name, rows, prepared.metadata(), started)?;
             Ok::<_, TenantQueryBatchExecutionError>((index, response))
         });
     }
@@ -1035,54 +994,6 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         }),
     )
         .into_response()
-}
-
-#[derive(Debug)]
-struct RequestValidationError {
-    status: StatusCode,
-    message: String,
-}
-
-impl RequestValidationError {
-    fn internal(message: String) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message,
-        }
-    }
-
-    fn bad_request(message: String) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message,
-        }
-    }
-
-    fn into_response(self) -> Response {
-        error_response(self.status, self.message.as_str())
-    }
-}
-
-fn validate_json<T>(payload: Value) -> Result<T, RequestValidationError>
-where T: DeserializeOwned + JsonSchema {
-    let schema = schemars::schema_for!(T);
-    let schema_value = serde_json::to_value(schema)
-        .map_err(|err| RequestValidationError::internal(err.to_string()))?;
-    let validator = jsonschema::validator_for(&schema_value)
-        .map_err(|err| RequestValidationError::internal(err.to_string()))?;
-    let errors = validator
-        .iter_errors(&payload)
-        .map(|error| error.to_string())
-        .collect::<Vec<_>>();
-    if !errors.is_empty() {
-        return Err(RequestValidationError::bad_request(format!(
-            "request body failed schema validation: {}",
-            errors.join("; ")
-        )));
-    }
-
-    serde_json::from_value(payload)
-        .map_err(|err| RequestValidationError::bad_request(err.to_string()))
 }
 
 fn ingest_outcome_name(outcome: IngestOutcome) -> &'static str {

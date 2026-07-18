@@ -39,7 +39,7 @@ use crate::{
     cache::EngineCaches,
     sql,
     structured_query::{
-        structured_query_sql_for_manifest, tenant_scoped_structured_query_sql_for_manifest,
+        PreparedStructuredQuery, prepare_tenant_structured_query, prepare_unscoped_structured_query,
     },
 };
 
@@ -872,6 +872,15 @@ impl AnalyticsEngine {
         sql: &str,
         timeout: Option<Duration>,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_sql_json_with_optional_timeout(sql, &[], timeout)
+    }
+
+    fn query_sql_json_with_optional_timeout(
+        &self,
+        sql: &str,
+        parameters: &[duckdb::types::Value],
+        timeout: Option<Duration>,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
         self.refresh_object_storage_credentials_if_needed()?;
         validate_read_only_query(sql)?;
         if timeout.is_some_and(|timeout| timeout.is_zero()) {
@@ -895,7 +904,7 @@ impl AnalyticsEngine {
             }
         })?;
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(duckdb::params_from_iter(parameters.iter()), |row| {
                 let text: String = row.get(0)?;
                 serde_json::from_str::<serde_json::Value>(&text)
                     .map_err(|_| duckdb::Error::InvalidColumnIndex(0))
@@ -940,16 +949,43 @@ impl AnalyticsEngine {
         Ok(values)
     }
 
+    pub fn query_prepared_structured_json(
+        &self,
+        query: &PreparedStructuredQuery,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_sql_json_with_optional_timeout(
+            query.sql.as_str(),
+            query.parameters.as_slice(),
+            Some(DEFAULT_QUERY_TIMEOUT),
+        )
+    }
+
+    pub fn query_prepared_structured_json_without_timeout(
+        &self,
+        query: &PreparedStructuredQuery,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_prepared_structured_json_with_optional_timeout(query, None)
+    }
+
+    fn query_prepared_structured_json_with_optional_timeout(
+        &self,
+        query: &PreparedStructuredQuery,
+        timeout: Option<Duration>,
+    ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
+        self.query_sql_json_with_optional_timeout(
+            query.sql.as_str(),
+            query.parameters.as_slice(),
+            timeout,
+        )
+    }
+
     pub fn query_unscoped_structured_json(
         &self,
         manifest: &AnalyticsManifest,
         query: &StructuredQuery,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
-        query
-            .validate_shape()
-            .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
-        let sql = structured_query_sql_for_manifest(manifest, query)?;
-        self.query_unscoped_sql_json(sql.as_str())
+        let query = prepare_unscoped_structured_query(manifest, query)?;
+        self.query_prepared_structured_json(&query)
     }
 
     pub fn query_tenant_structured_json(
@@ -958,12 +994,8 @@ impl AnalyticsEngine {
         query: &StructuredQuery,
         target_tenant_id: &str,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
-        query
-            .validate_shape()
-            .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
-        let sql =
-            tenant_scoped_structured_query_sql_for_manifest(manifest, query, target_tenant_id)?;
-        self.query_unscoped_sql_json(sql.as_str())
+        let query = prepare_tenant_structured_query(manifest, query, target_tenant_id)?;
+        self.query_prepared_structured_json(&query)
     }
 
     pub fn query_tenant_structured_json_without_timeout(
@@ -972,12 +1004,8 @@ impl AnalyticsEngine {
         query: &StructuredQuery,
         target_tenant_id: &str,
     ) -> AnalyticsEngineResult<Vec<serde_json::Value>> {
-        query
-            .validate_shape()
-            .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
-        let sql =
-            tenant_scoped_structured_query_sql_for_manifest(manifest, query, target_tenant_id)?;
-        self.query_unscoped_sql_json_without_timeout(sql.as_str())
+        let query = prepare_tenant_structured_query(manifest, query, target_tenant_id)?;
+        self.query_prepared_structured_json_with_optional_timeout(&query, None)
     }
 
     pub fn scrub_table_with_privacy_policy(

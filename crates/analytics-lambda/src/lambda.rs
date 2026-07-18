@@ -7,7 +7,10 @@ use analytics_api::{
 use analytics_contract::{
     AnalyticsManifest, PrivacyPolicy, StructuredQuery, TenantRangePurgeRequest,
 };
-use analytics_engine::{AnalyticsEngine, CatalogType, IngestOutcome, StorageBackend};
+use analytics_engine::{
+    AnalyticsEngine, AnalyticsEngineError, CatalogType, IngestOutcome, StorageBackend,
+    prepare_tenant_structured_query, prepare_unscoped_structured_query,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use config::{
     AnalyticsCatalogBackend, AnalyticsLambdaResponseCompression, RootConfig,
@@ -221,13 +224,16 @@ impl AnalyticsLambdaHandler {
             }
             AnalyticsLambdaEvent::UnscopedStructuredQuery { query } => {
                 let started = Instant::now();
-                let rows = self
+                let (rows, prepared) = self
                     .engine
                     .with_read(|engine| {
-                        engine.query_unscoped_structured_json(self.manifest.as_ref(), &query)
+                        let prepared =
+                            prepare_unscoped_structured_query(self.manifest.as_ref(), &query)?;
+                        let rows = engine.query_prepared_structured_json(&prepared)?;
+                        Ok::<_, AnalyticsEngineError>((rows, prepared))
                     })
                     .await??;
-                self.query_response(build_query_response(rows, &query, started)?)
+                self.query_response(build_query_response(rows, prepared.metadata(), started)?)
             }
             AnalyticsLambdaEvent::TenantQuery {
                 target_tenant_id,
@@ -235,25 +241,23 @@ impl AnalyticsLambdaHandler {
             } => {
                 let started = Instant::now();
                 let response_config = self.response_config;
-                let rows = self
+                let (rows, prepared) = self
                     .engine
                     .with_read(|engine| {
-                        if response_config.disable_duckdb_interrupt {
-                            engine.query_tenant_structured_json_without_timeout(
-                                self.manifest.as_ref(),
-                                &query,
-                                target_tenant_id.as_str(),
-                            )
+                        let prepared = prepare_tenant_structured_query(
+                            self.manifest.as_ref(),
+                            &query,
+                            target_tenant_id.as_str(),
+                        )?;
+                        let rows = if response_config.disable_duckdb_interrupt {
+                            engine.query_prepared_structured_json_without_timeout(&prepared)?
                         } else {
-                            engine.query_tenant_structured_json(
-                                self.manifest.as_ref(),
-                                &query,
-                                target_tenant_id.as_str(),
-                            )
-                        }
+                            engine.query_prepared_structured_json(&prepared)?
+                        };
+                        Ok::<_, AnalyticsEngineError>((rows, prepared))
                     })
                     .await??;
-                self.query_response(build_query_response(rows, &query, started)?)
+                self.query_response(build_query_response(rows, prepared.metadata(), started)?)
             }
             AnalyticsLambdaEvent::TenantQueryBatch {
                 target_tenant_id,
@@ -349,24 +353,23 @@ impl AnalyticsLambdaHandler {
             let response_config = self.response_config;
             tasks.spawn(async move {
                 let started = Instant::now();
-                let rows = engine
+                let (rows, prepared) = engine
                     .with_read(|engine| {
-                        if response_config.disable_duckdb_interrupt {
-                            engine.query_tenant_structured_json_without_timeout(
-                                manifest.as_ref(),
-                                &query.query,
-                                target_tenant_id.as_str(),
-                            )
+                        let prepared = prepare_tenant_structured_query(
+                            manifest.as_ref(),
+                            &query.query,
+                            target_tenant_id.as_str(),
+                        )?;
+                        let rows = if response_config.disable_duckdb_interrupt {
+                            engine.query_prepared_structured_json_without_timeout(&prepared)?
                         } else {
-                            engine.query_tenant_structured_json(
-                                manifest.as_ref(),
-                                &query.query,
-                                target_tenant_id.as_str(),
-                            )
-                        }
+                            engine.query_prepared_structured_json(&prepared)?
+                        };
+                        Ok::<_, AnalyticsEngineError>((rows, prepared))
                     })
                     .await??;
-                let response = build_query_batch_result(query.name, rows, &query.query, started)?;
+                let response =
+                    build_query_batch_result(query.name, rows, prepared.metadata(), started)?;
                 Ok::<_, AnalyticsLambdaError>((index, response))
             });
         }

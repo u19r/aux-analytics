@@ -8,6 +8,8 @@ mod types;
 
 #[cfg(test)]
 mod engine_access_tests;
+#[cfg(test)]
+mod performance_tests;
 
 pub use engine_access::{AnalyticsEngineAccess, AnalyticsEngineAccessError};
 pub use openapi::{build as build_openapi, build_json as build_openapi_json};

@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use analytics_contract::{QueryExpression, QuerySelect, StructuredQuery};
+use analytics_engine::PreparedQueryMetadata;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -13,20 +13,14 @@ use crate::types::{
 #[error("{0}")]
 pub struct QueryResponseBuildError(String);
 
-impl QueryResponseBuildError {
-    fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
-    }
-}
-
 pub fn build_query_response(
     rows: Vec<Value>,
-    query: &StructuredQuery,
+    metadata: &PreparedQueryMetadata,
     started: Instant,
 ) -> Result<QueryResponse, QueryResponseBuildError> {
     Ok(QueryResponse {
         columns: result_columns(rows.as_slice()),
-        execution: execution_metadata(query, rows.len(), started)?,
+        execution: execution_metadata(metadata, rows.len(), started),
         source_watermark: source_watermark(rows.as_slice()),
         rows,
     })
@@ -35,117 +29,41 @@ pub fn build_query_response(
 pub fn build_query_batch_result(
     name: String,
     rows: Vec<Value>,
-    query: &StructuredQuery,
+    metadata: &PreparedQueryMetadata,
     started: Instant,
 ) -> Result<QueryBatchResult, QueryResponseBuildError> {
     Ok(QueryBatchResult {
         name,
         columns: result_columns(rows.as_slice()),
-        execution: execution_metadata(query, rows.len(), started)?,
+        execution: execution_metadata(metadata, rows.len(), started),
         source_watermark: source_watermark(rows.as_slice()),
         rows,
     })
 }
 
 fn execution_metadata(
-    query: &StructuredQuery,
+    metadata: &PreparedQueryMetadata,
     row_count: usize,
     started: Instant,
-) -> Result<QueryExecutionMetadata, QueryResponseBuildError> {
-    Ok(QueryExecutionMetadata {
-        query_hash: query
-            .query_hash()
-            .map_err(|err| QueryResponseBuildError::new(err.to_string()))?,
+) -> QueryExecutionMetadata {
+    QueryExecutionMetadata {
+        query_hash: metadata.query_hash.clone(),
         row_count: row_count as u64,
-        truncated: query.limit.is_some_and(|limit| row_count >= limit as usize),
-        tables: participating_tables(query),
+        truncated: metadata
+            .limit
+            .is_some_and(|limit| row_count >= limit as usize),
+        tables: metadata.tables.clone(),
         elapsed_ms: started.elapsed().as_millis() as u64,
-        plan_shape: plan_shape(query),
-    })
-}
-
-fn plan_shape(query: &StructuredQuery) -> QueryPlanShape {
-    QueryPlanShape {
-        logical_source_count: count_u32(query.joins.len().saturating_add(1)),
-        join_count: count_u32(query.joins.len()),
-        filter_count: count_u32(query.filters.len()),
-        group_expression_count: count_u32(query.group_by.len()),
-        order_expression_count: count_u32(query.order_by.len()),
-        aggregate_count: count_u32(
-            query
-                .select
-                .iter()
-                .filter(|select| {
-                    matches!(
-                        select,
-                        QuerySelect::Count { .. }
-                            | QuerySelect::Sum { .. }
-                            | QuerySelect::Min { .. }
-                            | QuerySelect::Max { .. }
-                            | QuerySelect::Avg { .. }
-                            | QuerySelect::CountDistinct { .. }
-                    )
-                })
-                .count(),
-        ),
-        conditional_expression_count: count_u32(
-            query
-                .select
-                .iter()
-                .filter_map(select_expression)
-                .chain(query.filters.iter().filter_map(predicate_expression))
-                .chain(query.group_by.iter())
-                .chain(query.order_by.iter().map(|order| &order.expression))
-                .filter(|expression| matches!(expression, QueryExpression::Conditional { .. }))
-                .count(),
-        ),
+        plan_shape: QueryPlanShape {
+            logical_source_count: metadata.logical_source_count,
+            join_count: metadata.join_count,
+            filter_count: metadata.filter_count,
+            group_expression_count: metadata.group_expression_count,
+            order_expression_count: metadata.order_expression_count,
+            aggregate_count: metadata.aggregate_count,
+            conditional_expression_count: metadata.conditional_expression_count,
+        },
     }
-}
-
-fn select_expression(select: &QuerySelect) -> Option<&QueryExpression> {
-    match select {
-        QuerySelect::Expression { expression, .. }
-        | QuerySelect::Sum { expression, .. }
-        | QuerySelect::Min { expression, .. }
-        | QuerySelect::Max { expression, .. }
-        | QuerySelect::Avg { expression, .. }
-        | QuerySelect::CountDistinct { expression, .. } => Some(expression),
-        QuerySelect::Column { .. }
-        | QuerySelect::DocumentPath { .. }
-        | QuerySelect::Count { .. } => None,
-    }
-}
-
-fn predicate_expression(
-    predicate: &analytics_contract::QueryPredicate,
-) -> Option<&QueryExpression> {
-    match predicate {
-        analytics_contract::QueryPredicate::Eq { expression, .. }
-        | analytics_contract::QueryPredicate::NotEq { expression, .. }
-        | analytics_contract::QueryPredicate::Gt { expression, .. }
-        | analytics_contract::QueryPredicate::Gte { expression, .. }
-        | analytics_contract::QueryPredicate::Lt { expression, .. }
-        | analytics_contract::QueryPredicate::Lte { expression, .. }
-        | analytics_contract::QueryPredicate::IsNull { expression }
-        | analytics_contract::QueryPredicate::IsNotNull { expression } => Some(expression),
-        analytics_contract::QueryPredicate::DocumentMatches { .. } => None,
-    }
-}
-
-fn count_u32(count: usize) -> u32 {
-    u32::try_from(count).unwrap_or(u32::MAX)
-}
-
-fn participating_tables(query: &StructuredQuery) -> Vec<String> {
-    let mut tables = Vec::with_capacity(query.joins.len() + 1);
-    tables.push(query.analytics_table_name.clone());
-    tables.extend(
-        query
-            .joins
-            .iter()
-            .map(|join| join.analytics_table_name.clone()),
-    );
-    tables
 }
 
 fn result_columns(rows: &[Value]) -> Vec<QueryResultColumn> {
@@ -206,6 +124,7 @@ mod tests {
         QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch, QueryExpression,
         QuerySelect, StructuredQuery,
     };
+    use analytics_engine::PreparedQueryMetadata;
     use serde_json::json;
 
     use super::build_query_response;
@@ -249,9 +168,10 @@ mod tests {
             offset: None,
         };
 
+        let metadata = PreparedQueryMetadata::from_query(&query).expect("query metadata");
         let response = build_query_response(
             vec![json!({"usage_class": "other-class", "quantity": 10})],
-            &query,
+            &metadata,
             std::time::Instant::now(),
         )
         .expect("response metadata");

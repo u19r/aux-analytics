@@ -15,7 +15,7 @@ use crate::AnalyticsEngineAccess;
 #[derive(Clone)]
 pub struct AppState {
     pub engine: AnalyticsEngineAccess,
-    pub manifest: Arc<RwLock<AnalyticsManifest>>,
+    pub manifest: Arc<RwLock<Arc<AnalyticsManifest>>>,
     pub source_health: Arc<RwLock<SourceHealth>>,
     pub retention: Option<Arc<crate::retention::RetentionRuntime>>,
     pub privacy_policy: Option<Arc<PrivacyPolicy>>,
@@ -119,7 +119,7 @@ impl AppState {
     pub fn new(engine: AnalyticsEngine, manifest: AnalyticsManifest) -> Self {
         Self {
             engine: AnalyticsEngineAccess::shared(engine),
-            manifest: Arc::new(RwLock::new(manifest)),
+            manifest: Arc::new(RwLock::new(Arc::new(manifest))),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention: None,
             privacy_policy: None,
@@ -155,7 +155,7 @@ impl AppState {
                 backend,
                 max_read_connections,
             ),
-            manifest: Arc::new(RwLock::new(manifest)),
+            manifest: Arc::new(RwLock::new(Arc::new(manifest))),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention: None,
             privacy_policy: None,
@@ -172,7 +172,7 @@ impl AppState {
     ) -> Self {
         Self {
             engine: AnalyticsEngineAccess::shared(engine),
-            manifest: Arc::new(RwLock::new(manifest)),
+            manifest: Arc::new(RwLock::new(Arc::new(manifest))),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention,
             privacy_policy: None,
@@ -211,7 +211,7 @@ impl AppState {
                 backend,
                 max_read_connections,
             ),
-            manifest: Arc::new(RwLock::new(manifest)),
+            manifest: Arc::new(RwLock::new(Arc::new(manifest))),
             source_health: Arc::new(RwLock::new(SourceHealth::disabled())),
             retention,
             privacy_policy: None,

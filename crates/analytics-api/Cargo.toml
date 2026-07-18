@@ -39,6 +39,7 @@ tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
+alloc-counter = { workspace = true }
 analytics-fixtures = { workspace = true }
 analytics-quint-test-support = { workspace = true }
 anyhow = { workspace = true }

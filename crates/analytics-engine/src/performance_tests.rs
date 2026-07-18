@@ -15,7 +15,10 @@ use crate::{
     engine::columns_for_registration,
     projection::{parse_attribute_path, project_item},
     sql::{create_table, quote_identifier},
-    structured_query::structured_query_sql,
+    structured_query::{
+        prepare_tenant_structured_query, prepare_unscoped_structured_query, structured_query_sql,
+        structured_query_sql_for_manifest, tenant_scoped_structured_query_sql_for_manifest,
+    },
 };
 
 const LOOP_COUNT: usize = 400;
@@ -194,6 +197,117 @@ fn perf_loop_duckdb_query_candidates_given_identity_predicates_then_index_improv
         results[5].kept,
         "transaction batch insert should beat row-by-row analytical inserts"
     );
+}
+
+#[test]
+#[ignore = "performance test only"]
+fn perf_loop_structured_rows_given_json_and_typed_candidates_then_reports_conversion_cost() {
+    let results = vec![measure_candidate(
+        "structured rows JSON wrapper -> direct typed extraction",
+        baseline_structured_json_wrapper,
+        optimized_structured_typed_rows,
+        KeepRule::ExploratoryReject,
+    )];
+    print_candidate_results("structured-row-conversion", &results);
+}
+
+#[test]
+#[ignore = "performance test only"]
+fn perf_loop_prepared_structured_queries_reuse_sql_and_response_metadata() {
+    let table = table_registration(48);
+    let manifest = AnalyticsManifest::new(vec![table]);
+    let simple = structured_query(1);
+    let complex = structured_query(24);
+    let batch = (0..16).map(|_| complex.clone()).collect::<Vec<_>>();
+    let results = vec![
+        measure_candidate(
+            "prepared query simple filter",
+            || baseline_prepare_queries(&manifest, std::slice::from_ref(&simple)),
+            || candidate_prepare_queries(&manifest, std::slice::from_ref(&simple)),
+            KeepRule::CpuOrAllocation,
+        ),
+        measure_candidate(
+            "prepared query complex collection shape",
+            || baseline_prepare_queries(&manifest, std::slice::from_ref(&complex)),
+            || candidate_prepare_queries(&manifest, std::slice::from_ref(&complex)),
+            KeepRule::CpuOrAllocation,
+        ),
+        measure_candidate(
+            "prepared query 16 item batch",
+            || baseline_prepare_queries(&manifest, &batch),
+            || candidate_prepare_queries(&manifest, &batch),
+            KeepRule::CpuOrAllocation,
+        ),
+        measure_candidate(
+            "prepared query compile and DuckDB execution",
+            baseline_prepared_query_execution,
+            candidate_prepared_query_execution,
+            KeepRule::CpuOrAllocation,
+        ),
+    ];
+    print_candidate_results("prepared-structured-query", &results);
+}
+
+fn baseline_prepare_queries(manifest: &AnalyticsManifest, queries: &[StructuredQuery]) -> u64 {
+    queries
+        .iter()
+        .map(|query| {
+            query.validate_shape().unwrap();
+            let sql = tenant_scoped_structured_query_sql_for_manifest(manifest, query, "tenant_a")
+                .unwrap();
+            let hash = query.query_hash().unwrap();
+            let table_bytes = query.analytics_table_name.len()
+                + query
+                    .joins
+                    .iter()
+                    .map(|join| join.analytics_table_name.len())
+                    .sum::<usize>();
+            (sql.len() + hash.len() + table_bytes + query.select.len()) as u64
+        })
+        .sum()
+}
+
+fn candidate_prepare_queries(manifest: &AnalyticsManifest, queries: &[StructuredQuery]) -> u64 {
+    queries
+        .iter()
+        .map(|query| {
+            let prepared = prepare_tenant_structured_query(manifest, query, "tenant_a").unwrap();
+            (prepared.sql.len()
+                + prepared.metadata().query_hash.len()
+                + prepared
+                    .metadata()
+                    .tables
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>()
+                + prepared.metadata().aggregate_count as usize) as u64
+        })
+        .sum()
+}
+
+fn baseline_prepared_query_execution() -> u64 {
+    let (engine, manifest, query) = seeded_structured_query_engine();
+    let mut checksum = 0_u64;
+    for _ in 0..8 {
+        let sql = structured_query_sql_for_manifest(&manifest, &query).unwrap();
+        checksum ^= engine.query_unscoped_sql_json(sql.as_str()).unwrap().len() as u64;
+        checksum ^= query.query_hash().unwrap().len() as u64;
+    }
+    checksum
+}
+
+fn candidate_prepared_query_execution() -> u64 {
+    let (engine, manifest, query) = seeded_structured_query_engine();
+    let mut checksum = 0_u64;
+    for _ in 0..8 {
+        let prepared = prepare_unscoped_structured_query(&manifest, &query).unwrap();
+        checksum ^= engine
+            .query_prepared_structured_json(&prepared)
+            .unwrap()
+            .len() as u64;
+        checksum ^= prepared.metadata().query_hash.len() as u64;
+    }
+    checksum
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -761,6 +875,31 @@ fn optimized_structured_json_object() -> u64 {
     for _ in 0..8 {
         let rows = query_json_strings(engine.connection(), sql);
         checksum ^= rows.len() as u64;
+    }
+    checksum
+}
+
+fn optimized_structured_typed_rows() -> u64 {
+    let (engine, _manifest, _query) = seeded_structured_query_engine();
+    let sql = "SELECT column_00, column_01, column_02, column_03
+        FROM users
+        WHERE tenant_id = 'tenant_03'
+        ORDER BY column_00 ASC
+        LIMIT 500";
+    let mut checksum = 0_u64;
+    for _ in 0..8 {
+        let mut statement = engine.connection().prepare(sql).unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "c_00": row.get::<_, String>(0)?,
+                    "c_01": row.get::<_, String>(1)?,
+                    "c_02": row.get::<_, String>(2)?,
+                    "c_03": row.get::<_, String>(3)?,
+                }))
+            })
+            .unwrap();
+        checksum ^= rows.map(Result::unwrap).count() as u64;
     }
     checksum
 }

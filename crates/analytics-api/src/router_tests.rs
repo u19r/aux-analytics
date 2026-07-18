@@ -587,6 +587,70 @@ async fn ingest_endpoint_rejects_requests_that_fail_generated_schema() {
 }
 
 #[tokio::test]
+async fn validated_json_preserves_content_type_json_and_size_errors() {
+    let missing_content_type = test_router()
+        .oneshot(
+            Request::post("/ingest/users")
+                .body(Body::from("{}"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(missing_content_type.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response_json(missing_content_type).await,
+        json!({
+            "code": "invalid_request",
+            "message": "request content-type must be application/json"
+        })
+    );
+
+    let malformed = test_router()
+        .oneshot(
+            Request::post("/ingest/users")
+                .header("content-type", "application/json")
+                .body(Body::from("{"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(malformed).await;
+    assert_eq!(body["code"], "invalid_request");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("request body must be valid JSON:"))
+    );
+
+    let oversized = test_router()
+        .oneshot(
+            Request::post("/ingest/users")
+                .header("content-type", "application/json")
+                .body(Body::from("x".repeat(2_097_153)))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn unknown_request_path_still_returns_not_found_without_validation() {
+    let response = test_router()
+        .oneshot(
+            Request::post("/unknown")
+                .header("content-type", "text/plain")
+                .body(Body::from("not-json"))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn ingest_batch_endpoint_ingests_records_in_one_request() {
     let router = test_router();
     let response = post_json(

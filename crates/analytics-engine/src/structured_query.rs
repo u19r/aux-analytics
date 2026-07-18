@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use analytics_contract::{
     AnalyticsManifest, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
     QueryDocumentPredicate, QueryExpression, QueryJoin, QueryJoinKind, QueryOrder, QueryPredicate,
@@ -40,6 +42,42 @@ enum ExpressionSignature {
 
 struct QueryCompiler<'a> {
     tables: Vec<QueryTable<'a>>,
+    parameters: RefCell<Vec<duckdb::types::Value>>,
+    bind_literals: bool,
+}
+
+#[derive(Debug)]
+pub struct PreparedStructuredQuery {
+    pub(crate) sql: String,
+    pub(crate) parameters: Vec<duckdb::types::Value>,
+    metadata: PreparedQueryMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedQueryMetadata {
+    pub query_hash: String,
+    pub tables: Vec<String>,
+    pub limit: Option<u32>,
+    pub logical_source_count: u32,
+    pub join_count: u32,
+    pub filter_count: u32,
+    pub group_expression_count: u32,
+    pub order_expression_count: u32,
+    pub aggregate_count: u32,
+    pub conditional_expression_count: u32,
+}
+
+impl PreparedStructuredQuery {
+    #[must_use]
+    pub fn metadata(&self) -> &PreparedQueryMetadata {
+        &self.metadata
+    }
+}
+
+impl PreparedQueryMetadata {
+    pub fn from_query(query: &StructuredQuery) -> AnalyticsEngineResult<Self> {
+        prepared_metadata(query)
+    }
 }
 
 #[cfg(test)]
@@ -61,13 +99,15 @@ pub(crate) fn tenant_scoped_structured_query_sql(
     tenant_scoped_structured_query_sql_for_manifest(&manifest, query, target_tenant_id)
 }
 
+#[cfg(test)]
 pub(crate) fn structured_query_sql_for_manifest(
     manifest: &AnalyticsManifest,
     query: &StructuredQuery,
 ) -> AnalyticsEngineResult<String> {
-    QueryCompiler::new(manifest, query)?.compile(query, None)
+    QueryCompiler::new(manifest, query, false)?.compile(query, None)
 }
 
+#[cfg(test)]
 pub(crate) fn tenant_scoped_structured_query_sql_for_manifest(
     manifest: &AnalyticsManifest,
     query: &StructuredQuery,
@@ -78,13 +118,52 @@ pub(crate) fn tenant_scoped_structured_query_sql_for_manifest(
             "target tenant id is required".to_string(),
         ));
     }
-    QueryCompiler::new(manifest, query)?.compile(query, Some(target_tenant_id))
+    QueryCompiler::new(manifest, query, false)?.compile(query, Some(target_tenant_id))
+}
+
+pub fn prepare_unscoped_structured_query(
+    manifest: &AnalyticsManifest,
+    query: &StructuredQuery,
+) -> AnalyticsEngineResult<PreparedStructuredQuery> {
+    prepare_structured_query(manifest, query, None)
+}
+
+pub fn prepare_tenant_structured_query(
+    manifest: &AnalyticsManifest,
+    query: &StructuredQuery,
+    target_tenant_id: &str,
+) -> AnalyticsEngineResult<PreparedStructuredQuery> {
+    if target_tenant_id.is_empty() {
+        return Err(AnalyticsEngineError::InvalidStructuredQuery(
+            "target tenant id is required".to_string(),
+        ));
+    }
+    prepare_structured_query(manifest, query, Some(target_tenant_id))
+}
+
+fn prepare_structured_query(
+    manifest: &AnalyticsManifest,
+    query: &StructuredQuery,
+    target_tenant_id: Option<&str>,
+) -> AnalyticsEngineResult<PreparedStructuredQuery> {
+    query
+        .validate_shape()
+        .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
+    let compiler = QueryCompiler::new(manifest, query, true)?;
+    let sql = compiler.compile(query, target_tenant_id)?;
+    let parameters = compiler.parameters.into_inner();
+    Ok(PreparedStructuredQuery {
+        sql,
+        parameters,
+        metadata: prepared_metadata(query)?,
+    })
 }
 
 impl<'a> QueryCompiler<'a> {
     fn new(
         manifest: &'a AnalyticsManifest,
         query: &StructuredQuery,
+        bind_literals: bool,
     ) -> AnalyticsEngineResult<Self> {
         let primary = find_registered_table(manifest, query.analytics_table_name.as_str())?;
         if !primary.join_policy.allowed_as_primary {
@@ -106,7 +185,11 @@ impl<'a> QueryCompiler<'a> {
             validate_join_policy(table)?;
             tables.push(QueryTable::new(join.table_alias.clone(), table, true));
         }
-        Ok(Self { tables })
+        Ok(Self {
+            tables,
+            parameters: RefCell::new(Vec::new()),
+            bind_literals,
+        })
     }
 
     fn compile(
@@ -115,6 +198,7 @@ impl<'a> QueryCompiler<'a> {
         target_tenant_id: Option<&str>,
     ) -> AnalyticsEngineResult<String> {
         validate_grouped_selects(self, query)?;
+        self.parameters.borrow_mut().clear();
         let select_clause = query
             .select
             .iter()
@@ -141,7 +225,7 @@ impl<'a> QueryCompiler<'a> {
                 filters.push(format!(
                     "{} = {}",
                     table.column_sql("tenant_id"),
-                    literal_sql(&serde_json::Value::String(target_tenant_id.to_string()))?
+                    self.literal_sql(&serde_json::Value::String(target_tenant_id.to_string()))?
                 ));
             }
         }
@@ -389,7 +473,7 @@ impl<'a> QueryCompiler<'a> {
         Ok(format!(
             "{} {operator} {}",
             self.expression_sql(expression)?,
-            literal_sql(value)?
+            self.literal_sql(value)?
         ))
     }
 
@@ -449,10 +533,10 @@ impl<'a> QueryCompiler<'a> {
             sql.push_str(" WHEN ");
             sql.push_str(self.conditional_branch_sql(branch)?.as_str());
             sql.push_str(" THEN ");
-            sql.push_str(literal_sql(&branch.then_value)?.as_str());
+            sql.push_str(self.literal_sql(&branch.then_value)?.as_str());
         }
         sql.push_str(" ELSE ");
-        sql.push_str(literal_sql(else_value)?.as_str());
+        sql.push_str(self.literal_sql(else_value)?.as_str());
         sql.push_str(" END");
         Ok(ResolvedExpression {
             table_alias: None,
@@ -492,7 +576,7 @@ impl<'a> QueryCompiler<'a> {
         Ok(format!(
             "{} {operator} {}",
             column.sql,
-            literal_sql(&comparison.value)?
+            self.literal_sql(&comparison.value)?
         ))
     }
 
@@ -610,6 +694,119 @@ impl<'a> QueryCompiler<'a> {
             )
         })
     }
+
+    fn literal_sql(&self, value: &serde_json::Value) -> AnalyticsEngineResult<String> {
+        if !self.bind_literals {
+            return literal_sql(value);
+        }
+        let parameter = match value {
+            serde_json::Value::Null => duckdb::types::Value::Null,
+            serde_json::Value::Bool(value) => duckdb::types::Value::Boolean(*value),
+            serde_json::Value::Number(value) => {
+                if let Some(value) = value.as_i64() {
+                    duckdb::types::Value::BigInt(value)
+                } else if let Some(value) = value.as_u64() {
+                    duckdb::types::Value::UBigInt(value)
+                } else {
+                    duckdb::types::Value::Double(value.as_f64().ok_or_else(|| {
+                        AnalyticsEngineError::InvalidStructuredQuery(
+                            "query literal is not a finite number".to_string(),
+                        )
+                    })?)
+                }
+            }
+            serde_json::Value::String(value) => duckdb::types::Value::Text(value.clone()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                duckdb::types::Value::Text(serde_json::to_string(value)?)
+            }
+        };
+        let mut parameters = self.parameters.borrow_mut();
+        let index = if let Some(index) = parameters
+            .iter()
+            .position(|existing| existing == &parameter)
+        {
+            index
+        } else {
+            parameters.push(parameter);
+            parameters.len() - 1
+        };
+        let placeholder = format!("${}", index + 1);
+        Ok(if value.is_array() || value.is_object() {
+            format!("{placeholder}::JSON")
+        } else {
+            placeholder
+        })
+    }
+}
+
+fn prepared_metadata(query: &StructuredQuery) -> AnalyticsEngineResult<PreparedQueryMetadata> {
+    Ok(PreparedQueryMetadata {
+        query_hash: query.query_hash()?,
+        tables: std::iter::once(query.analytics_table_name.clone())
+            .chain(
+                query
+                    .joins
+                    .iter()
+                    .map(|join| join.analytics_table_name.clone()),
+            )
+            .collect(),
+        limit: query.limit,
+        logical_source_count: bounded_count(query.joins.len().saturating_add(1)),
+        join_count: bounded_count(query.joins.len()),
+        filter_count: bounded_count(query.filters.len()),
+        group_expression_count: bounded_count(query.group_by.len()),
+        order_expression_count: bounded_count(query.order_by.len()),
+        aggregate_count: bounded_count(
+            query
+                .select
+                .iter()
+                .filter(|select| is_aggregate_select(select))
+                .count(),
+        ),
+        conditional_expression_count: bounded_count(
+            query
+                .select
+                .iter()
+                .filter_map(select_query_expression)
+                .chain(query.filters.iter().filter_map(predicate_query_expression))
+                .chain(query.group_by.iter())
+                .chain(query.order_by.iter().map(|order| &order.expression))
+                .filter(|expression| matches!(expression, QueryExpression::Conditional { .. }))
+                .count(),
+        ),
+    })
+}
+
+fn select_query_expression(select: &QuerySelect) -> Option<&QueryExpression> {
+    match select {
+        QuerySelect::Expression { expression, .. }
+        | QuerySelect::Sum { expression, .. }
+        | QuerySelect::Min { expression, .. }
+        | QuerySelect::Max { expression, .. }
+        | QuerySelect::Avg { expression, .. }
+        | QuerySelect::CountDistinct { expression, .. } => Some(expression),
+        QuerySelect::Column { .. }
+        | QuerySelect::DocumentPath { .. }
+        | QuerySelect::Count { .. } => None,
+    }
+}
+
+fn predicate_query_expression(predicate: &QueryPredicate) -> Option<&QueryExpression> {
+    match predicate {
+        QueryPredicate::Eq { expression, .. }
+        | QueryPredicate::NotEq { expression, .. }
+        | QueryPredicate::Gt { expression, .. }
+        | QueryPredicate::Gte { expression, .. }
+        | QueryPredicate::Lt { expression, .. }
+        | QueryPredicate::Lte { expression, .. }
+        | QueryPredicate::IsNull { expression }
+        | QueryPredicate::IsNotNull { expression } => Some(expression),
+        QueryPredicate::DocumentMatches { .. } => None,
+    }
+}
+
+fn bounded_count(count: usize) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
 }
 
 impl<'a> QueryTable<'a> {

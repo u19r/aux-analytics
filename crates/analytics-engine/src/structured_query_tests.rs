@@ -7,8 +7,8 @@ use analytics_contract::{
 use serde_json::json;
 
 use crate::structured_query::{
-    structured_query_sql, structured_query_sql_for_manifest, tenant_scoped_structured_query_sql,
-    tenant_scoped_structured_query_sql_for_manifest,
+    prepare_tenant_structured_query, structured_query_sql, structured_query_sql_for_manifest,
+    tenant_scoped_structured_query_sql, tenant_scoped_structured_query_sql_for_manifest,
 };
 
 fn table() -> TableRegistration {
@@ -207,6 +207,54 @@ fn given_tenant_scoped_structured_query_when_compiled_then_tenant_filter_is_inje
         "SELECT \"email\" AS \"email\" FROM \"users\" WHERE \"org_id\" = 'org-a' AND \
          \"tenant_id\" = 'tenant_01' ORDER BY \"email\" ASC LIMIT 10"
     );
+}
+
+#[test]
+fn given_tenant_query_when_prepared_then_values_are_bound_and_metadata_is_reused() {
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::Column {
+            table_alias: None,
+            column_name: "email".to_string(),
+            alias: None,
+        }],
+        filters: vec![QueryPredicate::Eq {
+            expression: QueryExpression::Column {
+                table_alias: None,
+                column_name: "org_id".to_string(),
+            },
+            value: json!("org-a"),
+        }],
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(10),
+        offset: None,
+    };
+
+    let prepared = prepare_tenant_structured_query(
+        &AnalyticsManifest::new(vec![table()]),
+        &query,
+        "tenant_01",
+    )
+    .expect("prepared query");
+
+    assert_eq!(
+        prepared.sql,
+        "SELECT \"email\" AS \"email\" FROM \"users\" WHERE \"org_id\" = $1 AND \"tenant_id\" = \
+         $2 LIMIT 10"
+    );
+    assert_eq!(
+        prepared.parameters,
+        vec![
+            duckdb::types::Value::Text("org-a".to_string()),
+            duckdb::types::Value::Text("tenant_01".to_string()),
+        ]
+    );
+    assert_eq!(prepared.metadata().tables, vec!["users"]);
+    assert_eq!(prepared.metadata().limit, Some(10));
+    assert!(prepared.metadata().query_hash.starts_with("sha256:"));
 }
 
 #[test]
