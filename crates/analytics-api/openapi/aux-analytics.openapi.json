@@ -251,9 +251,18 @@
       "ErrorResponse": {
         "description": "Error response for invalid requests and query failures.",
         "example": {
+          "code": "record_contract",
           "error": "query must be a single read-only SELECT statement"
         },
         "properties": {
+          "code": {
+            "description": "Stable machine-readable classification when the endpoint can distinguish\nthe failure.",
+            "example": "record_contract",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "error": {
             "description": "Human-readable error message.",
             "example": "query must be a single read-only SELECT statement",
@@ -3377,7 +3386,7 @@
           },
           "document_column": {
             "default": "item",
-            "description": "JSON document column containing the full source item. Set null to omit\nthe full document. Must not use the built-in output column names\n`tenant_id`, `table_name`, or `__id`.",
+            "description": "JSON document column containing the full source item. Set null for a\ndirect-ingestion table that source polling must not consume. Must not\nuse the built-in output column names `tenant_id`, `table_name`, or\n`__id`.",
             "example": "item",
             "maxLength": 255,
             "minLength": 1,

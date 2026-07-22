@@ -39,6 +39,8 @@ const QUERY_LATENCY_METRIC: &str = "analytics.query.latency_ms";
 const INGEST_REQUESTS_METRIC: &str = "analytics.http.ingest.requests_total";
 const INGEST_LATENCY_METRIC: &str = "analytics.http.ingest.latency_ms";
 const INGEST_PRIVACY_DROPS_METRIC: &str = "analytics.http.ingest.privacy_dropped_fields_total";
+const INGEST_ERROR_RECORD_CONTRACT: &str = "record_contract";
+const INGEST_ERROR_RETRYABLE: &str = "retryable";
 
 #[derive(Debug, Clone)]
 pub struct MetricsEndpointConfig {
@@ -660,8 +662,15 @@ pub(crate) async fn ingest_stream_record(
             .into_response()
         }
         Err(err) => {
+            let code = ingest_error_code(&err);
             record_ingest_metrics("error", started);
-            error_response(StatusCode::BAD_REQUEST, &err.to_string())
+            tracing::warn!(
+                analytics_table_name,
+                error_code = code,
+                error = %err,
+                "analytics record ingestion failed"
+            );
+            ingest_error_response(StatusCode::BAD_REQUEST, code, &err.to_string())
         }
     }
 }
@@ -733,8 +742,15 @@ pub(crate) async fn ingest_stream_record_batch(
             .into_response()
         }
         Err(err) => {
+            let code = ingest_error_code(&err);
             record_ingest_metrics("error", started);
-            error_response(StatusCode::BAD_REQUEST, &err.to_string())
+            tracing::warn!(
+                analytics_table_name,
+                error_code = code,
+                error = %err,
+                "analytics record batch ingestion failed"
+            );
+            ingest_error_response(StatusCode::BAD_REQUEST, code, &err.to_string())
         }
     }
 }
@@ -991,9 +1007,29 @@ fn error_response(status: StatusCode, message: &str) -> Response {
         status,
         Json(ErrorResponse {
             error: message.to_string(),
+            code: None,
         }),
     )
         .into_response()
+}
+
+fn ingest_error_response(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+            code: Some(code.to_string()),
+        }),
+    )
+        .into_response()
+}
+
+fn ingest_error_code(error: &AnalyticsEngineError) -> &'static str {
+    if error.is_record_contract_failure() {
+        INGEST_ERROR_RECORD_CONTRACT
+    } else {
+        INGEST_ERROR_RETRYABLE
+    }
 }
 
 fn ingest_outcome_name(outcome: IngestOutcome) -> &'static str {

@@ -18,9 +18,29 @@ use analytics_fixtures::{
 use config::{CatalogType, StorageBackend};
 
 use super::{
-    AnalyticsEngine, IngestOutcome, PrivacyTableRemediationMode, SourceCheckpoint,
-    StreamRecordBatchItem,
+    AnalyticsEngine, AnalyticsEngineError, IngestOutcome, PrivacyTableRemediationMode,
+    SourceCheckpoint, StreamRecordBatchItem,
 };
+
+#[test]
+fn record_contract_failures_are_distinct_from_retryable_runtime_failures() {
+    for error in [
+        AnalyticsEngineError::MissingTenant,
+        AnalyticsEngineError::MissingAttribute("tenant_id".to_string()),
+        AnalyticsEngineError::RegexNoMatch {
+            attribute_name: "tenant_id".to_string(),
+        },
+        AnalyticsEngineError::MissingIdentifier("tenant_id"),
+        AnalyticsEngineError::AttributeConversion("tenant_id".to_string()),
+        AnalyticsEngineError::InvalidRetentionTimestamp("created_at".to_string()),
+    ] {
+        assert!(error.is_record_contract_failure(), "{error}");
+    }
+    assert!(
+        !AnalyticsEngineError::InvalidConditionExpression("invalid".to_string())
+            .is_record_contract_failure()
+    );
+}
 
 #[test]
 fn stream_records_are_projected_into_queryable_rows() {

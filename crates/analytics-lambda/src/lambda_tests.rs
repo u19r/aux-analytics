@@ -702,3 +702,27 @@ fn given_lambda_ingest_outcome_when_serialized_then_external_status_names_are_st
     assert_eq!(ingest_outcome_name(IngestOutcome::Deleted), "deleted");
     assert_eq!(ingest_outcome_name(IngestOutcome::Skipped), "skipped");
 }
+
+#[test]
+fn given_missing_record_attribute_when_classified_then_lambda_exposes_record_contract_code() {
+    let error = AnalyticsLambdaError::ingest(AnalyticsEngineError::MissingAttribute(
+        "tenant_id".to_string(),
+    ));
+
+    assert_eq!(
+        error.to_string(),
+        "analytics_record_contract: record is missing required attribute tenant_id"
+    );
+}
+
+#[test]
+fn given_runtime_engine_failure_when_classified_then_lambda_keeps_retryable_error() {
+    let error = AnalyticsLambdaError::ingest(AnalyticsEngineError::InvalidConditionExpression(
+        "invalid".to_string(),
+    ));
+
+    assert_eq!(
+        error.to_string(),
+        "analytics engine error: condition expression is invalid: invalid"
+    );
+}

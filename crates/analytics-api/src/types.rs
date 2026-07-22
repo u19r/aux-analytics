@@ -908,11 +908,19 @@ pub(crate) struct ReadyResponse {
 
 /// Error response for invalid requests and query failures.
 #[derive(Debug, Clone, Serialize, JsonSchema, ToSchema)]
-#[schema(example = json!({"error": "query must be a single read-only SELECT statement"}))]
+#[schema(example = json!({
+    "error": "query must be a single read-only SELECT statement",
+    "code": "record_contract"
+}))]
 pub(crate) struct ErrorResponse {
     /// Human-readable error message.
     #[schema(example = "query must be a single read-only SELECT statement")]
     pub error: String,
+    /// Stable machine-readable classification when the endpoint can distinguish
+    /// the failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, example = "record_contract")]
+    pub code: Option<String>,
 }
 
 /// Stream ingestion request.

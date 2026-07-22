@@ -105,6 +105,24 @@ pub enum AnalyticsEngineError {
     AwsCredentials(#[from] aws_credentials::CredentialsError),
 }
 
+impl AnalyticsEngineError {
+    /// Returns whether retrying the same record without changing its data can
+    /// succeed. Adapters use this to isolate malformed records without treating
+    /// runtime, catalog, or storage failures as permanent.
+    #[must_use]
+    pub fn is_record_contract_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingTenant
+                | Self::MissingAttribute(_)
+                | Self::RegexNoMatch { .. }
+                | Self::MissingIdentifier(_)
+                | Self::AttributeConversion(_)
+                | Self::InvalidRetentionTimestamp(_)
+        )
+    }
+}
+
 pub type AnalyticsEngineResult<T> = Result<T, AnalyticsEngineError>;
 
 pub struct AnalyticsEngine {

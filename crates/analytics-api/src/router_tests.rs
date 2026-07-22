@@ -80,6 +80,42 @@ async fn tables_endpoint_registers_table_and_updates_active_manifest() {
 }
 
 #[tokio::test]
+async fn given_missing_required_tenant_when_ingested_then_record_contract_code_is_returned() {
+    let router = test_router();
+    let mut table = users_manifest().tables[0].clone();
+    table.analytics_table_name = "required_tenant_users".to_string();
+    table.tenant_id = None;
+    table.tenant_selector = analytics_contract::TenantSelector::Attribute {
+        attribute_name: "tenant_id".to_string(),
+    };
+    let response = post_json(router.clone(), "/tables", json!(table)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = post_json(
+        router,
+        "/ingest/required_tenant_users",
+        json!({
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": {"profile": {"M": {"email": {"S": "a@example.com"}}}}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["code"], "record_contract");
+    assert!(
+        body["error"].as_str().is_some_and(|error| {
+            error.contains("record is missing required attribute tenant_id")
+        })
+    );
+}
+
+#[tokio::test]
 async fn operations_endpoints_return_status_audit_and_accept_cancel() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let operation_store_path = tempdir.path().join("operations.duckdb");

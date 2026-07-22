@@ -45,6 +45,8 @@ const ENV_QUERY_DISABLE_DUCKDB_INTERRUPT: &str = "AUX_ANALYTICS_QUERY_DISABLE_DU
 pub enum AnalyticsLambdaError {
     #[error("analytics engine error: {0}")]
     Engine(#[from] analytics_engine::AnalyticsEngineError),
+    #[error("analytics_record_contract: {0}")]
+    RecordContract(String),
     #[error("analytics engine access error: {0}")]
     EngineAccess(#[from] analytics_api::AnalyticsEngineAccessError),
     #[error("config error: {0}")]
@@ -80,6 +82,14 @@ impl AnalyticsLambdaError {
 
     fn validation(message: impl Into<String>) -> Self {
         Self::Validation(message.into())
+    }
+
+    fn ingest(error: AnalyticsEngineError) -> Self {
+        if error.is_record_contract_failure() {
+            Self::RecordContract(error.to_string())
+        } else {
+            Self::Engine(error)
+        }
     }
 }
 
@@ -313,7 +323,7 @@ impl AnalyticsLambdaHandler {
     ) -> Result<IngestOutcome, AnalyticsLambdaError> {
         let (record_key, record) = request.into_contract_record();
         if let Some(policy) = self.privacy_policy.as_ref() {
-            return Ok(self
+            return self
                 .engine
                 .with_write(|engine| {
                     engine.ingest_stream_record_with_privacy_policy(
@@ -324,11 +334,11 @@ impl AnalyticsLambdaHandler {
                         policy,
                     )
                 })
-                .await?
-                .outcome);
+                .await
+                .map(|outcome| outcome.outcome)
+                .map_err(AnalyticsLambdaError::ingest);
         }
-        Ok(self
-            .engine
+        self.engine
             .with_write(|engine| {
                 engine.ingest_stream_record(
                     self.manifest.as_ref(),
@@ -337,7 +347,8 @@ impl AnalyticsLambdaHandler {
                     record,
                 )
             })
-            .await?)
+            .await
+            .map_err(AnalyticsLambdaError::ingest)
     }
 
     async fn query_tenant_batch(
