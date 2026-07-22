@@ -32,7 +32,7 @@ pub(crate) async fn spawn_source_polling(
     tracing::info!("analytics source checkpoint load starting");
     let checkpoints = app_state
         .engine
-        .with_read(|engine| engine.load_source_checkpoints())
+        .with_read(move |engine| engine.load_source_checkpoints())
         .await??;
     tracing::info!(
         checkpoint_count = checkpoints.len(),

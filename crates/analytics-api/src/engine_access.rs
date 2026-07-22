@@ -74,30 +74,60 @@ impl AnalyticsEngineAccess {
 
     pub async fn with_read<T>(
         &self,
-        operation: impl FnOnce(&AnalyticsEngine) -> T,
-    ) -> Result<T, AnalyticsEngineAccessError> {
+        operation: impl FnOnce(&AnalyticsEngine) -> T + Send + 'static,
+    ) -> Result<T, AnalyticsEngineAccessError>
+    where
+        T: Send + 'static,
+    {
         match &self.read_strategy {
             ReadStrategy::SharedWriter => {
-                let engine = self.writer.lock().await;
-                Ok(operation(&engine))
+                let writer = Arc::clone(&self.writer);
+                run_engine_work(move || {
+                    let engine = writer.blocking_lock();
+                    Ok(operation(&engine))
+                })
+                .await
             }
             ReadStrategy::DedicatedConnections(read_connections) => {
                 let permit = Arc::clone(&read_connections.permits)
                     .acquire_owned()
                     .await
                     .map_err(|_| AnalyticsEngineAccessError::ReadPoolClosed)?;
-                let engine = read_connections.take_engine()?;
-                let result = operation(&engine);
-                read_connections.return_engine(engine)?;
-                drop(permit);
-                Ok(result)
+                let read_connections = Arc::clone(read_connections);
+                run_engine_work(move || {
+                    let engine = read_connections.take_engine()?;
+                    let result = operation(&engine);
+                    read_connections.return_engine(engine)?;
+                    drop(permit);
+                    Ok(result)
+                })
+                .await
             }
         }
     }
 
-    pub async fn with_write<T>(&self, operation: impl FnOnce(&AnalyticsEngine) -> T) -> T {
-        let engine = self.writer.lock().await;
-        operation(&engine)
+    pub async fn with_write<T>(
+        &self,
+        operation: impl FnOnce(&AnalyticsEngine) -> T + Send + 'static,
+    ) -> T
+    where
+        T: Send + 'static,
+    {
+        let writer = Arc::clone(&self.writer);
+        run_engine_work(move || {
+            let engine = writer.blocking_lock();
+            operation(&engine)
+        })
+        .await
+    }
+}
+
+async fn run_engine_work<T>(operation: impl FnOnce() -> T + Send + 'static) -> T
+where T: Send + 'static {
+    match tokio::task::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+        Err(error) => panic!("analytics engine worker was cancelled: {error}"),
     }
 }
 

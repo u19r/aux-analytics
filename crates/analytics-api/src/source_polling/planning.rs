@@ -69,7 +69,7 @@ pub(crate) async fn rebuild_source_poller(
 ) -> ApiResult<SourcePoller> {
     let checkpoints = app_state
         .engine
-        .with_read(|engine| engine.load_source_checkpoints())
+        .with_read(move |engine| engine.load_source_checkpoints())
         .await??;
     let storage_checkpoints = storage_checkpoints_from_engine(checkpoints);
     let plans = effective_source_table_plans(source, manifest, app_state).await?;
@@ -164,7 +164,7 @@ async fn registered_source_table_plans(
     }
     let rows = app_state
         .engine
-        .with_read(|engine| {
+        .with_read(move |engine| {
             engine.query_unscoped_sql_json_with_timeout(
                 "SELECT tenant_id, db_table_name, analytics_table_name, status FROM \
                  analytics_registered_tables WHERE status = 'Ready'",

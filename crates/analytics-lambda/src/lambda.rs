@@ -228,17 +228,18 @@ impl AnalyticsLambdaHandler {
             AnalyticsLambdaEvent::UnscopedSqlQuery { sql } => {
                 let rows = self
                     .engine
-                    .with_read(|engine| engine.query_unscoped_sql_json(sql.as_str()))
+                    .with_read(move |engine| engine.query_unscoped_sql_json(sql.as_str()))
                     .await??;
                 Ok(json!(QueryLambdaResponse { rows }))
             }
             AnalyticsLambdaEvent::UnscopedStructuredQuery { query } => {
                 let started = Instant::now();
+                let manifest = Arc::clone(&self.manifest);
                 let (rows, prepared) = self
                     .engine
-                    .with_read(|engine| {
+                    .with_read(move |engine| {
                         let prepared =
-                            prepare_unscoped_structured_query(self.manifest.as_ref(), &query)?;
+                            prepare_unscoped_structured_query(manifest.as_ref(), &query)?;
                         let rows = engine.query_prepared_structured_json(&prepared)?;
                         Ok::<_, AnalyticsEngineError>((rows, prepared))
                     })
@@ -251,11 +252,12 @@ impl AnalyticsLambdaHandler {
             } => {
                 let started = Instant::now();
                 let response_config = self.response_config;
+                let manifest = Arc::clone(&self.manifest);
                 let (rows, prepared) = self
                     .engine
-                    .with_read(|engine| {
+                    .with_read(move |engine| {
                         let prepared = prepare_tenant_structured_query(
-                            self.manifest.as_ref(),
+                            manifest.as_ref(),
                             &query,
                             target_tenant_id.as_str(),
                         )?;
@@ -280,7 +282,7 @@ impl AnalyticsLambdaHandler {
                 self.ensure_ingest_allowed()?;
                 let response = self
                     .engine
-                    .with_write(|engine| engine.purge_tenant_range(&request))
+                    .with_write(move |engine| engine.purge_tenant_range(&request))
                     .await?;
                 Ok(json!(response))
             }
@@ -323,26 +325,31 @@ impl AnalyticsLambdaHandler {
     ) -> Result<IngestOutcome, AnalyticsLambdaError> {
         let (record_key, record) = request.into_contract_record();
         if let Some(policy) = self.privacy_policy.as_ref() {
+            let manifest = Arc::clone(&self.manifest);
+            let policy = Arc::clone(policy);
+            let analytics_table_name = analytics_table_name.to_owned();
             return self
                 .engine
-                .with_write(|engine| {
+                .with_write(move |engine| {
                     engine.ingest_stream_record_with_privacy_policy(
-                        self.manifest.as_ref(),
-                        analytics_table_name,
+                        manifest.as_ref(),
+                        analytics_table_name.as_str(),
                         record_key.as_bytes(),
                         record,
-                        policy,
+                        &policy,
                     )
                 })
                 .await
                 .map(|outcome| outcome.outcome)
                 .map_err(AnalyticsLambdaError::ingest);
         }
+        let manifest = Arc::clone(&self.manifest);
+        let analytics_table_name = analytics_table_name.to_owned();
         self.engine
-            .with_write(|engine| {
+            .with_write(move |engine| {
                 engine.ingest_stream_record(
-                    self.manifest.as_ref(),
-                    analytics_table_name,
+                    manifest.as_ref(),
+                    analytics_table_name.as_str(),
                     record_key.as_bytes(),
                     record,
                 )
@@ -365,7 +372,7 @@ impl AnalyticsLambdaHandler {
             tasks.spawn(async move {
                 let started = Instant::now();
                 let (rows, prepared) = engine
-                    .with_read(|engine| {
+                    .with_read(move |engine| {
                         let prepared = prepare_tenant_structured_query(
                             manifest.as_ref(),
                             &query.query,

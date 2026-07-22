@@ -42,15 +42,14 @@ pub(crate) async fn handle_source_batch(
                     &checkpoint_results,
                 );
             }
+            let checkpoint = analytics_engine::SourceCheckpoint {
+                source_table_name: checkpoint.source_table_name.clone(),
+                shard_id: checkpoint.shard_id.clone(),
+                position: checkpoint.position.clone(),
+            };
             if let Err(error) = app_state
                 .engine
-                .with_write(|engine| {
-                    engine.save_source_checkpoint(&analytics_engine::SourceCheckpoint {
-                        source_table_name: checkpoint.source_table_name.clone(),
-                        shard_id: checkpoint.shard_id.clone(),
-                        position: checkpoint.position.clone(),
-                    })
-                })
+                .with_write(move |engine| engine.save_source_checkpoint(&checkpoint))
                 .await
             {
                 checkpoint_results.push(false);
@@ -182,6 +181,9 @@ async fn ingest_source_record(
     ingest_results: &mut Vec<bool>,
 ) {
     let manifest = app_state.manifest.read().await.clone();
+    let analytics_table_name = record.analytics_table_name.clone();
+    let record_key = record.record_key.clone();
+    let source_record = record.record.clone();
     let retention = if let Some(runtime) = app_state.retention.as_ref() {
         runtime
             .retention_for_record(
@@ -193,16 +195,16 @@ async fn ingest_source_record(
     } else {
         None
     };
-    let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
+    let ingest_result = if let Some(policy) = app_state.privacy_policy.clone() {
         app_state
             .engine
-            .with_write(|engine| {
+            .with_write(move |engine| {
                 engine.ingest_stream_record_with_privacy_policy_and_retention(
                     &manifest,
-                    record.analytics_table_name.as_str(),
-                    record.record_key.as_bytes(),
-                    record.record.clone(),
-                    policy,
+                    analytics_table_name.as_str(),
+                    record_key.as_bytes(),
+                    source_record,
+                    policy.as_ref(),
                     retention.as_ref(),
                 )
             })
@@ -218,12 +220,12 @@ async fn ingest_source_record(
     } else {
         app_state
             .engine
-            .with_write(|engine| {
+            .with_write(move |engine| {
                 engine.ingest_stream_record_with_retention(
                     &manifest,
-                    record.analytics_table_name.as_str(),
-                    record.record_key.as_bytes(),
-                    record.record.clone(),
+                    analytics_table_name.as_str(),
+                    record_key.as_bytes(),
+                    source_record,
                     retention.as_ref(),
                 )
             })

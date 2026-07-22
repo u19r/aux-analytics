@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use analytics_contract::{QuerySelect, StructuredQuery};
 use analytics_engine::{AnalyticsEngine, StorageBackend};
@@ -18,6 +18,44 @@ fn backend_aware_duckdb_file_uses_shared_writer_reads() {
     };
 
     assert!(!supports_dedicated_read_connections(&backend));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn synchronous_engine_work_does_not_starve_http_runtime() {
+    let backend = StorageBackend::DuckDb {
+        path: ":memory:".to_string(),
+    };
+    let engine = AnalyticsEngine::connect(&backend).expect("connect engine");
+    let access = Arc::new(AnalyticsEngineAccess::shared(engine));
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (heartbeat_tx, heartbeat_rx) = tokio::sync::oneshot::channel();
+    let heartbeat = tokio::spawn(async move {
+        started_rx.await.expect("blocking work started");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        heartbeat_tx.send(()).expect("signal runtime heartbeat");
+    });
+    let started = std::time::Instant::now();
+    let operation = tokio::spawn({
+        let access = Arc::clone(&access);
+        async move {
+            access
+                .with_write(|_| {
+                    started_tx.send(()).expect("signal blocking work");
+                    std::thread::sleep(Duration::from_millis(250));
+                })
+                .await;
+        }
+    });
+
+    heartbeat_rx.await.expect("runtime heartbeat completed");
+
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "synchronous engine work starved the async runtime for {:?}",
+        started.elapsed()
+    );
+    heartbeat.await.expect("runtime heartbeat task");
+    operation.await.expect("blocking work task");
 }
 
 #[tokio::test]
@@ -41,9 +79,10 @@ async fn backend_aware_duckdb_file_serves_concurrent_reads_from_writer_data() {
     }))
     .expect("ingest request");
     let (record_key, record) = request.into_contract_record();
+    let ingest_manifest = manifest.clone();
     access
-        .with_write(|engine| {
-            engine.ingest_stream_record(&manifest, "users", record_key.as_bytes(), record)
+        .with_write(move |engine| {
+            engine.ingest_stream_record(&ingest_manifest, "users", record_key.as_bytes(), record)
         })
         .await
         .expect("ingest");
@@ -56,7 +95,7 @@ async fn backend_aware_duckdb_file_serves_concurrent_reads_from_writer_data() {
         let manifest = Arc::clone(&manifest);
         tasks.spawn(async move {
             access
-                .with_read(|engine| {
+                .with_read(move |engine| {
                     engine.query_tenant_structured_json(
                         manifest.as_ref(),
                         &StructuredQuery {

@@ -405,9 +405,10 @@ pub(crate) async fn register_table(
     if let Err(err) = candidate_manifest.validate() {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
     }
+    let engine_table = table.clone();
     if let Err(err) = app_state
         .engine
-        .with_write(|engine| engine.ensure_table(&table))
+        .with_write(move |engine| engine.ensure_table(&engine_table))
         .await
     {
         return error_response(StatusCode::BAD_REQUEST, &err.to_string());
@@ -469,7 +470,7 @@ pub(crate) async fn unscoped_structured_query(
     let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
-        .with_read(|engine| {
+        .with_read(move |engine| {
             let prepared = prepare_unscoped_structured_query(&manifest, &request.query)?;
             let rows = engine.query_prepared_structured_json(&prepared)?;
             Ok::<_, AnalyticsEngineError>((rows, prepared))
@@ -512,7 +513,7 @@ pub(crate) async fn tenant_query(
     let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
-        .with_read(|engine| {
+        .with_read(move |engine| {
             let prepared = prepare_tenant_structured_query(
                 &manifest,
                 &request.query,
@@ -610,16 +611,17 @@ pub(crate) async fn ingest_stream_record(
     } else {
         None
     };
-    let ingest_result = if let Some(policy) = app_state.privacy_policy.as_ref() {
+    let engine_table_name = analytics_table_name.clone();
+    let ingest_result = if let Some(policy) = app_state.privacy_policy.clone() {
         app_state
             .engine
-            .with_write(|engine| {
+            .with_write(move |engine| {
                 engine.ingest_stream_record_with_privacy_policy_and_retention(
                     &manifest,
-                    analytics_table_name.as_str(),
+                    engine_table_name.as_str(),
                     record_key.as_bytes(),
                     record,
-                    policy,
+                    policy.as_ref(),
                     retention.as_ref(),
                 )
             })
@@ -639,10 +641,10 @@ pub(crate) async fn ingest_stream_record(
     } else {
         app_state
             .engine
-            .with_write(|engine| {
+            .with_write(move |engine| {
                 engine.ingest_stream_record_with_retention(
                     &manifest,
-                    analytics_table_name.as_str(),
+                    engine_table_name.as_str(),
                     record_key.as_bytes(),
                     record,
                     retention.as_ref(),
@@ -723,7 +725,7 @@ pub(crate) async fn ingest_stream_record_batch(
     let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
-        .with_write(|engine| engine.ingest_stream_record_batch(&manifest, records))
+        .with_write(move |engine| engine.ingest_stream_record_batch(&manifest, records))
         .await
     {
         Ok(outcomes) => {
@@ -771,7 +773,7 @@ pub(crate) async fn tenant_range_purge(
 ) -> Response {
     match app_state
         .engine
-        .with_write(|engine| engine.purge_tenant_range(&request))
+        .with_write(move |engine| engine.purge_tenant_range(&request))
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -792,18 +794,19 @@ async fn execute_tenant_query_batch(
         let target_tenant_id = target_tenant_id.clone();
         tasks.spawn(async move {
             let started = Instant::now();
+            let TenantQueryBatchItem { name, query } = item;
             let (rows, prepared) = engine
-                .with_read(|engine| {
+                .with_read(move |engine| {
                     let prepared = prepare_tenant_structured_query(
                         manifest.as_ref(),
-                        &item.query,
+                        &query,
                         target_tenant_id.as_str(),
                     )?;
                     let rows = engine.query_prepared_structured_json(&prepared)?;
                     Ok::<_, AnalyticsEngineError>((rows, prepared))
                 })
                 .await??;
-            let response = build_query_batch_result(item.name, rows, prepared.metadata(), started)?;
+            let response = build_query_batch_result(name, rows, prepared.metadata(), started)?;
             Ok::<_, TenantQueryBatchExecutionError>((index, response))
         });
     }

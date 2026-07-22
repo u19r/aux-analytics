@@ -204,14 +204,16 @@ async fn sweep_table(retention: &RetentionRuntime, app_state: &Arc<AppState>, ta
     let mut outcome = "success";
     loop {
         let batch_started = Instant::now();
+        let engine_table_name = table_name.to_owned();
+        let delete_batch_size = retention.config.delete_batch_size;
         let deleted = {
             match app_state
                 .engine
-                .with_write(|engine| {
+                .with_write(move |engine| {
                     engine.delete_expired_rows(
-                        table_name,
+                        engine_table_name.as_str(),
                         i64::try_from(now_ms()).unwrap_or(i64::MAX),
-                        retention.config.delete_batch_size,
+                        delete_batch_size,
                     )
                 })
                 .await
@@ -237,9 +239,10 @@ async fn sweep_table(retention: &RetentionRuntime, app_state: &Arc<AppState>, ta
         ))
         .await;
     }
+    let engine_table_name = table_name.to_owned();
     let missing = app_state
         .engine
-        .with_read(|engine| engine.missing_retention_count(table_name))
+        .with_read(move |engine| engine.missing_retention_count(engine_table_name.as_str()))
         .await
         .ok()
         .and_then(Result::ok)
