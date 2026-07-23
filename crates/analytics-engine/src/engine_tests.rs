@@ -355,11 +355,13 @@ fn stream_record_batches_are_ingested_in_one_transaction_boundary() {
             vec![
                 StreamRecordBatchItem {
                     analytics_table_name: "users".to_string(),
+                    source_table_name: "source_users".to_string(),
                     record_key: b"user-1".to_vec(),
                     record: email_record("1", "a@example.test"),
                 },
                 StreamRecordBatchItem {
                     analytics_table_name: "users".to_string(),
+                    source_table_name: "source_users".to_string(),
                     record_key: b"user-2".to_vec(),
                     record: email_record("2", "b@example.test"),
                 },
@@ -375,6 +377,187 @@ fn stream_record_batches_are_ingested_in_one_transaction_boundary() {
         .query_unscoped_sql_json("select count(*) as row_count from users")
         .expect("query");
     assert_eq!(rows[0]["row_count"], 2);
+}
+
+#[test]
+fn stream_batch_uses_actual_source_table_for_table_name_and_tenant() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut table = users_manifest().tables.remove(0);
+    table.source_table_name = "tenant_".to_string();
+    table.source_table_name_prefix = Some("tenant_".to_string());
+    table.tenant_id = None;
+    table.tenant_selector = TenantSelector::TableName;
+    let manifest = AnalyticsManifest::new(vec![table]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![StreamRecordBatchItem {
+                analytics_table_name: "users".to_string(),
+                source_table_name: "tenant_42".to_string(),
+                record_key: b"user-1".to_vec(),
+                record: email_record("1", "a@example.test"),
+            }],
+        )
+        .expect("batch ingest");
+
+    let rows = engine
+        .query_unscoped_sql_json("select tenant_id, table_name from users")
+        .expect("query");
+    assert_eq!(rows[0]["tenant_id"], "tenant_42");
+    assert_eq!(rows[0]["table_name"], "tenant_42");
+}
+
+#[test]
+fn stream_page_commits_rows_and_global_checkpoint_together() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let checkpoint = SourceCheckpoint {
+        source_table_name: "__global_system_stream".to_string(),
+        shard_id: "aux-storage".to_string(),
+        position: "cursor-2".to_string(),
+    };
+
+    let outcome = engine
+        .ingest_stream_page_and_checkpoint(
+            &manifest,
+            vec![StreamRecordBatchItem {
+                analytics_table_name: "users".to_string(),
+                source_table_name: "source_users".to_string(),
+                record_key: b"user-1".to_vec(),
+                record: email_record("1", "a@example.test"),
+            }],
+            &checkpoint,
+        )
+        .expect("ingest page");
+
+    assert_eq!(outcome.outcomes, vec![IngestOutcome::Inserted]);
+    assert!(outcome.quarantined.is_empty());
+    assert_eq!(
+        engine.load_source_checkpoints().expect("checkpoints"),
+        vec![checkpoint]
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query");
+    assert_eq!(rows[0]["row_count"], 1);
+}
+
+#[test]
+fn transient_page_failure_rolls_back_rows_and_global_checkpoint() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let checkpoint = SourceCheckpoint {
+        source_table_name: "__global_system_stream".to_string(),
+        shard_id: "aux-storage".to_string(),
+        position: "cursor-2".to_string(),
+    };
+
+    let error = engine
+        .ingest_stream_page_and_checkpoint(
+            &manifest,
+            vec![
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    source_table_name: "source_users".to_string(),
+                    record_key: b"user-1".to_vec(),
+                    record: email_record("1", "a@example.test"),
+                },
+                StreamRecordBatchItem {
+                    analytics_table_name: "missing".to_string(),
+                    source_table_name: "source_users".to_string(),
+                    record_key: b"user-2".to_vec(),
+                    record: email_record("2", "b@example.test"),
+                },
+            ],
+            &checkpoint,
+        )
+        .expect_err("unregistered table is a page failure");
+
+    assert!(matches!(
+        error,
+        AnalyticsEngineError::TableNotRegistered(name) if name == "missing"
+    ));
+    assert!(
+        engine
+            .load_source_checkpoints()
+            .expect("checkpoints")
+            .is_empty()
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query");
+    assert_eq!(rows[0]["row_count"], 0);
+}
+
+#[test]
+fn deterministic_poison_is_quarantined_without_blocking_later_records() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = metric_points_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let checkpoint = SourceCheckpoint {
+        source_table_name: "__global_system_stream".to_string(),
+        shard_id: "aux-storage".to_string(),
+        position: "cursor-3".to_string(),
+    };
+    let mut poison = metric_point_item("poison", "standard", "1");
+    poison.remove("tenant_id");
+
+    let outcome = engine
+        .ingest_stream_page_and_checkpoint(
+            &manifest,
+            vec![
+                metric_batch_item("valid-1", metric_point_item("valid-1", "standard", "1")),
+                metric_batch_item("poison", poison),
+                metric_batch_item("valid-2", metric_point_item("valid-2", "standard", "1")),
+            ],
+            &checkpoint,
+        )
+        .expect("ingest page with poison");
+
+    assert_eq!(
+        outcome.outcomes,
+        vec![IngestOutcome::Inserted, IngestOutcome::Inserted]
+    );
+    assert_eq!(outcome.quarantined.len(), 1);
+    assert_eq!(outcome.quarantined[0].input_index, 1);
+    assert_eq!(outcome.quarantined[0].error_class, "missing_attribute");
+    assert_eq!(
+        engine.load_source_checkpoints().expect("checkpoints"),
+        vec![checkpoint]
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from metric_points_v1")
+        .expect("query rows");
+    assert_eq!(rows[0]["row_count"], 2);
+    let quarantine = engine
+        .query_unscoped_sql_json(
+            "select sequence_number, error_class from analytics_ingest_quarantine",
+        )
+        .expect("query quarantine");
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(quarantine[0]["sequence_number"], "poison");
+    assert_eq!(quarantine[0]["error_class"], "missing_attribute");
+}
+
+fn metric_batch_item(
+    record_key: &str,
+    item: HashMap<String, StorageValue>,
+) -> StreamRecordBatchItem {
+    StreamRecordBatchItem {
+        analytics_table_name: "metric_points_v1".to_string(),
+        source_table_name: "metric_points_v1_stream".to_string(),
+        record_key: record_key.as_bytes().to_vec(),
+        record: StorageStreamRecord {
+            sequence_number: record_key.to_string(),
+            keys: HashMap::new(),
+            old_image: None,
+            new_image: Some(item),
+        },
+    }
 }
 
 fn email_record(sequence_number: &str, email: &str) -> StorageStreamRecord {

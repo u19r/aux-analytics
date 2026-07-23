@@ -281,14 +281,6 @@ pub enum SourcePollingPhase {
     "phase_started_at_ms": 1_778_670_000_000_u64,
     "table_count": 1,
     "last_poll_started_at_ms": 1_778_670_000_000_u64,
-    "last_registry_refresh_at_ms": 1_778_670_000_100_u64,
-    "registered_table_rows": 2,
-    "dynamic_source_table_count": 2,
-    "processor_mode": "ingest",
-    "active_processor_count": 2,
-    "owned_slot_count": 128,
-    "last_heartbeat_at_ms": 1_778_670_000_100_u64,
-    "lease_loss_count": 0,
     "last_success_at_ms": 1_778_670_000_200_u64,
     "last_error_at_ms": null,
     "last_error": null,
@@ -353,41 +345,6 @@ pub struct SourceHealth {
     #[serde(default)]
     #[schema(nullable = true, default = json!(null), example = 1_778_670_000_000_u64)]
     pub last_poll_started_at_ms: Option<u128>,
-    /// Unix epoch milliseconds when dynamic registered-table source discovery
-    /// last refreshed.
-    #[serde(default)]
-    #[schema(nullable = true, default = json!(null), example = 1_778_670_000_100_u64)]
-    pub last_registry_refresh_at_ms: Option<u128>,
-    /// Rows returned from `analytics_registered_tables` during the most recent
-    /// dynamic source discovery refresh.
-    #[serde(default)]
-    #[schema(default = 0, example = 2)]
-    pub registered_table_rows: usize,
-    /// Concrete tenant source tables derived from the most recent dynamic
-    /// registered-table refresh.
-    #[serde(default)]
-    #[schema(default = 0, example = 2)]
-    pub dynamic_source_table_count: usize,
-    /// Current processor mode for this instance.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(nullable = true, default = json!(null), example = "ingest")]
-    pub processor_mode: Option<String>,
-    /// Active ingest processors visible to this instance.
-    #[serde(default)]
-    #[schema(default = 0, example = 2)]
-    pub active_processor_count: usize,
-    /// Hash slots currently assigned to this processor.
-    #[serde(default)]
-    #[schema(default = 0, example = 128)]
-    pub owned_slot_count: usize,
-    /// Unix epoch milliseconds for the most recent processor heartbeat write.
-    #[serde(default)]
-    #[schema(nullable = true, default = json!(null), example = 1_778_670_000_100_u64)]
-    pub last_heartbeat_at_ms: Option<u128>,
-    /// Slot lease losses observed by this processor.
-    #[serde(default)]
-    #[schema(default = 0, example = 0)]
-    pub lease_loss_count: u64,
     /// Unix epoch milliseconds for the most recent successful poll.
     #[serde(default)]
     #[schema(nullable = true, default = json!(null), example = 1_778_670_000_200_u64)]
@@ -459,14 +416,6 @@ impl SourceHealth {
             phase_started_at_ms: None,
             table_count: 0,
             last_poll_started_at_ms: None,
-            last_registry_refresh_at_ms: None,
-            registered_table_rows: 0,
-            dynamic_source_table_count: 0,
-            processor_mode: None,
-            active_processor_count: 0,
-            owned_slot_count: 0,
-            last_heartbeat_at_ms: None,
-            lease_loss_count: 0,
             last_success_at_ms: None,
             last_error_at_ms: None,
             last_error: None,

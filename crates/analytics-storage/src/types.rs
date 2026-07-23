@@ -2,6 +2,7 @@ use analytics_contract::StorageStreamRecord;
 
 #[derive(Debug, Clone)]
 pub struct PolledRecord {
+    pub source_table_name: String,
     pub analytics_table_name: String,
     pub record_key: String,
     pub record: StorageStreamRecord,

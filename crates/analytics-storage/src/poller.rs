@@ -19,10 +19,12 @@ use crate::{
     facade::storage_stream_record_from_facade,
     planning::{SourceTablePlan, table_plans},
     poller_config::PollerConfig,
+    source_routes::CompiledSourceRoutes,
     types::{PollBatch, PolledRecord, SourceCheckpoint},
 };
 
 pub(crate) const AUX_STORAGE_SHARD_ID: &str = "aux-storage";
+pub(crate) const GLOBAL_SOURCE_NAME: &str = "__global_system_stream";
 
 #[derive(Debug)]
 pub struct SourcePoller {
@@ -33,15 +35,14 @@ pub struct SourcePoller {
 
 #[derive(Debug)]
 enum SourceTablePoller {
-    AuxStorage(AuxStorageTablePoller),
+    AuxStorage(AuxStorageGlobalPoller),
     AwsStream(AwsStreamTablePoller),
 }
 
 #[derive(Debug)]
-pub(crate) struct AuxStorageTablePoller {
+pub(crate) struct AuxStorageGlobalPoller {
     pub(crate) client: AuxStorageStreamClient,
-    pub(crate) source_table_name: String,
-    pub(crate) analytics_table_names: Vec<String>,
+    pub(crate) routes: CompiledSourceRoutes,
     pub(crate) last_evaluated_key: Option<String>,
     pub(crate) max_records_per_response: u32,
 }
@@ -76,7 +77,30 @@ impl SourcePoller {
     ) -> AnalyticsStorageResult<Self> {
         let config = PollerConfig::from_source_config(source);
         let mut tables = Vec::with_capacity(plans.len());
-        for plan in plans {
+        let aux_storage_plans = plans
+            .iter()
+            .filter(|plan| plan.stream_type == AnalyticsStreamType::AuxStorage)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !aux_storage_plans.is_empty() {
+            let endpoint_url = source.endpoint_url.as_deref().ok_or_else(|| {
+                AnalyticsStorageError::new(AnalyticsStorageErrorKind::MissingAuxStorageEndpoint)
+            })?;
+            tables.push(SourceTablePoller::AuxStorage(AuxStorageGlobalPoller {
+                client: AuxStorageStreamClient::new(endpoint_url, config.request_timeout)?,
+                routes: CompiledSourceRoutes::from_plans(&aux_storage_plans)?,
+                last_evaluated_key: checkpoint_position(
+                    checkpoints,
+                    GLOBAL_SOURCE_NAME,
+                    AUX_STORAGE_SHARD_ID,
+                ),
+                max_records_per_response: config.max_records_per_response,
+            }));
+        }
+        for plan in plans
+            .into_iter()
+            .filter(|plan| plan.stream_type == AnalyticsStreamType::StorageStream)
+        {
             tracing::info!(
                 source_table_name = plan.source_table_name,
                 analytics_table_names = ?plan.analytics_table_names,
@@ -85,23 +109,7 @@ impl SourcePoller {
             );
             match plan.stream_type {
                 AnalyticsStreamType::AuxStorage => {
-                    let endpoint_url = source.endpoint_url.as_deref().ok_or_else(|| {
-                        AnalyticsStorageError::new(
-                            AnalyticsStorageErrorKind::MissingAuxStorageEndpoint,
-                        )
-                    })?;
-                    let last_evaluated_key = aux_storage_initial_cursor(
-                        checkpoints,
-                        plan.source_table_name.as_str(),
-                        &plan.analytics_table_names,
-                    );
-                    tables.push(SourceTablePoller::AuxStorage(AuxStorageTablePoller {
-                        client: AuxStorageStreamClient::new(endpoint_url, config.request_timeout)?,
-                        source_table_name: plan.source_table_name,
-                        analytics_table_names: plan.analytics_table_names,
-                        last_evaluated_key,
-                        max_records_per_response: config.max_records_per_response,
-                    }));
+                    unreachable!("aux-storage plans are consolidated")
                 }
                 AnalyticsStreamType::StorageStream => {
                     let stream_arn = plan.stream_identifier.ok_or_else(|| {
@@ -203,7 +211,7 @@ impl StreamCatchupSource for SourcePoller {
 impl SourceTablePoller {
     fn is_aux_storage_source_table(&self, source_table_name: &str) -> bool {
         match self {
-            Self::AuxStorage(poller) => poller.source_table_name == source_table_name,
+            Self::AuxStorage(poller) => poller.routes.contains_source(source_table_name),
             Self::AwsStream(_) => false,
         }
     }
@@ -223,7 +231,7 @@ impl SourceTablePoller {
     }
 }
 
-impl AuxStorageTablePoller {
+impl AuxStorageGlobalPoller {
     pub(crate) async fn poll_once(
         &mut self,
         max_responses: usize,
@@ -234,15 +242,9 @@ impl AuxStorageTablePoller {
         for _ in 0..max_responses {
             let response = self
                 .client
-                .get_stream_records(
-                    self.source_table_name.as_str(),
-                    cursor.clone(),
-                    self.max_records_per_response,
-                )
+                .get_stream_records(cursor.clone(), self.max_records_per_response)
                 .await?;
             tracing::info!(
-                source_table_name = self.source_table_name,
-                analytics_table_names = ?self.analytics_table_names,
                 request_cursor = ?cursor,
                 response_records = response.records.len(),
                 response_has_next = response.last_evaluated_key.is_some(),
@@ -253,16 +255,10 @@ impl AuxStorageTablePoller {
                 .last()
                 .map(|record| record.sequence_number.clone());
             cursor = next_aux_storage_cursor(response.last_evaluated_key, latest_record_key);
-            records.extend(expand_records(
-                &self.analytics_table_names,
-                response
-                    .records
-                    .into_iter()
-                    .map(storage_stream_record_from_facade),
-            ));
+            records.extend(route_global_records(&self.routes, response.records)?);
             if let Some(position) = cursor.clone() {
                 last_checkpoint = Some(SourceCheckpoint {
-                    source_table_name: self.source_table_name.clone(),
+                    source_table_name: GLOBAL_SOURCE_NAME.to_string(),
                     shard_id: AUX_STORAGE_SHARD_ID.to_string(),
                     position,
                 });
@@ -278,7 +274,7 @@ impl AuxStorageTablePoller {
     }
 
     pub(crate) fn commit(&mut self, checkpoint: &SourceCheckpoint) {
-        if checkpoint.source_table_name == self.source_table_name
+        if checkpoint.source_table_name == GLOBAL_SOURCE_NAME
             && checkpoint.shard_id == AUX_STORAGE_SHARD_ID
         {
             self.last_evaluated_key = Some(checkpoint.position.clone());
@@ -425,7 +421,7 @@ pub(crate) fn aws_stream_response_batch(
             position: last_record.sequence_number.clone(),
         });
     }
-    let records = expand_records(analytics_table_names, contract_records);
+    let records = expand_records(source_table_name, analytics_table_names, contract_records);
     if let Some(next_iterator) = next_iterator {
         checkpoints.push(SourceCheckpoint {
             source_table_name: source_table_name.to_string(),
@@ -440,6 +436,7 @@ pub(crate) fn aws_stream_response_batch(
 }
 
 pub(crate) fn expand_records(
+    source_table_name: &str,
     analytics_table_names: &[String],
     records: impl IntoIterator<Item = StorageStreamRecord>,
 ) -> Vec<PolledRecord> {
@@ -447,6 +444,7 @@ pub(crate) fn expand_records(
     for record in records {
         for analytics_table_name in analytics_table_names {
             expanded.push(PolledRecord {
+                source_table_name: source_table_name.to_string(),
                 analytics_table_name: analytics_table_name.clone(),
                 record_key: record.sequence_number.clone(),
                 record: record.clone(),
@@ -454,6 +452,30 @@ pub(crate) fn expand_records(
         }
     }
     expanded
+}
+
+fn route_global_records(
+    routes: &CompiledSourceRoutes,
+    records: Vec<storage_types::StreamRecord>,
+) -> AnalyticsStorageResult<Vec<PolledRecord>> {
+    let mut routed = Vec::new();
+    for record in records {
+        let source_table_name = record.source_table_name.as_ref().ok_or_else(|| {
+            AnalyticsStorageError::new(AnalyticsStorageErrorKind::MissingSourceTableIdentity)
+        })?;
+        let contract_record = storage_stream_record_from_facade(record.clone());
+        for analytics_table_name in
+            routes.analytics_tables(source_table_name.as_ref(), &contract_record)
+        {
+            routed.push(PolledRecord {
+                source_table_name: source_table_name.to_string(),
+                analytics_table_name: analytics_table_name.to_string(),
+                record_key: contract_record.sequence_number.clone(),
+                record: contract_record.clone(),
+            });
+        }
+    }
+    Ok(routed)
 }
 
 pub(crate) fn checkpoint_position(
@@ -469,10 +491,11 @@ pub(crate) fn checkpoint_position(
         .map(|checkpoint| checkpoint.position.clone())
 }
 
+#[cfg(test)]
 pub(crate) fn aux_storage_initial_cursor(
     checkpoints: &[SourceCheckpoint],
-    source_table_name: &str,
+    _source_table_name: &str,
     _analytics_table_names: &[String],
 ) -> Option<String> {
-    checkpoint_position(checkpoints, source_table_name, AUX_STORAGE_SHARD_ID)
+    checkpoint_position(checkpoints, GLOBAL_SOURCE_NAME, AUX_STORAGE_SHARD_ID)
 }

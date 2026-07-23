@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use crate::{
-    AnalyticsCatalogBackend, AnalyticsCatalogConfig, AnalyticsIngestConfig,
-    AnalyticsObjectStorageConfig, AnalyticsRetentionConfig, AnalyticsSourceConfig, ConfigError,
-    ConfigErrorDebug, ConfigErrorKind, RootConfig, TenantRetentionPolicyRequest,
-    TenantRetentionPolicySource, load_optional_with_overrides,
+    AnalyticsCatalogBackend, AnalyticsCatalogConfig, AnalyticsObjectStorageConfig,
+    AnalyticsRetentionConfig, AnalyticsSourceConfig, ConfigError, ConfigErrorDebug,
+    ConfigErrorKind, RootConfig, TenantRetentionPolicyRequest, TenantRetentionPolicySource,
+    load_optional_with_overrides,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -201,49 +201,6 @@ pub fn validate_source_config(source: &AnalyticsSourceConfig) -> Result<(), Conf
         }
     }
     Ok(())
-}
-
-pub fn validate_ingest_config(ingest: &AnalyticsIngestConfig) -> Result<(), ConfigError> {
-    if let Some(processor_id) = ingest.processor_id.as_deref()
-        && processor_id.trim().is_empty()
-    {
-        return invalid_ingest_config("processor_id must not be empty when configured");
-    }
-    if ingest.poll_interval_ms == 0
-        || ingest.heartbeat_interval_ms == 0
-        || ingest.lease_duration_ms == 0
-        || ingest.heartbeat_ttl_ms == 0
-        || ingest.slot_count == 0
-    {
-        return invalid_ingest_config(
-            "poll_interval_ms, heartbeat_interval_ms, lease_duration_ms, heartbeat_ttl_ms, and \
-             slot_count must be greater than zero",
-        );
-    }
-    let min_lease_ms = ingest.heartbeat_interval_ms.checked_mul(2).ok_or_else(|| {
-        ConfigError::with_debug(
-            ConfigErrorKind::InvalidIngestConfig,
-            ConfigErrorDebug::Message(
-                "heartbeat_interval_ms is too large to validate lease duration".to_string(),
-            ),
-        )
-    })?;
-    if ingest.lease_duration_ms < min_lease_ms {
-        return invalid_ingest_config(
-            "lease_duration_ms must be at least two heartbeat_interval_ms values",
-        );
-    }
-    if ingest.heartbeat_ttl_ms < ingest.lease_duration_ms {
-        return invalid_ingest_config("heartbeat_ttl_ms must be at least lease_duration_ms");
-    }
-    Ok(())
-}
-
-fn invalid_ingest_config<T>(message: &str) -> Result<T, ConfigError> {
-    Err(ConfigError::with_debug(
-        ConfigErrorKind::InvalidIngestConfig,
-        ConfigErrorDebug::Message(message.to_string()),
-    ))
 }
 
 #[allow(clippy::too_many_lines)]

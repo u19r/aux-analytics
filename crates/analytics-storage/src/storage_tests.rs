@@ -46,7 +46,7 @@ fn poller_defaults_allow_many_responses_per_interval() {
     );
     assert_eq!(config.max_shards, 16);
     assert_eq!(config.max_responses_per_interval, 160);
-    assert_eq!(config.max_records_per_response, 1_000);
+    assert_eq!(config.max_records_per_response, 8_192);
     assert_eq!(config.response_budget_per_shard(), 10);
 }
 

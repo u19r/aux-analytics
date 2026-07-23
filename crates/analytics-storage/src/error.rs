@@ -55,13 +55,6 @@ impl AnalyticsStorageError {
         }
     }
 
-    pub(crate) fn kind(&self) -> AnalyticsStorageErrorKind {
-        self.kind
-    }
-
-    pub(crate) fn debug(&self) -> &AnalyticsStorageErrorDebug {
-        &self.debug
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +70,8 @@ pub(crate) enum AnalyticsStorageErrorKind {
     AwsSdk,
     MissingSequenceNumber,
     MissingKeys,
+    MissingSourceTableIdentity,
+    InvalidConditionExpression,
     UnsupportedAwsAttributeValue,
     MissingRetentionPolicyEndpoint,
     RetentionPolicyLookup,
@@ -112,6 +107,12 @@ impl fmt::Display for AnalyticsStorageErrorKind {
                 write!(f, "aws stream record did not include a sequence number")
             }
             Self::MissingKeys => write!(f, "aws stream record did not include keys"),
+            Self::MissingSourceTableIdentity => {
+                write!(f, "global stream record did not include its source table")
+            }
+            Self::InvalidConditionExpression => {
+                write!(f, "analytics source route condition is invalid")
+            }
             Self::UnsupportedAwsAttributeValue => {
                 write!(f, "aws stream attribute value variant is unsupported")
             }

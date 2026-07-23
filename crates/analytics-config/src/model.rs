@@ -4,9 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::constants::{
-    DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_INGEST_HEARTBEAT_INTERVAL_MS,
-    DEFAULT_INGEST_HEARTBEAT_TTL_MS, DEFAULT_INGEST_LEASE_DURATION_MS,
-    DEFAULT_INGEST_POLL_INTERVAL_MS, DEFAULT_INGEST_PROCESSOR_ENABLED, DEFAULT_INGEST_SLOT_COUNT,
+    DEFAULT_CONFIG_VERSION, DEFAULT_HTTP_BIND_ADDR, DEFAULT_INGEST_PROCESSOR_ENABLED,
     DEFAULT_LOG_LEVEL, DEFAULT_OBJECT_STORAGE_SCHEME, DEFAULT_POLL_INTERVAL_MS,
     DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE, DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL,
     DEFAULT_POLL_MAX_SHARDS, DEFAULT_POLL_REQUEST_TIMEOUT_MS, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
@@ -298,57 +296,18 @@ pub struct AnalyticsIngestConfig {
     #[serde(default = "default_ingest_processor_enabled")]
     #[schemars(default = "default_ingest_processor_enabled")]
     pub processor_enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(default)]
-    pub processor_id: Option<String>,
-    #[serde(default = "default_ingest_poll_interval_ms")]
-    #[schemars(default = "default_ingest_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-    #[serde(default = "default_ingest_heartbeat_interval_ms")]
-    #[schemars(default = "default_ingest_heartbeat_interval_ms")]
-    pub heartbeat_interval_ms: u64,
-    #[serde(default = "default_ingest_lease_duration_ms")]
-    #[schemars(default = "default_ingest_lease_duration_ms")]
-    pub lease_duration_ms: u64,
-    #[serde(default = "default_ingest_heartbeat_ttl_ms")]
-    #[schemars(default = "default_ingest_heartbeat_ttl_ms")]
-    pub heartbeat_ttl_ms: u64,
-    #[serde(default = "default_ingest_slot_count")]
-    #[schemars(default = "default_ingest_slot_count")]
-    pub slot_count: u16,
 }
 
 impl Default for AnalyticsIngestConfig {
     fn default() -> Self {
         Self {
             processor_enabled: default_ingest_processor_enabled(),
-            processor_id: None,
-            poll_interval_ms: default_ingest_poll_interval_ms(),
-            heartbeat_interval_ms: default_ingest_heartbeat_interval_ms(),
-            lease_duration_ms: default_ingest_lease_duration_ms(),
-            heartbeat_ttl_ms: default_ingest_heartbeat_ttl_ms(),
-            slot_count: default_ingest_slot_count(),
         }
     }
 }
 
 fn default_ingest_processor_enabled() -> bool {
     DEFAULT_INGEST_PROCESSOR_ENABLED
-}
-fn default_ingest_poll_interval_ms() -> u64 {
-    DEFAULT_INGEST_POLL_INTERVAL_MS
-}
-fn default_ingest_heartbeat_interval_ms() -> u64 {
-    DEFAULT_INGEST_HEARTBEAT_INTERVAL_MS
-}
-fn default_ingest_lease_duration_ms() -> u64 {
-    DEFAULT_INGEST_LEASE_DURATION_MS
-}
-fn default_ingest_heartbeat_ttl_ms() -> u64 {
-    DEFAULT_INGEST_HEARTBEAT_TTL_MS
-}
-fn default_ingest_slot_count() -> u16 {
-    DEFAULT_INGEST_SLOT_COUNT
 }
 
 impl Default for AnalyticsSourceConfig {

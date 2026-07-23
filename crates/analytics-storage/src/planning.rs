@@ -1,4 +1,4 @@
-use analytics_contract::AnalyticsManifest;
+use analytics_contract::{AnalyticsManifest, TableRegistration};
 use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamType};
 
 use crate::error::{
@@ -9,7 +9,9 @@ use crate::error::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTablePlan {
     pub(crate) source_table_name: String,
+    pub(crate) source_table_name_prefix: Option<String>,
     pub(crate) analytics_table_names: Vec<String>,
+    pub(crate) registrations: Vec<TableRegistration>,
     pub(crate) stream_type: AnalyticsStreamType,
     pub(crate) stream_identifier: Option<String>,
 }
@@ -19,7 +21,9 @@ impl SourceTablePlan {
     pub fn aux_storage(source_table_name: String, analytics_table_names: Vec<String>) -> Self {
         Self {
             source_table_name,
+            source_table_name_prefix: None,
             analytics_table_names,
+            registrations: Vec::new(),
             stream_type: AnalyticsStreamType::AuxStorage,
             stream_identifier: None,
         }
@@ -69,11 +73,18 @@ fn manifest_table_plans(
         }
         plans.push(SourceTablePlan {
             source_table_name: table.source_table_name.clone(),
+            source_table_name_prefix: table.source_table_name_prefix.clone(),
             analytics_table_names: manifest
                 .tables
                 .iter()
                 .filter(|candidate| candidate.source_table_name == table.source_table_name)
                 .map(|candidate| candidate.analytics_table_name.clone())
+                .collect(),
+            registrations: manifest
+                .tables
+                .iter()
+                .filter(|candidate| candidate.source_table_name == table.source_table_name)
+                .cloned()
                 .collect(),
             stream_type: source
                 .stream_type
@@ -103,7 +114,14 @@ fn table_plan(
     }
     Ok(SourceTablePlan {
         source_table_name: table.table_name.clone(),
+        source_table_name_prefix: None,
         analytics_table_names,
+        registrations: manifest
+            .tables
+            .iter()
+            .filter(|manifest_table| manifest_table.source_table_name == table.table_name)
+            .cloned()
+            .collect(),
         stream_type: table
             .stream_type
             .or(source.stream_type)

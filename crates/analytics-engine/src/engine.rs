@@ -303,6 +303,13 @@ impl AnalyticsEngine {
                 source_position_json JSON NOT NULL,
                 row_visible BOOLEAN NOT NULL,
                 updated_at_ms BIGINT NOT NULL
+            );
+             CREATE TABLE IF NOT EXISTS analytics_ingest_quarantine (
+                source_table_name VARCHAR NOT NULL,
+                analytics_table_name VARCHAR NOT NULL,
+                sequence_number VARCHAR NOT NULL,
+                error_class VARCHAR NOT NULL,
+                updated_at_ms BIGINT NOT NULL
             );",
             [],
         )?;
@@ -348,6 +355,10 @@ impl AnalyticsEngine {
             return Ok(());
         }
         self.ensure_runtime_tables()?;
+        self.write_source_checkpoint(checkpoint)
+    }
+
+    fn write_source_checkpoint(&self, checkpoint: &SourceCheckpoint) -> AnalyticsEngineResult<()> {
         self.conn.execute(
             "DELETE FROM analytics_checkpoints
              WHERE source_table_name = ? AND shard_id = ?",
@@ -458,7 +469,93 @@ impl AnalyticsEngine {
         manifest: &AnalyticsManifest,
         records: Vec<StreamRecordBatchItem>,
     ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
-        self.refresh_object_storage_credentials_if_needed()?;
+        self.ingest_stream_record_batch_with_checkpoint(manifest, records, None)
+    }
+
+    pub fn ingest_stream_record_batch_and_checkpoint(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+        checkpoint: &SourceCheckpoint,
+    ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
+        self.ingest_stream_record_batch_with_checkpoint(manifest, records, Some(checkpoint))
+    }
+
+    pub fn ingest_stream_page_and_checkpoint(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+        checkpoint: &SourceCheckpoint,
+    ) -> AnalyticsEngineResult<StreamPageIngestOutcome> {
+        match self.ingest_stream_record_batch_and_checkpoint(manifest, records.clone(), checkpoint)
+        {
+            Ok(outcomes) => Ok(StreamPageIngestOutcome {
+                outcomes,
+                quarantined: Vec::new(),
+            }),
+            Err(error) if error.is_record_contract_failure() => {
+                self.isolate_and_ingest_stream_page(manifest, records, checkpoint)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn isolate_and_ingest_stream_page(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+        checkpoint: &SourceCheckpoint,
+    ) -> AnalyticsEngineResult<StreamPageIngestOutcome> {
+        let mut valid_records = Vec::with_capacity(records.len());
+        let mut quarantined = Vec::new();
+        for (input_index, record) in records.into_iter().enumerate() {
+            match self.validate_stream_record_batch_item(manifest, record.clone()) {
+                Ok(()) => valid_records.push(record),
+                Err(error) if error.is_record_contract_failure() => {
+                    quarantined.push(QuarantinedStreamRecord::from_error(
+                        input_index,
+                        &record,
+                        &error,
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let outcomes = self.ingest_stream_record_batch_with_quarantine_and_checkpoint(
+            manifest,
+            valid_records,
+            &quarantined,
+            checkpoint,
+        )?;
+        Ok(StreamPageIngestOutcome {
+            outcomes,
+            quarantined,
+        })
+    }
+
+    fn validate_stream_record_batch_item(
+        &self,
+        manifest: &AnalyticsManifest,
+        record: StreamRecordBatchItem,
+    ) -> AnalyticsEngineResult<()> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let mut batch = BatchSqlExecutor::new(&self.conn);
+        let result = self
+            .ingest_stream_record_batch_item(manifest, record, &mut batch)
+            .map(drop);
+        let rollback = self.conn.execute_batch("ROLLBACK");
+        rollback?;
+        result
+    }
+
+    fn ingest_stream_record_batch_with_quarantine_and_checkpoint(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+        quarantined: &[QuarantinedStreamRecord],
+        checkpoint: &SourceCheckpoint,
+    ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
+        self.ensure_runtime_tables()?;
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let mut outcomes = Vec::with_capacity(records.len());
         let mut batch = BatchSqlExecutor::new(&self.conn);
@@ -467,6 +564,73 @@ impl AnalyticsEngine {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(error) => return rollback_batch(&self.conn, error),
             }
+        }
+        for record in quarantined {
+            if let Err(error) = self.write_quarantined_record(record) {
+                return rollback_batch(&self.conn, error);
+            }
+        }
+        if let Err(error) = self.write_source_checkpoint(checkpoint) {
+            return rollback_batch(&self.conn, error);
+        }
+        self.conn.execute_batch("COMMIT")?;
+        Ok(outcomes)
+    }
+
+    fn write_quarantined_record(
+        &self,
+        record: &QuarantinedStreamRecord,
+    ) -> AnalyticsEngineResult<()> {
+        self.conn.execute(
+            "DELETE FROM analytics_ingest_quarantine
+             WHERE source_table_name = ?
+               AND analytics_table_name = ?
+               AND sequence_number = ?",
+            duckdb::params![
+                record.source_table_name,
+                record.analytics_table_name,
+                record.sequence_number
+            ],
+        )?;
+        self.conn.execute(
+            "INSERT INTO analytics_ingest_quarantine
+                (source_table_name, analytics_table_name, sequence_number, error_class, updated_at_ms)
+             VALUES (?, ?, ?, ?, ?)",
+            duckdb::params![
+                record.source_table_name,
+                record.analytics_table_name,
+                record.sequence_number,
+                record.error_class,
+                current_time_millis()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn ingest_stream_record_batch_with_checkpoint(
+        &self,
+        manifest: &AnalyticsManifest,
+        records: Vec<StreamRecordBatchItem>,
+        checkpoint: Option<&SourceCheckpoint>,
+    ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
+        self.refresh_object_storage_credentials_if_needed()?;
+        if checkpoint.is_some() && self.supports_persistent_checkpoints {
+            self.ensure_runtime_tables()?;
+        }
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let mut outcomes = Vec::with_capacity(records.len());
+        let mut batch = BatchSqlExecutor::new(&self.conn);
+        for item in records {
+            match self.ingest_stream_record_batch_item(manifest, item, &mut batch) {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(error) => return rollback_batch(&self.conn, error),
+            }
+        }
+        if let Some(checkpoint) = checkpoint
+            && self.supports_persistent_checkpoints
+            && let Err(error) = self.write_source_checkpoint(checkpoint)
+        {
+            return rollback_batch(&self.conn, error);
         }
         self.conn.execute_batch("COMMIT")?;
         Ok(outcomes)
@@ -501,6 +665,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    item.source_table_name.as_str(),
                     item.record_key.as_slice(),
                     &record_keys,
                     new_image,
@@ -529,6 +694,7 @@ impl AnalyticsEngine {
                     }
                     let row = self.row_from_item(
                         table,
+                        item.source_table_name.as_str(),
                         item.record_key.as_slice(),
                         &record_keys,
                         old_image,
@@ -539,6 +705,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    item.source_table_name.as_str(),
                     item.record_key.as_slice(),
                     &record_keys,
                     new_image,
@@ -560,6 +727,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    item.source_table_name.as_str(),
                     item.record_key.as_slice(),
                     &record_keys,
                     old_image,
@@ -694,6 +862,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    table.source_table_name.as_str(),
                     record_key,
                     &record_keys,
                     new_image,
@@ -722,6 +891,7 @@ impl AnalyticsEngine {
                     }
                     let row = self.row_from_item(
                         table,
+                        table.source_table_name.as_str(),
                         record_key,
                         &record_keys,
                         old_image,
@@ -732,6 +902,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    table.source_table_name.as_str(),
                     record_key,
                     &record_keys,
                     new_image,
@@ -753,6 +924,7 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
+                    table.source_table_name.as_str(),
                     record_key,
                     &record_keys,
                     old_image,
@@ -1552,11 +1724,60 @@ pub enum IngestOutcome {
     Skipped,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StreamRecordBatchItem {
     pub analytics_table_name: String,
+    pub source_table_name: String,
     pub record_key: Vec<u8>,
     pub record: StorageStreamRecord,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StreamPageIngestOutcome {
+    pub outcomes: Vec<IngestOutcome>,
+    pub quarantined: Vec<QuarantinedStreamRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuarantinedStreamRecord {
+    pub input_index: usize,
+    pub source_table_name: String,
+    pub analytics_table_name: String,
+    pub sequence_number: String,
+    pub error_class: &'static str,
+}
+
+impl QuarantinedStreamRecord {
+    fn from_error(
+        input_index: usize,
+        record: &StreamRecordBatchItem,
+        error: &AnalyticsEngineError,
+    ) -> Self {
+        Self {
+            input_index,
+            source_table_name: bounded_quarantine_text(record.source_table_name.as_str()),
+            analytics_table_name: bounded_quarantine_text(record.analytics_table_name.as_str()),
+            sequence_number: bounded_quarantine_text(record.record.sequence_number.as_str()),
+            error_class: record_contract_error_class(error),
+        }
+    }
+}
+
+fn bounded_quarantine_text(value: &str) -> String {
+    value.chars().take(256).collect()
+}
+
+const fn record_contract_error_class(error: &AnalyticsEngineError) -> &'static str {
+    match error {
+        AnalyticsEngineError::RecordDoesNotMatchRegistration(_) => "record_does_not_match",
+        AnalyticsEngineError::MissingTenant => "missing_tenant",
+        AnalyticsEngineError::MissingAttribute(_) => "missing_attribute",
+        AnalyticsEngineError::RegexNoMatch { .. } => "regex_no_match",
+        AnalyticsEngineError::MissingIdentifier(_) => "missing_identifier",
+        AnalyticsEngineError::AttributeConversion(_) => "attribute_conversion",
+        AnalyticsEngineError::InvalidRetentionTimestamp(_) => "invalid_retention_timestamp",
+        _ => "not_record_contract_error",
+    }
 }
 
 struct BatchSqlExecutor<'conn> {

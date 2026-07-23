@@ -15,6 +15,7 @@ impl AnalyticsEngine {
     pub(crate) fn row_from_item(
         &self,
         table: &TableRegistration,
+        source_table_name: &str,
         record_key: &[u8],
         record_keys: &StorageItem,
         item: StorageItem,
@@ -35,14 +36,19 @@ impl AnalyticsEngine {
             item
         };
 
-        let tenant_id = resolve_tenant_id(table, &full_item, &mut self.caches.borrow_mut())?;
+        let tenant_id = resolve_tenant_id(
+            table,
+            source_table_name,
+            &full_item,
+            &mut self.caches.borrow_mut(),
+        )?;
         let mut row = attribute_map_to_json(item)?;
         if let Some(document_column) = table.document_column.as_deref() {
             row.insert(document_column.to_string(), full_item_json);
         }
         row.insert(
             "table_name".to_string(),
-            serde_json::Value::String(table.source_table_name.clone()),
+            serde_json::Value::String(source_table_name.to_string()),
         );
         row.insert(
             "tenant_id".to_string(),
@@ -128,6 +134,7 @@ fn storage_value_to_i64(value: &StorageValue, attribute_path: &str) -> Analytics
 
 fn resolve_tenant_id(
     table: &TableRegistration,
+    source_table_name: &str,
     item: &StorageItem,
     caches: &mut EngineCaches,
 ) -> AnalyticsEngineResult<Option<String>> {
@@ -160,7 +167,7 @@ fn resolve_tenant_id(
                 .map(Some)
                 .ok_or(AnalyticsEngineError::MissingTenant)
         }
-        TenantSelector::TableName => Err(AnalyticsEngineError::MissingTenant),
+        TenantSelector::TableName => Ok(Some(source_table_name.to_string())),
     }
 }
 

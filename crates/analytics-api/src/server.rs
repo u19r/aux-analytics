@@ -22,8 +22,7 @@ use crate::{
     cli::ApiCli,
     error::ApiResult,
     runtime_config::{
-        load_privacy_policy, load_serve_config, resolve_manifest_path, validate_ingest_config,
-        validate_source_config,
+        load_privacy_policy, load_serve_config, resolve_manifest_path, validate_source_config,
     },
     source_polling::spawn_source_polling,
 };
@@ -42,7 +41,6 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
         None => analytics_contract::AnalyticsManifest::new(Vec::new()),
     };
     validate_source_config(&root.analytics.source)?;
-    validate_ingest_config(&root.analytics.ingest)?;
     config::validate_retention_config(&root.analytics.retention)?;
     let privacy_policy = load_privacy_policy(&root)?.map(Arc::new);
     let (filter, source) = resolve_filter(&root.tracing);

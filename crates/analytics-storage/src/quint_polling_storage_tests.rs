@@ -83,6 +83,7 @@ fn quint_polling_storage_model_matches_storage_polling() -> impl Driver {
 
 fn check_fan_out() -> Result<StoragePollingResult> {
     let expanded = expand_records(
+        "source_users",
         &[
             "analytics_users".to_string(),
             "analytics_accounts".to_string(),

@@ -4,13 +4,10 @@ use analytics_api::{AppState, SourceHealthStatus, SourcePollingPhase};
 use analytics_storage::{AuxStorageLeaseOutcome, SourcePoller};
 use config::AnalyticsSourceConfig;
 
-use crate::source_polling::{
-    batch::*, health::*, legacy_lease::*, metrics::*, planning::*, time::*,
-};
+use crate::source_polling::{batch::*, health::*, legacy_lease::*, metrics::*, time::*};
 
 pub(crate) async fn run_source_poller(
     mut poller: SourcePoller,
-    mut source_plan_signature: Vec<String>,
     source: AnalyticsSourceConfig,
     app_state: Arc<AppState>,
 ) {
@@ -123,77 +120,6 @@ pub(crate) async fn run_source_poller(
             .await;
             None
         };
-        let manifest = app_state.manifest.read().await.clone();
-        apply_source_job_phase_to_app_state(
-            &app_state,
-            SourcePollingPhase::RefreshingPlan,
-            worker_id.as_str(),
-            lease_renewal.as_ref().map(SourcePollingLeaseRenewal::token),
-            lease_renewal
-                .as_ref()
-                .map(SourcePollingLeaseRenewal::lease_until_ms),
-        )
-        .await;
-        let next_source_plan_signature =
-            match effective_source_poll_plan_signature_with_timeout(&source, &manifest, &app_state)
-                .await
-            {
-                Ok(signature) => signature,
-                Err(SourcePollPlanRefreshFailure::Timeout(error)) => {
-                    metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
-                    {
-                        let mut health = app_state.source_health.write().await;
-                        apply_source_poll_timeout_health(&mut health, error.clone(), now_ms());
-                    }
-                    release_source_polling_lease_after_epoch(lease_client.as_ref(), lease_renewal)
-                        .await;
-                    tracing::warn!(error = %error, "analytics source poll plan refresh timed out");
-                    continue;
-                }
-                Err(SourcePollPlanRefreshFailure::Error(error)) => {
-                    metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
-                    {
-                        let mut health = app_state.source_health.write().await;
-                        apply_source_poll_error_health(&mut health, error.clone(), now_ms());
-                    }
-                    release_source_polling_lease_after_epoch(lease_client.as_ref(), lease_renewal)
-                        .await;
-                    tracing::warn!(error = %error, "analytics source poll plan refresh failed");
-                    continue;
-                }
-            };
-        if next_source_plan_signature != source_plan_signature {
-            apply_source_job_phase_to_app_state(
-                &app_state,
-                SourcePollingPhase::RebuildingPoller,
-                worker_id.as_str(),
-                lease_renewal.as_ref().map(SourcePollingLeaseRenewal::token),
-                lease_renewal
-                    .as_ref()
-                    .map(SourcePollingLeaseRenewal::lease_until_ms),
-            )
-            .await;
-            match rebuild_source_poller(&source, &manifest, &app_state).await {
-                Ok(next_poller) => {
-                    poller = next_poller;
-                    source_plan_signature = next_source_plan_signature;
-                    tracing::info!(
-                        "analytics source poller rebuilt after source table registration change"
-                    );
-                }
-                Err(error) => {
-                    metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
-                    {
-                        let mut health = app_state.source_health.write().await;
-                        apply_source_poll_error_health(&mut health, error.to_string(), now_ms());
-                    }
-                    release_source_polling_lease_after_epoch(lease_client.as_ref(), lease_renewal)
-                        .await;
-                    tracing::warn!(error = %error, "analytics source poller rebuild failed");
-                    continue;
-                }
-            }
-        }
         {
             let mut health = app_state.source_health.write().await;
             apply_source_job_phase(

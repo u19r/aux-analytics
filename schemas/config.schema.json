@@ -61,12 +61,7 @@
         "ingest": {
           "$ref": "#/$defs/AnalyticsIngestConfig",
           "default": {
-            "heartbeat_interval_ms": 5000,
-            "heartbeat_ttl_ms": 3600000,
-            "lease_duration_ms": 10000,
-            "poll_interval_ms": 5000,
-            "processor_enabled": true,
-            "slot_count": 256
+            "processor_enabled": true
           }
         },
         "manifest_path": {
@@ -109,7 +104,7 @@
           "$ref": "#/$defs/AnalyticsSourceConfig",
           "default": {
             "poll_interval_ms": 100,
-            "poll_max_records_per_response": 1000,
+            "poll_max_records_per_response": 8192,
             "poll_max_responses_per_interval": 160,
             "poll_max_shards": 16,
             "poll_request_timeout_ms": 5000,
@@ -132,46 +127,9 @@
     "AnalyticsIngestConfig": {
       "additionalProperties": false,
       "properties": {
-        "heartbeat_interval_ms": {
-          "default": 5000,
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "heartbeat_ttl_ms": {
-          "default": 3600000,
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "lease_duration_ms": {
-          "default": 10000,
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "poll_interval_ms": {
-          "default": 5000,
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
         "processor_enabled": {
           "default": true,
           "type": "boolean"
-        },
-        "processor_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "slot_count": {
-          "default": 256,
-          "format": "uint16",
-          "maximum": 65535,
-          "minimum": 0,
-          "type": "integer"
         }
       },
       "type": "object"
@@ -374,7 +332,7 @@
           "type": "integer"
         },
         "poll_max_records_per_response": {
-          "default": 1000,
+          "default": 8192,
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -822,12 +780,7 @@
           "ingest_endpoint_enabled": true
         },
         "ingest": {
-          "heartbeat_interval_ms": 5000,
-          "heartbeat_ttl_ms": 3600000,
-          "lease_duration_ms": 10000,
-          "poll_interval_ms": 5000,
-          "processor_enabled": true,
-          "slot_count": 256
+          "processor_enabled": true
         },
         "object_storage": {
           "provider": "s3",
@@ -849,7 +802,7 @@
         },
         "source": {
           "poll_interval_ms": 100,
-          "poll_max_records_per_response": 1000,
+          "poll_max_records_per_response": 8192,
           "poll_max_responses_per_interval": 160,
           "poll_max_shards": 16,
           "poll_request_timeout_ms": 5000,

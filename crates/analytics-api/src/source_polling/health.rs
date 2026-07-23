@@ -11,25 +11,6 @@ pub(crate) fn apply_source_poll_error_health(
     apply_source_poll_failure_health(health, SourcePollingPhase::Degraded, error, observed_at_ms);
 }
 
-pub(crate) fn apply_source_poll_timeout_health(
-    health: &mut SourceHealth,
-    error: String,
-    observed_at_ms: u128,
-) {
-    apply_source_poll_failure_health(health, SourcePollingPhase::Timeout, error, observed_at_ms);
-}
-
-pub(crate) fn apply_source_registry_refresh_health(
-    health: &mut SourceHealth,
-    registered_table_rows: usize,
-    dynamic_source_table_count: usize,
-    observed_at_ms: u128,
-) {
-    health.last_registry_refresh_at_ms = Some(observed_at_ms);
-    health.registered_table_rows = registered_table_rows;
-    health.dynamic_source_table_count = dynamic_source_table_count;
-}
-
 fn apply_source_poll_failure_health(
     health: &mut SourceHealth,
     phase: SourcePollingPhase,

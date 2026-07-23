@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use analytics_api::AppState;
 use analytics_storage::{
-    AuxStorageCoordinationClient, AuxStorageLeaseClient, PollBatch, SlotLease,
-    SourceCheckpoint as StorageSourceCheckpoint, SourceProgress,
+    AuxStorageLeaseClient, PollBatch, SourceCheckpoint as StorageSourceCheckpoint,
 };
 
 use crate::source_polling::{
-    batch_metrics::*, checkpoint_lease::source_polling_lease_permits_progress, health::*,
-    legacy_lease::SourcePollingLeaseRenewal, metrics::*, time::*,
+    checkpoint_lease::source_polling_lease_permits_progress,
+    health::apply_source_success_health,
+    legacy_lease::SourcePollingLeaseRenewal,
+    metrics::*,
+    time::{now_ms, usize_to_f64},
 };
 pub(crate) async fn handle_source_batch(
     app_state: &Arc<AppState>,
@@ -17,6 +19,9 @@ pub(crate) async fn handle_source_batch(
     lease_renewal: Option<&SourcePollingLeaseRenewal>,
 ) -> SourceBatchOutcome {
     metrics::histogram!(SOURCE_RECORDS_PER_POLL_METRIC).record(usize_to_f64(batch.records.len()));
+    if app_state.privacy_policy.is_none() && app_state.retention.is_none() {
+        return handle_vector_source_batch(app_state, batch, lease_client, lease_renewal).await;
+    }
     let mut ingest_results = Vec::with_capacity(batch.records.len());
     if !ingest_source_records_with_lease_guard(
         app_state,
@@ -65,87 +70,94 @@ pub(crate) async fn handle_source_batch(
     source_batch_outcome(&ingest_results, &checkpoint_results)
 }
 
-pub(crate) struct HashedRangeBatchContext<'a> {
-    pub(crate) source_table_id: &'a str,
-    pub(crate) marker_versionstamp: &'a str,
-    pub(crate) previous_progress: Option<&'a SourceProgress>,
-}
-
-pub(crate) async fn handle_hashed_range_source_batch(
+async fn handle_vector_source_batch(
     app_state: &Arc<AppState>,
     batch: &PollBatch,
-    coordination_client: &AuxStorageCoordinationClient,
-    lease: &SlotLease,
-    context: HashedRangeBatchContext<'_>,
+    lease_client: Option<&Arc<AuxStorageLeaseClient>>,
+    lease_renewal: Option<&SourcePollingLeaseRenewal>,
 ) -> SourceBatchOutcome {
-    metrics::histogram!(SOURCE_RECORDS_PER_POLL_METRIC).record(usize_to_f64(batch.records.len()));
-    let mut ingest_results = Vec::with_capacity(batch.records.len());
-    if !ingest_source_records(app_state, batch, &mut ingest_results).await {
-        return source_batch_outcome(&ingest_results, &[]);
+    if !source_polling_lease_permits_progress(lease_client, lease_renewal).await {
+        return source_batch_outcome_with_ownership_loss(&[], &[]);
     }
-    if !ingest_results.iter().all(|result| *result) {
-        return source_batch_outcome(&ingest_results, &[]);
-    }
-
-    let Some(progress) = source_progress_from_batch(
-        batch,
-        context.source_table_id,
-        context.marker_versionstamp,
-        lease,
-    ) else {
-        return source_batch_outcome(&ingest_results, &[]);
+    let Some(checkpoint) = persistable_checkpoints(&batch.checkpoints).last() else {
+        return source_batch_outcome(&[], &[]);
     };
-
-    match coordination_client
-        .save_progress(&progress, lease, now_ms_i64())
+    let engine_checkpoint = analytics_engine::SourceCheckpoint {
+        source_table_name: checkpoint.source_table_name.clone(),
+        shard_id: checkpoint.shard_id.clone(),
+        position: checkpoint.position.clone(),
+    };
+    let records = batch
+        .records
+        .iter()
+        .map(|record| analytics_engine::StreamRecordBatchItem {
+            source_table_name: record.source_table_name.clone(),
+            analytics_table_name: record.analytics_table_name.clone(),
+            record_key: record.record_key.as_bytes().to_vec(),
+            record: record.record.clone(),
+        })
+        .collect();
+    let manifest = app_state.manifest.read().await.clone();
+    match app_state
+        .engine
+        .with_write(move |engine| {
+            engine.ingest_stream_page_and_checkpoint(&manifest, records, &engine_checkpoint)
+        })
         .await
     {
-        Ok(true) => {
+        Ok(page) => {
+            let quarantined = page
+                .quarantined
+                .iter()
+                .map(|record| record.input_index)
+                .collect::<std::collections::BTreeSet<_>>();
+            let valid_records = batch
+                .records
+                .iter()
+                .enumerate()
+                .filter_map(|(index, record)| (!quarantined.contains(&index)).then_some(record));
+            for (record, outcome) in valid_records.zip(page.outcomes.iter().copied()) {
+                record_source_ingest_outcome(record.analytics_table_name.as_str(), outcome);
+            }
+            for record in &page.quarantined {
+                metrics::counter!(
+                    SOURCE_QUARANTINED_TOTAL_METRIC,
+                    "error_class" => record.error_class
+                )
+                .increment(1);
+                tracing::warn!(
+                    source_table_name = record.source_table_name,
+                    analytics_table_name = record.analytics_table_name,
+                    sequence_number = record.sequence_number,
+                    error_class = record.error_class,
+                    "quarantined deterministic analytics source record"
+                );
+            }
             metrics::counter!(SOURCE_CHECKPOINTS_SAVED_TOTAL_METRIC).increment(1);
-        }
-        Ok(false) => {
-            metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
-            return source_batch_outcome_with_ownership_loss(&ingest_results, &[false]);
+            SourceBatchOutcome {
+                all_records_ingested: true,
+                should_commit: true,
+                ownership_lost: false,
+                records_ingested: page.outcomes.len() as u64,
+                ingest_errors: 0,
+                checkpoints_saved: 1,
+                checkpoint_errors: 0,
+            }
         }
         Err(error) => {
-            metrics::counter!(SOURCE_CHECKPOINT_ERRORS_TOTAL_METRIC).increment(1);
-            tracing::warn!(
-                source_table_id = context.source_table_id,
-                error = %error,
-                "failed to save analytics hashed-range source progress"
-            );
-            return source_batch_outcome(&ingest_results, &[false]);
+            metrics::counter!(SOURCE_INGEST_ERRORS_TOTAL_METRIC).increment(1);
+            tracing::warn!(error = %error, "failed to ingest global analytics stream batch");
+            SourceBatchOutcome {
+                all_records_ingested: false,
+                should_commit: false,
+                ownership_lost: false,
+                records_ingested: 0,
+                ingest_errors: batch.records.len() as u64,
+                checkpoints_saved: 0,
+                checkpoint_errors: 0,
+            }
         }
     }
-
-    let lag = record_hashed_range_table_metrics(
-        batch,
-        context.source_table_id,
-        context.marker_versionstamp,
-        &progress,
-        context.previous_progress,
-    );
-    {
-        let mut health = app_state.source_health.write().await;
-        upsert_table_lag_health(&mut health.table_lag, lag);
-    }
-    if let Some(rollup) = ingest_rate_rollup_from_batch(
-        batch,
-        context.source_table_id,
-        context.marker_versionstamp,
-        &progress,
-        now_ms_i64(),
-    ) && let Err(error) = coordination_client.write_ingest_rate_rollup(&rollup).await
-    {
-        tracing::warn!(
-            source_table_id = context.source_table_id,
-            tenant_id = rollup.tenant_id,
-            error = %error,
-            "failed to write analytics hashed-range ingest-rate rollup"
-        );
-    }
-
-    source_batch_outcome(&ingest_results, &[true])
 }
 
 async fn ingest_source_records_with_lease_guard(
@@ -159,17 +171,6 @@ async fn ingest_source_records_with_lease_guard(
         if !source_polling_lease_permits_progress(lease_client, lease_renewal).await {
             return false;
         }
-        ingest_source_record(app_state, record, ingest_results).await;
-    }
-    true
-}
-
-async fn ingest_source_records(
-    app_state: &Arc<AppState>,
-    batch: &PollBatch,
-    ingest_results: &mut Vec<bool>,
-) -> bool {
-    for record in &batch.records {
         ingest_source_record(app_state, record, ingest_results).await;
     }
     true
@@ -246,25 +247,6 @@ async fn ingest_source_record(
             );
         }
     }
-}
-
-pub(crate) fn source_progress_from_batch(
-    batch: &PollBatch,
-    source_table_id: &str,
-    marker_versionstamp: &str,
-    lease: &SlotLease,
-) -> Option<SourceProgress> {
-    persistable_checkpoints(&batch.checkpoints)
-        .filter(|checkpoint| checkpoint.source_table_name == source_table_id)
-        .last()
-        .map(|checkpoint| SourceProgress {
-            source_table_id: source_table_id.to_string(),
-            cursor: checkpoint.position.clone(),
-            versionstamp: marker_versionstamp.to_string(),
-            updated_at_ms: now_ms_i64(),
-            updated_by: lease.processor_id.clone(),
-            generation: lease.generation.clone(),
-        })
 }
 
 fn record_source_ingest_outcome(

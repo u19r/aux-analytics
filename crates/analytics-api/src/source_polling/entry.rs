@@ -6,9 +6,7 @@ use config::{AnalyticsIngestConfig, AnalyticsSourceConfig};
 
 use crate::{
     error::ApiResult,
-    source_polling::{
-        hashed_range::run_hashed_range_source_poller, legacy::run_source_poller, planning::*,
-    },
+    source_polling::{legacy::run_source_poller, planning::*},
 };
 pub(crate) async fn spawn_source_polling(
     source: &AnalyticsSourceConfig,
@@ -41,8 +39,6 @@ pub(crate) async fn spawn_source_polling(
     let storage_checkpoints = storage_checkpoints_from_engine(checkpoints);
     tracing::info!("analytics source poller construction starting");
     let plans = effective_source_table_plans(source, &manifest, &app_state).await?;
-    let source_plan_signature = source_table_plan_signature(&plans);
-    let hashed_range_aux_storage = source_plans_are_aux_storage_only(&plans);
     let poller = SourcePoller::from_plans(source, plans, &storage_checkpoints).await?;
     tracing::info!(
         poller_is_empty = poller.is_empty(),
@@ -58,21 +54,6 @@ pub(crate) async fn spawn_source_polling(
         tracing::info!("analytics source polling disabled: no pollable source tables");
         return Ok(());
     }
-    if hashed_range_aux_storage {
-        tokio::spawn(run_hashed_range_source_poller(
-            poller,
-            source_plan_signature,
-            source.clone(),
-            ingest.clone(),
-            app_state,
-        ));
-    } else {
-        tokio::spawn(run_source_poller(
-            poller,
-            source_plan_signature,
-            source.clone(),
-            app_state,
-        ));
-    }
+    tokio::spawn(run_source_poller(poller, source.clone(), app_state));
     Ok(())
 }

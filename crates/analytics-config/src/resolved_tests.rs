@@ -5,8 +5,8 @@ use crate::{
     ConfigErrorKind, RetentionDurationSelector, RetentionTimestampConfig, RootConfig,
     StorageBackend, TenantRetentionPolicyConfig, TenantRetentionPolicyRequest,
     TenantRetentionPolicySource, TenantRetentionQueryTableRequest, parse_override_args,
-    resolve_manifest_path, resolve_storage_backend, validate_ingest_config,
-    validate_retention_config, validate_source_config,
+    resolve_manifest_path, resolve_storage_backend, validate_retention_config,
+    validate_source_config,
 };
 
 #[test]
@@ -89,53 +89,10 @@ fn source_validation_rejects_tables_without_stream_type() {
 }
 
 #[test]
-fn ingest_config_defaults_match_hashed_range_processor_defaults() {
+fn ingest_config_defaults_enable_the_single_global_processor() {
     let ingest = AnalyticsIngestConfig::default();
 
     assert!(ingest.processor_enabled);
-    assert_eq!(ingest.processor_id, None);
-    assert_eq!(ingest.poll_interval_ms, 5_000);
-    assert_eq!(ingest.heartbeat_interval_ms, 5_000);
-    assert_eq!(ingest.lease_duration_ms, 10_000);
-    assert_eq!(ingest.heartbeat_ttl_ms, 3_600_000);
-    assert_eq!(ingest.slot_count, 256);
-}
-
-#[test]
-fn ingest_validation_rejects_lease_shorter_than_two_heartbeats() {
-    let ingest = AnalyticsIngestConfig {
-        heartbeat_interval_ms: 5_000,
-        lease_duration_ms: 9_999,
-        ..AnalyticsIngestConfig::default()
-    };
-
-    let error = validate_ingest_config(&ingest).expect_err("invalid ingest config");
-
-    assert_eq!(error.kind(), ConfigErrorKind::InvalidIngestConfig);
-    assert!(error.to_string().contains("two heartbeat"));
-}
-
-#[test]
-fn ingest_validation_rejects_empty_processor_id() {
-    let ingest = AnalyticsIngestConfig {
-        processor_id: Some("  ".to_string()),
-        ..AnalyticsIngestConfig::default()
-    };
-
-    let error = validate_ingest_config(&ingest).expect_err("invalid ingest config");
-
-    assert_eq!(error.kind(), ConfigErrorKind::InvalidIngestConfig);
-    assert!(error.to_string().contains("processor_id"));
-}
-
-#[test]
-fn ingest_validation_accepts_query_only_processor_config() {
-    let ingest = AnalyticsIngestConfig {
-        processor_enabled: false,
-        ..AnalyticsIngestConfig::default()
-    };
-
-    validate_ingest_config(&ingest).expect("valid query-only ingest config");
 }
 
 #[test]

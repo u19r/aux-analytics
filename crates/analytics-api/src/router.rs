@@ -755,6 +755,13 @@ pub(crate) async fn ingest_stream_record_batch(
         );
     }
 
+    let manifest = app_state.manifest.read().await.clone();
+    let source_table_name = manifest
+        .tables
+        .iter()
+        .find(|table| table.analytics_table_name == analytics_table_name)
+        .map(|table| table.source_table_name.clone())
+        .unwrap_or_else(|| analytics_table_name.clone());
     let records = request
         .records
         .into_iter()
@@ -762,12 +769,12 @@ pub(crate) async fn ingest_stream_record_batch(
             let (record_key, record) = request.into_contract_record();
             StreamRecordBatchItem {
                 analytics_table_name: analytics_table_name.clone(),
+                source_table_name: source_table_name.clone(),
                 record_key: record_key.into_bytes(),
                 record,
             }
         })
         .collect();
-    let manifest = app_state.manifest.read().await.clone();
     match app_state
         .engine
         .with_write(move |engine| engine.ingest_stream_record_batch(&manifest, records))
