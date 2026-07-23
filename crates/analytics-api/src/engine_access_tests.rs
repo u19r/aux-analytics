@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use analytics_contract::{QuerySelect, StructuredQuery};
-use analytics_engine::{AnalyticsEngine, StorageBackend};
+use analytics_engine::{AnalyticsEngine, CatalogType, StorageBackend};
 use analytics_fixtures::{user_item, users_manifest};
 use serde_json::json;
 use tokio::task::JoinSet;
@@ -124,4 +124,107 @@ async fn backend_aware_duckdb_file_serves_concurrent_reads_from_writer_data() {
         let rows = joined.expect("read task");
         assert_eq!(rows[0]["count"], 1);
     }
+}
+
+#[tokio::test]
+async fn backend_aware_ducklake_reader_observes_data_written_after_connection_is_pooled() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let catalog_path = tempdir.path().join("catalog.sqlite");
+    let data_path = tempdir.path().join("ducklake-data");
+    std::fs::create_dir_all(&data_path).expect("create DuckLake data directory");
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::Sqlite,
+        catalog_path: catalog_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    };
+    assert_pooled_reader_observes_write(backend).await;
+}
+
+#[tokio::test]
+async fn backend_aware_aux_catalog_reader_observes_data_written_after_connection_is_pooled() {
+    if std::env::var_os("AUX_ANALYTICS_DUCKLAKE_FDB_LIVE").is_none() {
+        return;
+    }
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let catalog_path = tempdir.path().join("catalog.aux");
+    let data_path = tempdir.path().join("ducklake-data");
+    std::fs::create_dir_all(&data_path).expect("create DuckLake data directory");
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::AuxCatalog,
+        catalog_path: catalog_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    };
+    assert_pooled_reader_observes_write(backend).await;
+}
+
+async fn assert_pooled_reader_observes_write(backend: StorageBackend) {
+    let manifest = users_manifest();
+    let writer = AnalyticsEngine::connect(&backend).expect("connect writer");
+    writer.ensure_manifest(&manifest).expect("ensure manifest");
+    let access =
+        AnalyticsEngineAccess::backend_aware_with_max_read_connections(writer, backend, 1);
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::Count {
+            alias: "count".to_string(),
+        }],
+        filters: Vec::new(),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(1),
+        offset: None,
+    };
+    let initial_manifest = manifest.clone();
+    let initial_query = query.clone();
+    let initial_rows = access
+        .with_read(move |engine| {
+            engine.query_tenant_structured_json(
+                &initial_manifest,
+                &initial_query,
+                "tenant_01",
+            )
+        })
+        .await
+        .expect("initial read access")
+        .expect("initial query");
+    assert_eq!(initial_rows[0]["count"], 0);
+
+    let request: IngestStreamRecordRequest = serde_json::from_value(json!({
+        "record_key": "user-1",
+        "record": {
+            "Keys": {},
+            "SequenceNumber": "1",
+            "NewImage": user_item("user-1", "reader@example.com", "org-a"),
+        }
+    }))
+    .expect("ingest request");
+    let (record_key, record) = request.into_contract_record();
+    let ingest_manifest = manifest.clone();
+    access
+        .with_write(move |engine| {
+            engine.ingest_stream_record(
+                &ingest_manifest,
+                "users",
+                record_key.as_bytes(),
+                record,
+            )
+        })
+        .await
+        .expect("ingest");
+
+    let rows = access
+        .with_read(move |engine| {
+            engine.query_tenant_structured_json(&manifest, &query, "tenant_01")
+        })
+        .await
+        .expect("read access")
+        .expect("query");
+
+    assert_eq!(rows[0]["count"], 1);
 }

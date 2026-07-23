@@ -147,7 +147,8 @@ impl AuxStorageStreamClient {
         self.dynamo(
             "GetStreamRecords",
             &GetStreamRecordsRequest {
-                table_name: TableName::new(table_name),
+                table_name: Some(TableName::new(table_name)),
+                system_stream: false,
                 last_evaluated_key,
                 limit: Some(limit),
             },
