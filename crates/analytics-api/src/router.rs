@@ -98,6 +98,7 @@ pub fn router_with_config(app_state: Arc<AppState>, endpoint_config: EndpointCon
         .route("/operations/{operation_id}/cancel", post(cancel_operation))
         .route("/manifest", get(manifest))
         .route("/tables", post(register_table))
+        .route("/tables/batch", post(register_tables))
         .route("/analytics/health", get(health_status))
         .route("/analytics/diagnostics", get(diagnostics))
         .route("/analytics/manifest", get(manifest))
@@ -400,21 +401,65 @@ pub(crate) async fn register_table(
     State(app_state): State<Arc<AppState>>,
     ValidatedJson(table): ValidatedJson<TableRegistration>,
 ) -> Response {
-    let mut candidate_manifest = app_state.manifest.read().await.as_ref().clone();
-    upsert_manifest_table(&mut candidate_manifest, table.clone());
-    if let Err(err) = candidate_manifest.validate() {
-        return error_response(StatusCode::BAD_REQUEST, &err.to_string());
+    match register_table_batch(&app_state, vec![table]).await {
+        Ok(mut registered) => Json(registered.pop().expect("single table batch")).into_response(),
+        Err(response) => response,
     }
-    let engine_table = table.clone();
+}
+
+#[utoipa::path(
+    post,
+    path = "/tables/batch",
+    request_body = Vec<analytics_contract::TableRegistration>,
+    responses(
+        (status = 200, body = Vec<analytics_contract::TableRegistration>, description = "Registered analytics tables"),
+        (status = 400, body = ErrorResponse, description = "Invalid table registrations")
+    ),
+    tag = "Analytics"
+)]
+pub(crate) async fn register_tables(
+    State(app_state): State<Arc<AppState>>,
+    ValidatedJson(tables): ValidatedJson<Vec<TableRegistration>>,
+) -> Response {
+    match register_table_batch(&app_state, tables).await {
+        Ok(registered) => Json(registered).into_response(),
+        Err(response) => response,
+    }
+}
+
+async fn register_table_batch(
+    app_state: &AppState,
+    tables: Vec<TableRegistration>,
+) -> Result<Vec<TableRegistration>, Response> {
+    if tables.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "at least one table registration is required",
+        ));
+    }
+    let mut active_manifest = app_state.manifest.write().await;
+    let mut candidate_manifest = active_manifest.as_ref().clone();
+    for table in &tables {
+        upsert_manifest_table(&mut candidate_manifest, table.clone());
+    }
+    if let Err(err) = candidate_manifest.validate() {
+        return Err(error_response(StatusCode::BAD_REQUEST, &err.to_string()));
+    }
+    let engine_tables = tables.clone();
     if let Err(err) = app_state
         .engine
-        .with_write(move |engine| engine.ensure_table(&engine_table))
+        .with_write(move |engine| {
+            for table in &engine_tables {
+                engine.ensure_table(table)?;
+            }
+            Ok::<(), AnalyticsEngineError>(())
+        })
         .await
     {
-        return error_response(StatusCode::BAD_REQUEST, &err.to_string());
+        return Err(error_response(StatusCode::BAD_REQUEST, &err.to_string()));
     }
-    *app_state.manifest.write().await = Arc::new(candidate_manifest);
-    Json(table).into_response()
+    *active_manifest = Arc::new(candidate_manifest);
+    Ok(tables)
 }
 
 fn upsert_manifest_table(manifest: &mut AnalyticsManifest, table: TableRegistration) {

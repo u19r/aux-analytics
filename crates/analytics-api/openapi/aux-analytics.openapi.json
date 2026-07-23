@@ -4492,6 +4492,52 @@
         ]
       }
     },
+    "/tables/batch": {
+      "post": {
+        "operationId": "register_tables",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "$ref": "#/components/schemas/TableRegistration"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TableRegistration"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Registered analytics tables"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid table registrations"
+          }
+        },
+        "tags": [
+          "Analytics"
+        ]
+      }
+    },
     "/tenant-query": {
       "post": {
         "operationId": "tenant_query",

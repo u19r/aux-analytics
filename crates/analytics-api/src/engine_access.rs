@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use analytics_engine::{AnalyticsEngine, AnalyticsEngineError, StorageBackend};
@@ -19,6 +21,8 @@ pub enum AnalyticsEngineAccessError {
 pub struct AnalyticsEngineAccess {
     writer: Arc<Mutex<AnalyticsEngine>>,
     read_strategy: ReadStrategy,
+    #[cfg(test)]
+    write_entries: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -39,6 +43,8 @@ impl AnalyticsEngineAccess {
         Self {
             writer: Arc::new(Mutex::new(engine)),
             read_strategy: ReadStrategy::SharedWriter,
+            #[cfg(test)]
+            write_entries: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -69,6 +75,8 @@ impl AnalyticsEngineAccess {
         Self {
             writer: Arc::new(Mutex::new(engine)),
             read_strategy,
+            #[cfg(test)]
+            write_entries: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -113,12 +121,19 @@ impl AnalyticsEngineAccess {
     where
         T: Send + 'static,
     {
+        #[cfg(test)]
+        self.write_entries.fetch_add(1, Ordering::Relaxed);
         let writer = Arc::clone(&self.writer);
         run_engine_work(move || {
             let engine = writer.blocking_lock();
             operation(&engine)
         })
         .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_entry_count(&self) -> usize {
+        self.write_entries.load(Ordering::Relaxed)
     }
 }
 

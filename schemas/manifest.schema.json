@@ -560,7 +560,7 @@
         },
         "document_column": {
           "default": "item",
-          "description": "JSON document column containing the full source item. Set null to omit\nthe full document. Must not use the built-in output column names\n`tenant_id`, `table_name`, or `__id`.",
+          "description": "JSON document column containing the full source item. Set null for a\ndirect-ingestion table that source polling must not consume. Must not\nuse the built-in output column names `tenant_id`, `table_name`, or\n`__id`.",
           "type": [
             "string",
             "null"

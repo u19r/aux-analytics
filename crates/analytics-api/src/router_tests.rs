@@ -80,6 +80,43 @@ async fn tables_endpoint_registers_table_and_updates_active_manifest() {
 }
 
 #[tokio::test]
+async fn tables_batch_endpoint_registers_all_tables_and_updates_active_manifest() {
+    let (router, app_state) = test_router_and_state();
+    let mut first = users_manifest().tables[0].clone();
+    first.analytics_table_name = "registered_users_first".to_string();
+    let mut second = first.clone();
+    second.analytics_table_name = "registered_users_second".to_string();
+
+    let response = post_json(router.clone(), "/tables/batch", json!([first, second])).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(app_state.engine.write_entry_count(), 1);
+    let body = response_json(response).await;
+    assert_eq!(body.as_array().map(Vec::len), Some(2));
+
+    let response = get(router, "/manifest").await;
+    let body = response_json(response).await;
+    let tables = body["tables"].as_array().expect("manifest tables");
+    for expected in ["registered_users_first", "registered_users_second"] {
+        assert!(
+            tables
+                .iter()
+                .any(|table| table["analytics_table_name"] == expected),
+            "registered table {expected} missing from manifest: {tables:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tables_batch_endpoint_rejects_an_empty_batch() {
+    let response = post_json(test_router(), "/tables/batch", json!([])).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response_json(response).await;
+    assert_eq!(body["error"], "at least one table registration is required");
+}
+
+#[tokio::test]
 async fn given_missing_required_tenant_when_ingested_then_record_contract_code_is_returned() {
     let router = test_router();
     let mut table = users_manifest().tables[0].clone();
@@ -791,6 +828,10 @@ async fn openapi_endpoint_describes_analytics_routes() {
     );
     assert_eq!(body["paths"]["/tables"]["post"]["tags"][0], "Analytics");
     assert_eq!(
+        body["paths"]["/tables/batch"]["post"]["tags"][0],
+        "Analytics"
+    );
+    assert_eq!(
         body["paths"]["/ingest/{analytics_table_name}"]["post"]["tags"][0],
         "Analytics"
     );
@@ -811,10 +852,15 @@ async fn openapi_endpoint_describes_analytics_routes() {
 }
 
 fn test_router() -> Router {
+    test_router_and_state().0
+}
+
+fn test_router_and_state() -> (Router, Arc<AppState>) {
     let manifest = users_manifest();
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     engine.ensure_manifest(&manifest).expect("ensure manifest");
-    server_router(Arc::new(AppState::new(engine, manifest)))
+    let app_state = Arc::new(AppState::new(engine, manifest));
+    (server_router(Arc::clone(&app_state)), app_state)
 }
 
 fn test_router_with_privacy_policy(policy: PrivacyPolicy) -> Router {
