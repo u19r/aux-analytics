@@ -43,6 +43,117 @@ fn record_contract_failures_are_distinct_from_retryable_runtime_failures() {
 }
 
 #[test]
+fn ingest_contract_validation_rejects_unregistered_emitted_table() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = AnalyticsManifest::new(Vec::new());
+
+    let error = engine
+        .validate_ingest_contract(
+            &manifest,
+            "metric_points_v1",
+            b"metric-1",
+            insert_record(HashMap::new()),
+        )
+        .expect_err("emitted table must be registered");
+
+    assert!(matches!(
+        error,
+        AnalyticsEngineError::TableNotRegistered(name) if name == "metric_points_v1"
+    ));
+}
+
+#[test]
+fn ingest_contract_validation_rejects_serialized_item_that_does_not_match_registration() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut table = generic_items_manifest().tables[0].clone();
+    table.analytics_table_name = "sys_tenants".to_string();
+    table.condition_expression = Some("#entity_type = :entity_type".to_string());
+    table.expression_attribute_names = Some(HashMap::from([(
+        "#entity_type".to_string(),
+        "entity_type".to_string(),
+    )]));
+    table.expression_attribute_values = Some(BTreeMap::from([(
+        ":entity_type".to_string(),
+        StorageValue::S("TENANT_META".to_string()),
+    )]));
+    let manifest = AnalyticsManifest::new(vec![table]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let error = engine
+        .validate_ingest_contract(
+            &manifest,
+            "sys_tenants",
+            b"tenant-1",
+            insert_record(HashMap::from([
+                (
+                    "entity_type".to_string(),
+                    StorageValue::S("SYSTEM_TENANT".to_string()),
+                ),
+                (
+                    "tenant_id".to_string(),
+                    StorageValue::S("tenant-1".to_string()),
+                ),
+            ])),
+        )
+        .expect_err("serialized entity must match its registration");
+
+    assert!(matches!(
+        error,
+        AnalyticsEngineError::RecordDoesNotMatchRegistration(name) if name == "sys_tenants"
+    ));
+}
+
+#[test]
+fn ingest_contract_validation_uses_real_required_attribute_and_type_path() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut table = generic_items_manifest().tables[0].clone();
+    table.analytics_table_name = "sys_tenants".to_string();
+    table.tenant_id = None;
+    table.tenant_selector = TenantSelector::Attribute {
+        attribute_name: "tenant_id".to_string(),
+    };
+    let manifest = AnalyticsManifest::new(vec![table]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let error = engine
+        .validate_ingest_contract(
+            &manifest,
+            "sys_tenants",
+            b"tenant-1",
+            insert_record(HashMap::from([(
+                "tenant_id".to_string(),
+                StorageValue::N("1".to_string()),
+            )])),
+        )
+        .expect_err("tenant_id must use the registered string representation");
+
+    assert!(matches!(
+        error,
+        AnalyticsEngineError::MissingAttribute(name) if name == "tenant_id"
+    ));
+}
+
+#[test]
+fn ingest_contract_validation_accepts_matching_serialized_item() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = generic_items_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    engine
+        .validate_ingest_contract(
+            &manifest,
+            "legacy_items",
+            b"item-1",
+            insert_record(legacy_item("item-1", "value")),
+        )
+        .expect("matching contract");
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from legacy_items")
+        .expect("query validation destination");
+    assert_eq!(rows[0]["row_count"], 0);
+}
+
+#[test]
 fn stream_records_are_projected_into_queryable_rows() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     let manifest = AnalyticsManifest::new(vec![TableRegistration {
@@ -96,6 +207,15 @@ fn stream_records_are_projected_into_queryable_rows() {
         .expect("query");
     assert_eq!(rows[0]["tenant_id"], "tenant_01");
     assert_eq!(rows[0]["email"], "a@example.com");
+}
+
+fn insert_record(new_image: HashMap<String, StorageValue>) -> StorageStreamRecord {
+    StorageStreamRecord {
+        keys: HashMap::new(),
+        sequence_number: "1".to_string(),
+        old_image: None,
+        new_image: Some(new_image),
+    }
 }
 
 #[test]
@@ -487,6 +607,70 @@ fn source_checkpoints_are_persisted_in_ducklake_catalog() {
             shard_id: "aux-storage".to_string(),
             position: "12345".to_string(),
         }]
+    );
+}
+
+#[test]
+fn given_ambiguous_fdb_commit_when_later_join_row_ingests_then_reopen_queries_both_once() {
+    if std::env::var_os("AUX_ANALYTICS_DUCKLAKE_FDB_LIVE").is_none() {
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let catalog_path = tempdir.path().join("catalog.aux");
+    let data_path = tempdir.path().join("ducklake-data");
+    std::fs::create_dir_all(&data_path).expect("create ducklake data dir");
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::AuxCatalog,
+        catalog_path: catalog_path.to_string_lossy().to_string(),
+        data_path: data_path.to_string_lossy().to_string(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    };
+    let manifest = AnalyticsManifest::new(vec![
+        filtered_entity_table("source_items", "memberships", "MEMBERSHIP"),
+        filtered_entity_table("source_items", "users", "USER"),
+    ]);
+    let engine = AnalyticsEngine::connect(&backend).expect("connect aux catalog");
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let membership = entity_record("entity-1", "MEMBERSHIP", "member@example.test");
+    let user = entity_record("entity-1", "USER", "user@example.test");
+    assert_eq!(
+        engine
+            .ingest_stream_record(&manifest, "memberships", b"membership-1", membership)
+            .expect("ingest membership through ambiguous commit"),
+        IngestOutcome::Inserted
+    );
+    assert_eq!(
+        engine
+            .ingest_stream_record(&manifest, "users", b"user-1", user)
+            .expect("ingest later user"),
+        IngestOutcome::Inserted
+    );
+    engine
+        .save_source_checkpoint(&SourceCheckpoint {
+            source_table_name: "source_items".to_string(),
+            shard_id: "shard-1".to_string(),
+            position: "2".to_string(),
+        })
+        .expect("save source checkpoint");
+    drop(engine);
+
+    let reopened = AnalyticsEngine::connect(&backend).expect("reopen aux catalog");
+    let rows = reopened
+        .query_unscoped_sql_json(
+            "select count(*) as joined_count from memberships m inner join users u on m.entity_id \
+             = u.entity_id",
+        )
+        .expect("query joined rows");
+    assert_eq!(rows[0]["joined_count"], 1);
+    assert_eq!(
+        reopened
+            .load_source_checkpoints()
+            .expect("load source checkpoints")[0]
+            .position,
+        "2"
     );
 }
 

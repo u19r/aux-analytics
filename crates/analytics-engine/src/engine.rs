@@ -55,6 +55,8 @@ pub enum AnalyticsEngineError {
     PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("table registration not found for analytics table {0}")]
     TableNotRegistered(String),
+    #[error("record does not match the condition for analytics table {0}")]
+    RecordDoesNotMatchRegistration(String),
     #[error(transparent)]
     Projection(#[from] crate::projection::ProjectionError),
     #[error("record does not include a tenant id and registration has no tenant id")]
@@ -113,7 +115,8 @@ impl AnalyticsEngineError {
     pub fn is_record_contract_failure(&self) -> bool {
         matches!(
             self,
-            Self::MissingTenant
+            Self::RecordDoesNotMatchRegistration(_)
+                | Self::MissingTenant
                 | Self::MissingAttribute(_)
                 | Self::RegexNoMatch { .. }
                 | Self::MissingIdentifier(_)
@@ -422,6 +425,32 @@ impl AnalyticsEngine {
             record,
             None,
         )
+    }
+
+    /// Exercises the real ingestion path for a representative serialized
+    /// record without retaining the resulting row.
+    ///
+    /// Unlike normal ingestion, a record excluded by its registration
+    /// condition is a contract error. This lets source adapters table-drive
+    /// tests over every emitted analytics table and catch registration drift
+    /// before deployment.
+    pub fn validate_ingest_contract(
+        &self,
+        manifest: &AnalyticsManifest,
+        analytics_table_name: &str,
+        record_key: &[u8],
+        record: StorageStreamRecord,
+    ) -> AnalyticsEngineResult<()> {
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = self.ingest_stream_record(manifest, analytics_table_name, record_key, record);
+        let rollback = self.conn.execute_batch("ROLLBACK");
+        rollback?;
+        match result? {
+            IngestOutcome::Skipped => Err(AnalyticsEngineError::RecordDoesNotMatchRegistration(
+                analytics_table_name.to_string(),
+            )),
+            IngestOutcome::Inserted | IngestOutcome::Updated | IngestOutcome::Deleted => Ok(()),
+        }
     }
 
     pub fn ingest_stream_record_batch(
