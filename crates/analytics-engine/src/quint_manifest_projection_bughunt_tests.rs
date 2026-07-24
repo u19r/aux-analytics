@@ -225,6 +225,7 @@ fn base_table() -> TableRegistration {
         source_table_name: "source_a".to_string(),
         analytics_table_name: "events".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,

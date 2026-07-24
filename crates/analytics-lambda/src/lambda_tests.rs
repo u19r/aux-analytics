@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io::Read, sync::Arc};
 
 use analytics_contract::{
-    PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
+    AnalyticsManifest, PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
 };
 use analytics_fixtures::{user_item, users_manifest};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -37,6 +37,59 @@ async fn lambda_ingests_and_queries_rows() {
         .await
         .expect("query");
     assert_eq!(query_response["rows"][0]["email"], "a@example.com");
+}
+
+#[tokio::test]
+async fn given_expanded_registration_when_lambda_ingests_compact_list_then_rows_are_queryable() {
+    let manifest = expanded_lambda_manifest();
+    let handler = AnalyticsLambdaHandler::new(
+        manifest,
+        &StorageBackend::DuckDb {
+            path: ":memory:".to_string(),
+        },
+    )
+    .expect("handler");
+
+    let ingest_response = handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "metric_points",
+            "record_key": "batch-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": {
+                    "tenant_id": {"S": "tenant-a"},
+                    "batch_id": {"S": "batch-1"},
+                    "payload": {"L": [
+                        {"N": "2"},
+                        {"L": [
+                            {"L": [{"S": "requests"}, {"S": "event-1"}, {"N": "7"}]},
+                            {"L": [{"S": "latency"}, {"S": "event-2"}, {"N": "11"}]}
+                        ]}
+                    ]}
+                }
+            }
+        }))
+        .await
+        .expect("ingest");
+    assert_eq!(ingest_response["outcome"], "inserted");
+
+    let query_response = handler
+        .handle_event(json!({
+            "operation": "unscoped_sql_query",
+            "sql": "select event_id, series_name from metric_points order by event_id",
+        }))
+        .await
+        .expect("query");
+
+    assert_eq!(
+        query_response["rows"],
+        json!([
+            {"event_id": "event-1", "series_name": "requests"},
+            {"event_id": "event-2", "series_name": "latency"}
+        ])
+    );
 }
 
 #[tokio::test]
@@ -448,6 +501,60 @@ fn test_handler() -> AnalyticsLambdaHandler {
         },
     )
     .expect("handler")
+}
+
+fn expanded_lambda_manifest() -> AnalyticsManifest {
+    serde_json::from_value(json!({
+        "version": 1,
+        "tables": [{
+            "source_table_name": "nsystem",
+            "analytics_table_name": "metric_points",
+            "tenant_selector": {
+                "kind": "attribute",
+                "attribute_name": "tenant_id"
+            },
+            "row_identity": {
+                "kind": "attributes",
+                "attribute_names": ["batch_id", "row_ordinal"]
+            },
+            "row_expansion": {
+                "list_path": [
+                    {"kind": "attribute", "name": "payload"},
+                    {"kind": "index", "index": 1}
+                ],
+                "source_fields": [
+                    {
+                        "output_attribute_name": "tenant_id",
+                        "path": [{"kind": "attribute", "name": "tenant_id"}]
+                    },
+                    {
+                        "output_attribute_name": "batch_id",
+                        "path": [{"kind": "attribute", "name": "batch_id"}]
+                    }
+                ],
+                "element_fields": [
+                    {
+                        "output_attribute_name": "series_name",
+                        "path": [{"kind": "index", "index": 0}]
+                    },
+                    {
+                        "output_attribute_name": "event_id",
+                        "path": [{"kind": "index", "index": 1}]
+                    }
+                ],
+                "ordinal_attribute_name": "row_ordinal"
+            },
+            "document_column": null,
+            "skip_delete": true,
+            "projection_attribute_names": [
+                "series_name",
+                "event_id",
+                "batch_id",
+                "row_ordinal"
+            ]
+        }]
+    }))
+    .expect("expanded manifest")
 }
 
 fn test_handler_with_privacy_policy(policy: PrivacyPolicy) -> AnalyticsLambdaHandler {

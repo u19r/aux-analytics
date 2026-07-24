@@ -71,26 +71,6 @@ impl SourcePollingLeaseRenewal {
     pub(crate) fn token(&self) -> &str {
         self.lease_token.as_str()
     }
-
-    async fn stop(mut self) -> SourcePollingLeaseSnapshot {
-        let snapshot = SourcePollingLeaseSnapshot {
-            worker_id: self.worker_id.clone(),
-            lease_token: self.lease_token.clone(),
-            ownership_lost: self.ownership_lost(),
-        };
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        self.handle.abort();
-        let _ = (&mut self.handle).await;
-        snapshot
-    }
-}
-
-struct SourcePollingLeaseSnapshot {
-    pub(crate) worker_id: String,
-    pub(crate) lease_token: String,
-    ownership_lost: bool,
 }
 
 pub(crate) fn spawn_source_polling_lease_renewal(
@@ -224,54 +204,4 @@ pub(crate) async fn renew_source_polling_lease(
     lease_client
         .renew_source_polling_lease(lease.worker_id.as_str(), lease.token(), lease_until_ms)
         .await
-}
-
-pub(crate) async fn release_source_polling_lease_after_epoch(
-    lease_client: Option<&Arc<AuxStorageLeaseClient>>,
-    lease_renewal: Option<SourcePollingLeaseRenewal>,
-) {
-    let Some(lease_client) = lease_client else {
-        return;
-    };
-    let Some(lease_renewal) = lease_renewal else {
-        return;
-    };
-    let snapshot = lease_renewal.stop().await;
-    if snapshot.ownership_lost {
-        return;
-    }
-    match lease_client
-        .release_source_polling_lease(
-            snapshot.worker_id.as_str(),
-            snapshot.lease_token.as_str(),
-            source_polling_released_until_ms(now_ms_i64()),
-        )
-        .await
-    {
-        Ok(true) => {
-            tracing::debug!(
-                job_id = SOURCE_POLLING_JOB_ID,
-                worker_id = %snapshot.worker_id,
-                lease_token = %snapshot.lease_token,
-                "analytics source polling lease released"
-            );
-        }
-        Ok(false) => {
-            tracing::warn!(
-                job_id = SOURCE_POLLING_JOB_ID,
-                worker_id = %snapshot.worker_id,
-                lease_token = %snapshot.lease_token,
-                "analytics source polling lease release lost ownership"
-            );
-        }
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                job_id = SOURCE_POLLING_JOB_ID,
-                worker_id = %snapshot.worker_id,
-                lease_token = %snapshot.lease_token,
-                "analytics source polling lease release failed"
-            );
-        }
-    }
 }

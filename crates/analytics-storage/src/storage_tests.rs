@@ -36,7 +36,7 @@ fn storage_facade_record_converts_to_contract_record() {
 }
 
 #[test]
-fn poller_defaults_allow_many_responses_per_interval() {
+fn poller_defaults_bound_each_ingest_batch_to_four_source_responses() {
     let config = PollerConfig::default();
 
     assert_eq!(config.poll_interval, std::time::Duration::from_millis(100));
@@ -45,9 +45,9 @@ fn poller_defaults_allow_many_responses_per_interval() {
         std::time::Duration::from_millis(5_000)
     );
     assert_eq!(config.max_shards, 16);
-    assert_eq!(config.max_responses_per_interval, 160);
+    assert_eq!(config.max_responses_per_interval, 4);
     assert_eq!(config.max_records_per_response, 8_192);
-    assert_eq!(config.response_budget_per_shard(), 10);
+    assert_eq!(config.response_budget_per_shard(), 1);
 }
 
 #[test]

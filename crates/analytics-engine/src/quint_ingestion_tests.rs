@@ -489,6 +489,7 @@ fn manifest() -> AnalyticsManifest {
             source_table_name: "tenant_01".to_string(),
             analytics_table_name: "users".to_string(),
             source_table_name_prefix: None,
+            row_expansion: None,
             tenant_id: Some("tenant_01".to_string()),
             tenant_selector: TenantSelector::TableName,
             row_identity: RowIdentity::RecordKey,
@@ -513,6 +514,7 @@ fn manifest() -> AnalyticsManifest {
             source_table_name: "audit_stream".to_string(),
             analytics_table_name: "audit_events".to_string(),
             source_table_name_prefix: None,
+            row_expansion: None,
             tenant_id: Some("tenant_01".to_string()),
             tenant_selector: TenantSelector::TableName,
             row_identity: RowIdentity::RecordKey,
@@ -553,6 +555,7 @@ fn lifecycle_table(
         source_table_name: source_table_name.to_string(),
         analytics_table_name: analytics_table_name.to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::None,
         row_identity: RowIdentity::Attribute {

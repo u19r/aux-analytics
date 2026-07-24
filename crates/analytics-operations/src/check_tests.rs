@@ -1050,6 +1050,7 @@ fn given_table_registration_when_projection_is_built_then_manifest_columns_defin
         source_table_name: "source_users".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant-a".to_string()),
         tenant_selector: analytics_contract::TenantSelector::TableName,
         row_identity: analytics_contract::RowIdentity::RecordKey,

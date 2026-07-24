@@ -18,10 +18,6 @@ pub(crate) fn source_polling_lease_renew_interval() -> Duration {
     SOURCE_POLLING_LEASE_RENEW_INTERVAL
 }
 
-pub(crate) fn source_polling_released_until_ms(now_ms: i64) -> i64 {
-    now_ms.saturating_sub(1)
-}
-
 pub(crate) fn source_polling_lease_token(worker_id: &str) -> String {
     let sequence = SOURCE_POLLING_LEASE_TOKEN_COUNTER.fetch_add(1, Ordering::SeqCst);
     format!("{}-{}-{}", worker_id, now_ms_i64(), sequence)
@@ -53,5 +49,15 @@ pub(crate) fn now_ms_i64() -> i64 {
 
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn usize_to_f64(value: usize) -> f64 {
+    value as f64
+}
+
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn milliseconds_to_seconds_f64(value: u128) -> f64 {
+    value as f64 / 1_000.0
+}
+
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn milliseconds_i64_to_f64(value: i64) -> f64 {
     value as f64
 }

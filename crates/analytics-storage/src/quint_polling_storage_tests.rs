@@ -161,7 +161,8 @@ fn check_aws_batch_checkpoints() -> Result<StoragePollingResult> {
         "shard-0001",
         vec![stream_record("seq-1"), stream_record("seq-2")],
         Some("next-iterator".to_string()),
-    );
+    )
+    .expect("batch stream response");
     if batch.records.len() == 4
         && batch.checkpoints.len() == 2
         && batch.checkpoints[0].shard_id == "shard-0001"
@@ -184,7 +185,8 @@ fn check_aws_iterator_only_checkpoint() -> Result<StoragePollingResult> {
         "shard-0001",
         Vec::new(),
         Some("next-iterator".to_string()),
-    );
+    )
+    .expect("batch stream response");
     if batch.records.is_empty()
         && batch.checkpoints.len() == 1
         && batch.checkpoints[0].shard_id == "__iterator:shard-0001"

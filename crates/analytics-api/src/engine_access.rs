@@ -1,6 +1,6 @@
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 
 use analytics_engine::{AnalyticsEngine, AnalyticsEngineError, StorageBackend};
 use config::DEFAULT_QUERY_MAX_READ_CONNECTIONS;
@@ -13,8 +13,6 @@ pub enum AnalyticsEngineAccessError {
     Engine(#[from] AnalyticsEngineError),
     #[error("analytics engine read pool is closed")]
     ReadPoolClosed,
-    #[error("analytics engine read pool lock is poisoned")]
-    ReadPoolPoisoned,
 }
 
 #[derive(Clone)]
@@ -33,7 +31,6 @@ enum ReadStrategy {
 
 struct DedicatedReadConnections {
     backend: StorageBackend,
-    idle: StdMutex<Vec<AnalyticsEngine>>,
     permits: Arc<Semaphore>,
 }
 
@@ -66,7 +63,6 @@ impl AnalyticsEngineAccess {
         let read_strategy = if supports_dedicated_read_connections(&backend) {
             ReadStrategy::DedicatedConnections(Arc::new(DedicatedReadConnections {
                 backend,
-                idle: StdMutex::new(Vec::new()),
                 permits: Arc::new(Semaphore::new(max_read_connections.max(1))),
             }))
         } else {
@@ -103,9 +99,8 @@ impl AnalyticsEngineAccess {
                     .map_err(|_| AnalyticsEngineAccessError::ReadPoolClosed)?;
                 let read_connections = Arc::clone(read_connections);
                 run_engine_work(move || {
-                    let engine = read_connections.take_engine()?;
+                    let engine = AnalyticsEngine::connect(&read_connections.backend)?;
                     let result = operation(&engine);
-                    read_connections.return_engine(engine)?;
                     drop(permit);
                     Ok(result)
                 })
@@ -143,28 +138,6 @@ where T: Send + 'static {
         Ok(result) => result,
         Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
         Err(error) => panic!("analytics engine worker was cancelled: {error}"),
-    }
-}
-
-impl DedicatedReadConnections {
-    fn take_engine(&self) -> Result<AnalyticsEngine, AnalyticsEngineAccessError> {
-        if let Some(engine) = self
-            .idle
-            .lock()
-            .map_err(|_| AnalyticsEngineAccessError::ReadPoolPoisoned)?
-            .pop()
-        {
-            return Ok(engine);
-        }
-        Ok(AnalyticsEngine::connect(&self.backend)?)
-    }
-
-    fn return_engine(&self, engine: AnalyticsEngine) -> Result<(), AnalyticsEngineAccessError> {
-        self.idle
-            .lock()
-            .map_err(|_| AnalyticsEngineAccessError::ReadPoolPoisoned)?
-            .push(engine);
-        Ok(())
     }
 }
 

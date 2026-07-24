@@ -1,8 +1,10 @@
+mod batch_writer;
 mod cache;
 mod condition;
 mod engine;
 mod projection;
 mod row;
+mod row_expansion;
 mod sql;
 mod structured_query;
 

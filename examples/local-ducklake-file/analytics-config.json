@@ -11,7 +11,7 @@
       "stream_type": "storage_stream",
       "poll_interval_ms": 100,
       "poll_max_shards": 16,
-      "poll_max_responses_per_interval": 160,
+      "poll_max_responses_per_interval": 4,
       "tables": [
         {
           "table_name": "events",

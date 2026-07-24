@@ -138,6 +138,12 @@ pub struct TableRegistration {
     #[serde(default)]
     #[schema(default = json!({"kind": "record_key"}), example = json!({"kind": "attribute", "attribute_name": "id"}))]
     pub row_identity: RowIdentity,
+    /// Optional expansion that turns one source item containing a list into
+    /// one analytical source row per list element. Conditions are evaluated
+    /// against the source item before expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null))]
+    pub row_expansion: Option<RowExpansion>,
     /// JSON document column containing the full source item. Set null for a
     /// direct-ingestion table that source polling must not consume. Must not
     /// use the built-in output column names `tenant_id`, `table_name`, or
@@ -230,6 +236,10 @@ impl TableRegistration {
         }
         validate_tenant_selector(&self.tenant_selector)?;
         validate_row_identity(&self.row_identity)?;
+        if let Some(row_expansion) = self.row_expansion.as_ref() {
+            row_expansion.validate(self.analytics_table_name.as_str())?;
+            validate_row_expansion_consumers(self, row_expansion)?;
+        }
         if let Some(retention) = self.retention.as_ref() {
             retention.validate(self.analytics_table_name.as_str())?;
         }
@@ -326,6 +336,205 @@ impl TableRegistration {
 
         Ok(())
     }
+}
+
+/// Manifest-controlled projection from a source list to analytical rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RowExpansion {
+    /// Path from the source item to the list of row elements.
+    #[schema(min_items = 1)]
+    pub list_path: Vec<RowPathSegment>,
+    /// Fields copied from the source item into every expanded row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fields: Vec<RowProjectionField>,
+    /// Fields copied from each list element into its expanded row.
+    #[schema(min_items = 1)]
+    pub element_fields: Vec<RowProjectionField>,
+    /// Optional output attribute populated with the zero-based list ordinal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = true, default = json!(null), min_length = 1, max_length = 255)]
+    pub ordinal_attribute_name: Option<String>,
+}
+
+impl RowExpansion {
+    fn validate(&self, table: &str) -> Result<(), ManifestValidationError> {
+        if self.list_path.is_empty() {
+            return Err(ManifestValidationError::InvalidRowExpansion {
+                table: table.to_string(),
+                reason: "list_path must not be empty",
+            });
+        }
+        if self.element_fields.is_empty() {
+            return Err(ManifestValidationError::InvalidRowExpansion {
+                table: table.to_string(),
+                reason: "element_fields must not be empty",
+            });
+        }
+        validate_row_path(table, &self.list_path)?;
+        validate_item_row_path(table, &self.list_path)?;
+        let mut output_names = HashSet::new();
+        for field in self.source_fields.iter().chain(&self.element_fields) {
+            field.validate(table)?;
+            if !output_names.insert(field.output_attribute_name.as_str()) {
+                return Err(ManifestValidationError::DuplicateRowExpansionAttribute {
+                    table: table.to_string(),
+                    attribute: field.output_attribute_name.clone(),
+                });
+            }
+        }
+        for field in &self.source_fields {
+            validate_item_row_path(table, &field.path)?;
+        }
+        if let Some(ordinal_attribute_name) = self.ordinal_attribute_name.as_deref() {
+            validate_non_empty(
+                "row_expansion ordinal_attribute_name",
+                ordinal_attribute_name,
+            )?;
+            if !output_names.insert(ordinal_attribute_name) {
+                return Err(ManifestValidationError::DuplicateRowExpansionAttribute {
+                    table: table.to_string(),
+                    attribute: ordinal_attribute_name.to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One field copied into an expanded source row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct RowProjectionField {
+    /// Attribute name presented to tenant, identity, retention, and column
+    /// projections after expansion.
+    #[schema(min_length = 1, max_length = 255)]
+    pub output_attribute_name: String,
+    /// Path relative to the source item or current list element.
+    #[schema(min_items = 1)]
+    pub path: Vec<RowPathSegment>,
+}
+
+impl RowProjectionField {
+    fn validate(&self, table: &str) -> Result<(), ManifestValidationError> {
+        validate_non_empty(
+            "row_expansion output_attribute_name",
+            self.output_attribute_name.as_str(),
+        )?;
+        if self.path.is_empty() {
+            return Err(ManifestValidationError::InvalidRowExpansion {
+                table: table.to_string(),
+                reason: "field path must not be empty",
+            });
+        }
+        validate_row_path(table, &self.path)?;
+        Ok(())
+    }
+}
+
+fn validate_row_path(table: &str, path: &[RowPathSegment]) -> Result<(), ManifestValidationError> {
+    if path.iter().any(
+        |segment| matches!(segment, RowPathSegment::Attribute { name } if name.trim().is_empty()),
+    ) {
+        return Err(ManifestValidationError::InvalidRowExpansion {
+            table: table.to_string(),
+            reason: "attribute path segments must not be empty",
+        });
+    }
+    Ok(())
+}
+
+fn validate_item_row_path(
+    table: &str,
+    path: &[RowPathSegment],
+) -> Result<(), ManifestValidationError> {
+    if !matches!(path.first(), Some(RowPathSegment::Attribute { .. })) {
+        return Err(ManifestValidationError::InvalidRowExpansion {
+            table: table.to_string(),
+            reason: "source item paths must begin with an attribute",
+        });
+    }
+    Ok(())
+}
+
+fn validate_row_expansion_consumers(
+    table: &TableRegistration,
+    expansion: &RowExpansion,
+) -> Result<(), ManifestValidationError> {
+    let outputs = expansion
+        .source_fields
+        .iter()
+        .chain(&expansion.element_fields)
+        .map(|field| field.output_attribute_name.as_str())
+        .chain(expansion.ordinal_attribute_name.as_deref())
+        .collect::<HashSet<_>>();
+    let mut required = Vec::new();
+    match &table.tenant_selector {
+        TenantSelector::Attribute { attribute_name }
+        | TenantSelector::AttributeRegex { attribute_name, .. }
+        | TenantSelector::PartitionKeyPrefix { attribute_name } => {
+            required.push(attribute_name.as_str());
+        }
+        TenantSelector::None
+        | TenantSelector::TableName
+        | TenantSelector::TableNameOrPartitionKeyPrefix { .. } => {}
+    }
+    match &table.row_identity {
+        RowIdentity::Attribute { attribute_name } => required.push(attribute_name.as_str()),
+        RowIdentity::Attributes { attribute_names } => {
+            required.extend(attribute_names.iter().map(String::as_str));
+        }
+        RowIdentity::AttributeRegex { attribute_name, .. } => {
+            required.push(attribute_name.as_str());
+        }
+        RowIdentity::RecordKey | RowIdentity::StreamKeys => {
+            return Err(ManifestValidationError::InvalidRowExpansion {
+                table: table.analytics_table_name.clone(),
+                reason: "row_identity must depend on expanded output",
+            });
+        }
+    }
+    if let Some(attribute_names) = table.projection_attribute_names.as_deref() {
+        required.extend(attribute_names.iter().map(String::as_str));
+    }
+    if let Some(columns) = table.projection_columns.as_deref() {
+        required.extend(
+            columns
+                .iter()
+                .filter_map(|column| column.attribute_path.split('.').next()),
+        );
+    }
+    if let Some(RetentionPolicy {
+        timestamp: RetentionTimestamp::Attribute { attribute_path },
+        ..
+    }) = table.retention.as_ref()
+        && let Some(root) = attribute_path.split('.').next()
+    {
+        required.push(root);
+    }
+    if let Some(attribute) = required
+        .into_iter()
+        .find(|attribute| !outputs.contains(attribute))
+    {
+        return Err(ManifestValidationError::UnknownRowExpansionOutput {
+            table: table.analytics_table_name.clone(),
+            attribute: attribute.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// One typed segment in a source-item row-expansion path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowPathSegment {
+    Attribute {
+        #[schema(min_length = 1, max_length = 255)]
+        name: String,
+    },
+    Index {
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
@@ -433,6 +642,23 @@ fn validate_row_identity(identity: &RowIdentity) -> Result<(), ManifestValidatio
         RowIdentity::RecordKey | RowIdentity::StreamKeys => Ok(()),
         RowIdentity::Attribute { attribute_name } => {
             validate_non_empty("row_identity attribute_name", attribute_name)
+        }
+        RowIdentity::Attributes { attribute_names } => {
+            if attribute_names.is_empty() {
+                return Err(ManifestValidationError::EmptyField(
+                    "row_identity attribute_names",
+                ));
+            }
+            let mut unique = HashSet::new();
+            for attribute_name in attribute_names {
+                validate_non_empty("row_identity attribute_name", attribute_name)?;
+                if !unique.insert(attribute_name) {
+                    return Err(ManifestValidationError::InvalidRowIdentity {
+                        reason: "attribute_names must be unique",
+                    });
+                }
+            }
+            Ok(())
         }
         RowIdentity::AttributeRegex {
             attribute_name,
@@ -571,6 +797,14 @@ pub enum RowIdentity {
         /// Source string attribute containing row identity.
         #[schema(min_length = 1, max_length = 255, example = "id")]
         attribute_name: String,
+    },
+    /// Hash an ordered tuple of source attributes into one stable row id.
+    /// This is useful for expanded rows whose identity is a parent id plus
+    /// list ordinal.
+    Attributes {
+        /// Ordered source attributes that together identify the row.
+        #[schema(min_items = 1)]
+        attribute_names: Vec<String>,
     },
     /// Extract row identity from a named regex capture group on a string
     /// attribute.
@@ -749,7 +983,9 @@ pub enum PrimitiveColumnType {
     VarChar,
     Json,
     BigInt,
+    UnsignedBigInt,
     Decimal,
+    Double,
     Timestamp,
 }
 
@@ -761,7 +997,9 @@ impl PrimitiveColumnType {
             Self::VarChar => "VARCHAR",
             Self::Json => "JSON",
             Self::BigInt => "BIGINT",
+            Self::UnsignedBigInt => "UBIGINT",
             Self::Decimal => "DECIMAL(38, 18)",
+            Self::Double => "DOUBLE",
             Self::Timestamp => "TIMESTAMP",
         }
     }
@@ -773,7 +1011,9 @@ impl PrimitiveColumnType {
             Self::VarChar => "VARCHAR[]",
             Self::Json => "JSON[]",
             Self::BigInt => "BIGINT[]",
+            Self::UnsignedBigInt => "UBIGINT[]",
             Self::Decimal => "DECIMAL(38, 18)[]",
+            Self::Double => "DOUBLE[]",
             Self::Timestamp => "TIMESTAMP[]",
         }
     }

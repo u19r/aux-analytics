@@ -127,7 +127,7 @@ async fn backend_aware_duckdb_file_serves_concurrent_reads_from_writer_data() {
 }
 
 #[tokio::test]
-async fn backend_aware_ducklake_reader_observes_data_written_after_connection_is_pooled() {
+async fn backend_aware_ducklake_reader_observes_external_writer_commit() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let catalog_path = tempdir.path().join("catalog.sqlite");
     let data_path = tempdir.path().join("ducklake-data");
@@ -139,11 +139,11 @@ async fn backend_aware_ducklake_reader_observes_data_written_after_connection_is
         object_storage: None,
         catalog_settings: Default::default(),
     };
-    assert_pooled_reader_observes_write(backend).await;
+    assert_dedicated_reader_observes_external_write(backend).await;
 }
 
 #[tokio::test]
-async fn backend_aware_aux_catalog_reader_observes_data_written_after_connection_is_pooled() {
+async fn backend_aware_aux_catalog_reader_observes_external_writer_commit() {
     if std::env::var_os("AUX_ANALYTICS_DUCKLAKE_FDB_LIVE").is_none() {
         return;
     }
@@ -158,15 +158,15 @@ async fn backend_aware_aux_catalog_reader_observes_data_written_after_connection
         object_storage: None,
         catalog_settings: Default::default(),
     };
-    assert_pooled_reader_observes_write(backend).await;
+    assert_dedicated_reader_observes_external_write(backend).await;
 }
 
-async fn assert_pooled_reader_observes_write(backend: StorageBackend) {
+async fn assert_dedicated_reader_observes_external_write(backend: StorageBackend) {
     let manifest = users_manifest();
     let writer = AnalyticsEngine::connect(&backend).expect("connect writer");
     writer.ensure_manifest(&manifest).expect("ensure manifest");
-    let access =
-        AnalyticsEngineAccess::backend_aware_with_max_read_connections(writer, backend, 1);
+    let reader = AnalyticsEngine::connect(&backend).expect("connect reader");
+    let access = AnalyticsEngineAccess::backend_aware_with_max_read_connections(reader, backend, 1);
     let query = StructuredQuery {
         analytics_table_name: "users".to_string(),
         table_alias: None,
@@ -184,11 +184,7 @@ async fn assert_pooled_reader_observes_write(backend: StorageBackend) {
     let initial_query = query.clone();
     let initial_rows = access
         .with_read(move |engine| {
-            engine.query_tenant_structured_json(
-                &initial_manifest,
-                &initial_query,
-                "tenant_01",
-            )
+            engine.query_tenant_structured_json(&initial_manifest, &initial_query, "tenant_01")
         })
         .await
         .expect("initial read access")
@@ -205,17 +201,8 @@ async fn assert_pooled_reader_observes_write(backend: StorageBackend) {
     }))
     .expect("ingest request");
     let (record_key, record) = request.into_contract_record();
-    let ingest_manifest = manifest.clone();
-    access
-        .with_write(move |engine| {
-            engine.ingest_stream_record(
-                &ingest_manifest,
-                "users",
-                record_key.as_bytes(),
-                record,
-            )
-        })
-        .await
+    writer
+        .ingest_stream_record(&manifest, "users", record_key.as_bytes(), record)
         .expect("ingest");
 
     let rows = access

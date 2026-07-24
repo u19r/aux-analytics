@@ -20,6 +20,7 @@ enum ValidationResult {
     DuplicateColumnName,
     UnknownLayoutColumn,
     InvalidRetentionPeriod,
+    InvalidRowExpansion,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
@@ -148,8 +149,14 @@ impl ManifestDriver {
                 ManifestValidationError::InvalidRetentionPeriod { .. } => {
                     ValidationResult::InvalidRetentionPeriod
                 }
+                ManifestValidationError::InvalidRowExpansion { .. }
+                | ManifestValidationError::DuplicateRowExpansionAttribute { .. }
+                | ManifestValidationError::UnknownRowExpansionOutput { .. } => {
+                    ValidationResult::InvalidRowExpansion
+                }
                 ManifestValidationError::GlobalReferenceHasTenantScope { .. }
-                | ManifestValidationError::InvalidJoinPolicy { .. } => {
+                | ManifestValidationError::InvalidJoinPolicy { .. }
+                | ManifestValidationError::InvalidRowIdentity { .. } => {
                     ValidationResult::UnknownLayoutColumn
                 }
             },
@@ -198,6 +205,7 @@ fn base_table(source_table_name: &str, analytics_table_name: &str) -> TableRegis
         source_table_name: source_table_name.to_string(),
         analytics_table_name: analytics_table_name.to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,

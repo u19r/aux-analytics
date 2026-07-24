@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use analytics_api::AppState;
 use analytics_storage::{
@@ -9,6 +9,7 @@ use crate::source_polling::{
     checkpoint_lease::source_polling_lease_permits_progress,
     health::apply_source_success_health,
     legacy_lease::SourcePollingLeaseRenewal,
+    memory::{BatchResidentMemorySampler, record_batch_memory_increment},
     metrics::*,
     time::{now_ms, usize_to_f64},
 };
@@ -18,6 +19,7 @@ pub(crate) async fn handle_source_batch(
     lease_client: Option<&Arc<AuxStorageLeaseClient>>,
     lease_renewal: Option<&SourcePollingLeaseRenewal>,
 ) -> SourceBatchOutcome {
+    metrics::counter!(SOURCE_RECORDS_ROUTED_TOTAL_METRIC).increment(batch.records.len() as u64);
     metrics::histogram!(SOURCE_RECORDS_PER_POLL_METRIC).record(usize_to_f64(batch.records.len()));
     if app_state.privacy_policy.is_none() && app_state.retention.is_none() {
         return handle_vector_source_batch(app_state, batch, lease_client, lease_renewal).await;
@@ -76,6 +78,7 @@ async fn handle_vector_source_batch(
     lease_client: Option<&Arc<AuxStorageLeaseClient>>,
     lease_renewal: Option<&SourcePollingLeaseRenewal>,
 ) -> SourceBatchOutcome {
+    let memory_sampler = BatchResidentMemorySampler::start();
     if !source_polling_lease_permits_progress(lease_client, lease_renewal).await {
         return source_batch_outcome_with_ownership_loss(&[], &[]);
     }
@@ -98,14 +101,22 @@ async fn handle_vector_source_batch(
         })
         .collect();
     let manifest = app_state.manifest.read().await.clone();
-    match app_state
+    let write_started = Instant::now();
+    let result = app_state
         .engine
         .with_write(move |engine| {
             engine.ingest_stream_page_and_checkpoint(&manifest, records, &engine_checkpoint)
         })
-        .await
-    {
+        .await;
+    if let Some(increment_bytes) = memory_sampler.finish().await {
+        let peak_bytes = record_batch_memory_increment(increment_bytes);
+        metrics::gauge!(SOURCE_BATCH_MEMORY_INCREMENT_BYTES_METRIC).set(peak_bytes as f64);
+    }
+    metrics::histogram!(SOURCE_WRITE_DURATION_MS_METRIC)
+        .record(write_started.elapsed().as_secs_f64() * 1_000.0);
+    match result {
         Ok(page) => {
+            metrics::counter!(SOURCE_WRITE_TRANSACTIONS_TOTAL_METRIC).increment(1);
             let quarantined = page
                 .quarantined
                 .iter()

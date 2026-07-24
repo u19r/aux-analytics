@@ -23,7 +23,7 @@ impl Default for PollerConfig {
             poll_interval: Duration::from_millis(100),
             request_timeout: Duration::from_millis(5_000),
             max_shards: 16,
-            max_responses_per_interval: 160,
+            max_responses_per_interval: 4,
             max_records_per_response: 8_192,
         }
     }

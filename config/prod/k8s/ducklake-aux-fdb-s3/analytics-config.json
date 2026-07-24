@@ -15,7 +15,7 @@
       "poll_interval_ms": 100,
       "poll_request_timeout_ms": 5000,
       "poll_max_shards": 16,
-      "poll_max_responses_per_interval": 160
+      "poll_max_responses_per_interval": 4
     },
     "catalog": {
       "backend": "ducklake_aux_catalog",

@@ -8,7 +8,7 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
         Arc,
@@ -22,8 +22,8 @@ use std::{
 use analytics_contract::{
     AnalyticsColumn, AnalyticsColumnType, AnalyticsManifest, MergeDecision, PrimitiveColumnType,
     PrivacyPolicy, ProjectionColumn, RetentionPolicy, RetentionTimestamp, SourceMutation,
-    SourcePosition, SourcePositionError, StorageStreamRecord, StructuredQuery, TableRegistration,
-    TenantRangePurgeRequest, TenantRangePurgeResponse, merge_decision,
+    SourcePosition, SourcePositionError, StorageItem, StorageStreamRecord, StructuredQuery,
+    TableRegistration, TenantRangePurgeRequest, TenantRangePurgeResponse, merge_decision,
 };
 use aws_credentials::{
     AwsResolvedCredentials, AwsStaticCredentials, resolve_default_chain_credentials_with_expiry,
@@ -36,7 +36,9 @@ use duckdb::{Config as DuckDbConfig, Connection, OptionalExt, types::TimeUnit};
 use thiserror::Error;
 
 use crate::{
+    batch_writer::{BatchSqlExecutor, BatchUpsertOutcome},
     cache::EngineCaches,
+    row::RowSource,
     sql,
     structured_query::{
         PreparedStructuredQuery, prepare_tenant_structured_query, prepare_unscoped_structured_query,
@@ -93,6 +95,12 @@ pub enum AnalyticsEngineError {
     InvalidRetentionPeriod,
     #[error("retention period overflowed unix epoch milliseconds")]
     RetentionOverflow,
+    #[error("row expansion record is invalid: {0}")]
+    InvalidRowExpansionRecord(&'static str),
+    #[error("row expansion record is missing a declared path")]
+    MissingRowExpansionPath,
+    #[error("row expansion produced duplicate row identity")]
+    DuplicateExpandedRowIdentity,
     #[error("tenant range purge request is invalid: {0}")]
     InvalidRangePurge(String),
     #[error(transparent)]
@@ -122,6 +130,9 @@ impl AnalyticsEngineError {
                 | Self::MissingIdentifier(_)
                 | Self::AttributeConversion(_)
                 | Self::InvalidRetentionTimestamp(_)
+                | Self::InvalidRowExpansionRecord(_)
+                | Self::MissingRowExpansionPath
+                | Self::DuplicateExpandedRowIdentity
         )
     }
 }
@@ -288,14 +299,14 @@ impl AnalyticsEngine {
 
     pub fn ensure_runtime_tables(&self) -> AnalyticsEngineResult<()> {
         self.refresh_object_storage_credentials_if_needed()?;
-        self.conn.execute(
+        for statement in [
             "CREATE TABLE IF NOT EXISTS analytics_checkpoints (
                 source_table_name VARCHAR NOT NULL,
                 shard_id VARCHAR NOT NULL,
                 position VARCHAR NOT NULL,
                 updated_at_ms BIGINT NOT NULL
-            );
-             CREATE TABLE IF NOT EXISTS __analytics_row_source_positions (
+            )",
+            "CREATE TABLE IF NOT EXISTS __analytics_row_source_positions (
                 analytics_table_name VARCHAR NOT NULL,
                 source_table_name VARCHAR NOT NULL,
                 tenant_id VARCHAR NOT NULL,
@@ -303,16 +314,17 @@ impl AnalyticsEngine {
                 source_position_json JSON NOT NULL,
                 row_visible BOOLEAN NOT NULL,
                 updated_at_ms BIGINT NOT NULL
-            );
-             CREATE TABLE IF NOT EXISTS analytics_ingest_quarantine (
+            )",
+            "CREATE TABLE IF NOT EXISTS analytics_ingest_quarantine (
                 source_table_name VARCHAR NOT NULL,
                 analytics_table_name VARCHAR NOT NULL,
                 sequence_number VARCHAR NOT NULL,
                 error_class VARCHAR NOT NULL,
                 updated_at_ms BIGINT NOT NULL
-            );",
-            [],
-        )?;
+            )",
+        ] {
+            execute_convergent_schema_statement(&self.conn, statement)?;
+        }
         Ok(())
     }
 
@@ -469,7 +481,7 @@ impl AnalyticsEngine {
         manifest: &AnalyticsManifest,
         records: Vec<StreamRecordBatchItem>,
     ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
-        self.ingest_stream_record_batch_with_checkpoint(manifest, records, None)
+        self.ingest_stream_record_batch_with_checkpoint(manifest, &records, None)
     }
 
     pub fn ingest_stream_record_batch_and_checkpoint(
@@ -478,7 +490,7 @@ impl AnalyticsEngine {
         records: Vec<StreamRecordBatchItem>,
         checkpoint: &SourceCheckpoint,
     ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
-        self.ingest_stream_record_batch_with_checkpoint(manifest, records, Some(checkpoint))
+        self.ingest_stream_record_batch_with_checkpoint(manifest, &records, Some(checkpoint))
     }
 
     pub fn ingest_stream_page_and_checkpoint(
@@ -487,7 +499,7 @@ impl AnalyticsEngine {
         records: Vec<StreamRecordBatchItem>,
         checkpoint: &SourceCheckpoint,
     ) -> AnalyticsEngineResult<StreamPageIngestOutcome> {
-        match self.ingest_stream_record_batch_and_checkpoint(manifest, records.clone(), checkpoint)
+        match self.ingest_stream_record_batch_with_checkpoint(manifest, &records, Some(checkpoint))
         {
             Ok(outcomes) => Ok(StreamPageIngestOutcome {
                 outcomes,
@@ -509,7 +521,7 @@ impl AnalyticsEngine {
         let mut valid_records = Vec::with_capacity(records.len());
         let mut quarantined = Vec::new();
         for (input_index, record) in records.into_iter().enumerate() {
-            match self.validate_stream_record_batch_item(manifest, record.clone()) {
+            match self.validate_stream_record_batch_item(manifest, &record) {
                 Ok(()) => valid_records.push(record),
                 Err(error) if error.is_record_contract_failure() => {
                     quarantined.push(QuarantinedStreamRecord::from_error(
@@ -536,7 +548,7 @@ impl AnalyticsEngine {
     fn validate_stream_record_batch_item(
         &self,
         manifest: &AnalyticsManifest,
-        record: StreamRecordBatchItem,
+        record: &StreamRecordBatchItem,
     ) -> AnalyticsEngineResult<()> {
         self.conn.execute_batch("BEGIN TRANSACTION")?;
         let mut batch = BatchSqlExecutor::new(&self.conn);
@@ -560,10 +572,13 @@ impl AnalyticsEngine {
         let mut outcomes = Vec::with_capacity(records.len());
         let mut batch = BatchSqlExecutor::new(&self.conn);
         for item in records {
-            match self.ingest_stream_record_batch_item(manifest, item, &mut batch) {
+            match self.ingest_stream_record_batch_item(manifest, &item, &mut batch) {
                 Ok(outcome) => outcomes.push(outcome),
                 Err(error) => return rollback_batch(&self.conn, error),
             }
+        }
+        if let Err(error) = batch.flush() {
+            return rollback_batch(&self.conn, error);
         }
         for record in quarantined {
             if let Err(error) = self.write_quarantined_record(record) {
@@ -594,7 +609,8 @@ impl AnalyticsEngine {
         )?;
         self.conn.execute(
             "INSERT INTO analytics_ingest_quarantine
-                (source_table_name, analytics_table_name, sequence_number, error_class, updated_at_ms)
+                (source_table_name, analytics_table_name, sequence_number, error_class, \
+             updated_at_ms)
              VALUES (?, ?, ?, ?, ?)",
             duckdb::params![
                 record.source_table_name,
@@ -610,7 +626,7 @@ impl AnalyticsEngine {
     fn ingest_stream_record_batch_with_checkpoint(
         &self,
         manifest: &AnalyticsManifest,
-        records: Vec<StreamRecordBatchItem>,
+        records: &[StreamRecordBatchItem],
         checkpoint: Option<&SourceCheckpoint>,
     ) -> AnalyticsEngineResult<Vec<IngestOutcome>> {
         self.refresh_object_storage_credentials_if_needed()?;
@@ -626,6 +642,9 @@ impl AnalyticsEngine {
                 Err(error) => return rollback_batch(&self.conn, error),
             }
         }
+        if let Err(error) = batch.flush() {
+            return rollback_batch(&self.conn, error);
+        }
         if let Some(checkpoint) = checkpoint
             && self.supports_persistent_checkpoints
             && let Err(error) = self.write_source_checkpoint(checkpoint)
@@ -636,11 +655,10 @@ impl AnalyticsEngine {
         Ok(outcomes)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn ingest_stream_record_batch_item(
         &self,
         manifest: &AnalyticsManifest,
-        item: StreamRecordBatchItem,
+        item: &StreamRecordBatchItem,
         batch: &mut BatchSqlExecutor<'_>,
     ) -> AnalyticsEngineResult<IngestOutcome> {
         let table = manifest
@@ -651,38 +669,53 @@ impl AnalyticsEngine {
                 AnalyticsEngineError::TableNotRegistered(item.analytics_table_name.clone())
             })?;
 
-        let record_keys = item.record.keys;
+        if table.row_expansion.is_some() {
+            let retention = static_retention(table);
+            return self.ingest_expanded_stream_record(table, item, retention.as_ref(), batch);
+        }
+        self.ingest_single_row_stream_record(table, item, batch)
+    }
+
+    fn ingest_single_row_stream_record(
+        &self,
+        table: &TableRegistration,
+        item: &StreamRecordBatchItem,
+        batch: &mut BatchSqlExecutor<'_>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let record_keys = &item.record.keys;
         let ingested_at_ms = current_time_millis();
         let manifest_retention = static_retention(table);
-        match (item.record.old_image, item.record.new_image) {
+        match (&item.record.old_image, &item.record.new_image) {
             (None, Some(new_image)) => {
                 if !crate::condition::item_matches_registration(
                     table,
-                    &new_image,
+                    new_image,
                     &mut self.caches.borrow_mut(),
                 )? {
                     return Ok(IngestOutcome::Skipped);
                 }
                 let row = self.row_from_item(
                     table,
-                    item.source_table_name.as_str(),
-                    item.record_key.as_slice(),
-                    &record_keys,
+                    RowSource {
+                        source_table_name: item.source_table_name.as_str(),
+                        record_key: item.record_key.as_slice(),
+                        record_keys,
+                    },
                     new_image,
                     ingested_at_ms,
                     manifest_retention.as_ref(),
                 )?;
-                batch.apply_upsert(table, &row)
+                batch.apply_upsert(table, row, BatchUpsertOutcome::Inserted)
             }
             (Some(old_image), Some(new_image)) => {
                 let old_matches = crate::condition::item_matches_registration(
                     table,
-                    &old_image,
+                    old_image,
                     &mut self.caches.borrow_mut(),
                 )?;
                 let new_matches = crate::condition::item_matches_registration(
                     table,
-                    &new_image,
+                    new_image,
                     &mut self.caches.borrow_mut(),
                 )?;
                 if !old_matches && !new_matches {
@@ -694,25 +727,34 @@ impl AnalyticsEngine {
                     }
                     let row = self.row_from_item(
                         table,
-                        item.source_table_name.as_str(),
-                        item.record_key.as_slice(),
-                        &record_keys,
+                        RowSource {
+                            source_table_name: item.source_table_name.as_str(),
+                            record_key: item.record_key.as_slice(),
+                            record_keys,
+                        },
                         old_image,
                         ingested_at_ms,
                         None,
                     )?;
-                    return batch.apply_delete(table.analytics_table_name.as_str(), &row);
+                    return batch.apply_delete(table, row);
                 }
                 let row = self.row_from_item(
                     table,
-                    item.source_table_name.as_str(),
-                    item.record_key.as_slice(),
-                    &record_keys,
+                    RowSource {
+                        source_table_name: item.source_table_name.as_str(),
+                        record_key: item.record_key.as_slice(),
+                        record_keys,
+                    },
                     new_image,
                     ingested_at_ms,
                     manifest_retention.as_ref(),
                 )?;
-                batch.apply_upsert(table, &row)
+                let outcome = if old_matches {
+                    BatchUpsertOutcome::Updated
+                } else {
+                    BatchUpsertOutcome::Inserted
+                };
+                batch.apply_upsert(table, row, outcome)
             }
             (Some(old_image), None) => {
                 if table.skip_delete {
@@ -720,24 +762,141 @@ impl AnalyticsEngine {
                 }
                 if !crate::condition::item_matches_registration(
                     table,
-                    &old_image,
+                    old_image,
                     &mut self.caches.borrow_mut(),
                 )? {
                     return Ok(IngestOutcome::Skipped);
                 }
                 let row = self.row_from_item(
                     table,
-                    item.source_table_name.as_str(),
-                    item.record_key.as_slice(),
-                    &record_keys,
+                    RowSource {
+                        source_table_name: item.source_table_name.as_str(),
+                        record_key: item.record_key.as_slice(),
+                        record_keys,
+                    },
                     old_image,
                     ingested_at_ms,
                     None,
                 )?;
-                batch.apply_delete(table.analytics_table_name.as_str(), &row)
+                batch.apply_delete(table, row)
             }
             (None, None) => Ok(IngestOutcome::Skipped),
         }
+    }
+
+    fn ingest_expanded_stream_record(
+        &self,
+        table: &TableRegistration,
+        item: &StreamRecordBatchItem,
+        retention: Option<&IngestRetention>,
+        batch: &mut BatchSqlExecutor<'_>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let Some(rows) = self.materialize_expanded_stream_record(table, item, retention)? else {
+            return Ok(IngestOutcome::Skipped);
+        };
+        let mut outcomes = Vec::with_capacity(rows.old.len() + rows.new.len());
+        let upsert_outcome = if rows.old_matched {
+            BatchUpsertOutcome::Updated
+        } else {
+            BatchUpsertOutcome::Inserted
+        };
+        for row in rows.new {
+            outcomes.push(batch.apply_upsert(table, row, upsert_outcome)?);
+        }
+        for row in rows.old {
+            if !rows.new_identities.contains(&expanded_row_identity(&row)?) {
+                outcomes.push(batch.apply_delete(table, row)?);
+            }
+        }
+        Ok(combine_expanded_outcomes(&outcomes))
+    }
+
+    fn materialize_expanded_stream_record(
+        &self,
+        table: &TableRegistration,
+        item: &StreamRecordBatchItem,
+        retention: Option<&IngestRetention>,
+    ) -> AnalyticsEngineResult<Option<ExpandedStreamRows>> {
+        let expansion = table
+            .row_expansion
+            .as_ref()
+            .expect("expanded ingestion requires row_expansion");
+        let old_matches = self.item_matches_registration(table, item.record.old_image.as_ref())?;
+        let new_matches = self.item_matches_registration(table, item.record.new_image.as_ref())?;
+        if !old_matches && !new_matches {
+            return Ok(None);
+        }
+
+        let ingested_at_ms = current_time_millis();
+        let old_rows = if old_matches && !table.skip_delete {
+            self.expanded_rows_from_item(
+                table,
+                expansion,
+                item,
+                item.record.old_image.as_ref().expect("old image matched"),
+                ingested_at_ms,
+                None,
+            )?
+        } else {
+            Vec::new()
+        };
+        let new_rows = if new_matches {
+            self.expanded_rows_from_item(
+                table,
+                expansion,
+                item,
+                item.record.new_image.as_ref().expect("new image matched"),
+                ingested_at_ms,
+                retention,
+            )?
+        } else {
+            Vec::new()
+        };
+        unique_expanded_row_identities(&old_rows)?;
+        let new_identities = unique_expanded_row_identities(&new_rows)?;
+        Ok(Some(ExpandedStreamRows {
+            old: old_rows,
+            new: new_rows,
+            new_identities,
+            old_matched: old_matches,
+        }))
+    }
+
+    fn item_matches_registration(
+        &self,
+        table: &TableRegistration,
+        item: Option<&StorageItem>,
+    ) -> AnalyticsEngineResult<bool> {
+        item.map_or(Ok(false), |item| {
+            crate::condition::item_matches_registration(table, item, &mut self.caches.borrow_mut())
+        })
+    }
+
+    fn expanded_rows_from_item(
+        &self,
+        table: &TableRegistration,
+        expansion: &analytics_contract::RowExpansion,
+        item: &StreamRecordBatchItem,
+        source: &StorageItem,
+        ingested_at_ms: i64,
+        retention: Option<&IngestRetention>,
+    ) -> AnalyticsEngineResult<Vec<BTreeMap<String, serde_json::Value>>> {
+        crate::row_expansion::expand_source_item(source, expansion)?
+            .into_iter()
+            .map(|expanded_item| {
+                self.row_from_item(
+                    table,
+                    RowSource {
+                        source_table_name: item.source_table_name.as_str(),
+                        record_key: item.record_key.as_slice(),
+                        record_keys: &item.record.keys,
+                    },
+                    &expanded_item,
+                    ingested_at_ms,
+                    retention,
+                )
+            })
+            .collect()
     }
 
     pub fn ingest_stream_record_with_privacy_policy(
@@ -842,7 +1001,6 @@ impl AnalyticsEngine {
                 AnalyticsEngineError::TableNotRegistered(analytics_table_name.to_string())
             })?;
 
-        let record_keys = record.keys;
         let ingested_at_ms = current_time_millis();
         let manifest_retention: Option<IngestRetention>;
         let effective_retention = if resolved_retention.is_some() {
@@ -851,6 +1009,20 @@ impl AnalyticsEngine {
             manifest_retention = static_retention(table);
             manifest_retention.as_ref()
         };
+        if table.row_expansion.is_some() {
+            return self.ingest_expanded_stream_record_direct(
+                table,
+                StreamRecordBatchItem {
+                    analytics_table_name: analytics_table_name.to_string(),
+                    source_table_name: table.source_table_name.clone(),
+                    record_key: record_key.to_vec(),
+                    record,
+                },
+                effective_retention,
+                source_position,
+            );
+        }
+        let record_keys = record.keys;
         match (record.old_image, record.new_image) {
             (None, Some(new_image)) => {
                 if !crate::condition::item_matches_registration(
@@ -862,10 +1034,12 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
-                    table.source_table_name.as_str(),
-                    record_key,
-                    &record_keys,
-                    new_image,
+                    RowSource {
+                        source_table_name: table.source_table_name.as_str(),
+                        record_key,
+                        record_keys: &record_keys,
+                    },
+                    &new_image,
                     ingested_at_ms,
                     effective_retention,
                 )?;
@@ -891,10 +1065,12 @@ impl AnalyticsEngine {
                     }
                     let row = self.row_from_item(
                         table,
-                        table.source_table_name.as_str(),
-                        record_key,
-                        &record_keys,
-                        old_image,
+                        RowSource {
+                            source_table_name: table.source_table_name.as_str(),
+                            record_key,
+                            record_keys: &record_keys,
+                        },
+                        &old_image,
                         ingested_at_ms,
                         None,
                     )?;
@@ -902,10 +1078,12 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
-                    table.source_table_name.as_str(),
-                    record_key,
-                    &record_keys,
-                    new_image,
+                    RowSource {
+                        source_table_name: table.source_table_name.as_str(),
+                        record_key,
+                        record_keys: &record_keys,
+                    },
+                    &new_image,
                     ingested_at_ms,
                     effective_retention,
                 )?;
@@ -924,16 +1102,50 @@ impl AnalyticsEngine {
                 }
                 let row = self.row_from_item(
                     table,
-                    table.source_table_name.as_str(),
-                    record_key,
-                    &record_keys,
-                    old_image,
+                    RowSource {
+                        source_table_name: table.source_table_name.as_str(),
+                        record_key,
+                        record_keys: &record_keys,
+                    },
+                    &old_image,
                     ingested_at_ms,
                     None,
                 )?;
                 self.apply_delete(table, &row, source_position)
             }
             (None, None) => Ok(IngestOutcome::Skipped),
+        }
+    }
+
+    fn ingest_expanded_stream_record_direct(
+        &self,
+        table: &TableRegistration,
+        item: StreamRecordBatchItem,
+        retention: Option<&IngestRetention>,
+        source_position: Option<&SourcePosition>,
+    ) -> AnalyticsEngineResult<IngestOutcome> {
+        let Some(rows) = self.materialize_expanded_stream_record(table, &item, retention)? else {
+            return Ok(IngestOutcome::Skipped);
+        };
+        self.conn.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| {
+            let mut outcomes = Vec::with_capacity(rows.old.len() + rows.new.len());
+            for row in rows.new {
+                outcomes.push(self.apply_upsert(table, row, source_position)?);
+            }
+            for row in &rows.old {
+                if !rows.new_identities.contains(&expanded_row_identity(row)?) {
+                    outcomes.push(self.apply_delete(table, row, source_position)?);
+                }
+            }
+            Ok(combine_expanded_outcomes(&outcomes))
+        })();
+        match result {
+            Ok(outcome) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(outcome)
+            }
+            Err(error) => rollback_batch(&self.conn, error),
         }
     }
 
@@ -1711,9 +1923,14 @@ fn execute_convergent_schema_statement(
 }
 
 fn ducklake_schema_converged_concurrently(error: &duckdb::Error) -> bool {
-    let message = error.to_string();
+    ducklake_schema_convergence_message(error.to_string().as_str())
+}
+
+pub(crate) fn ducklake_schema_convergence_message(message: &str) -> bool {
     message.contains("DuckLake transaction")
-        && message.contains("has been created by another transaction already")
+        && (message.contains("has been created by another transaction already")
+            || (message.contains("Transaction conflict - invalid mutation:")
+                && message.contains("name already exists")))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1722,6 +1939,57 @@ pub enum IngestOutcome {
     Updated,
     Deleted,
     Skipped,
+}
+
+struct ExpandedStreamRows {
+    old: Vec<BTreeMap<String, serde_json::Value>>,
+    new: Vec<BTreeMap<String, serde_json::Value>>,
+    new_identities: BTreeSet<(String, String, String)>,
+    old_matched: bool,
+}
+
+fn unique_expanded_row_identities(
+    rows: &[BTreeMap<String, serde_json::Value>],
+) -> AnalyticsEngineResult<BTreeSet<(String, String, String)>> {
+    let mut identities = BTreeSet::new();
+    for row in rows {
+        if !identities.insert(expanded_row_identity(row)?) {
+            return Err(AnalyticsEngineError::DuplicateExpandedRowIdentity);
+        }
+    }
+    Ok(identities)
+}
+
+fn expanded_row_identity(
+    row: &BTreeMap<String, serde_json::Value>,
+) -> AnalyticsEngineResult<(String, String, String)> {
+    Ok((
+        expanded_identity_part(row, "table_name")?,
+        expanded_identity_part(row, "tenant_id")?,
+        expanded_identity_part(row, "__id")?,
+    ))
+}
+
+fn expanded_identity_part(
+    row: &BTreeMap<String, serde_json::Value>,
+    name: &'static str,
+) -> AnalyticsEngineResult<String> {
+    row.get(name)
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or(AnalyticsEngineError::MissingIdentifier(name))
+}
+
+fn combine_expanded_outcomes(outcomes: &[IngestOutcome]) -> IngestOutcome {
+    let inserted = outcomes.contains(&IngestOutcome::Inserted);
+    let updated = outcomes.contains(&IngestOutcome::Updated);
+    let deleted = outcomes.contains(&IngestOutcome::Deleted);
+    match (inserted, updated, deleted) {
+        (false, false, false) => IngestOutcome::Skipped,
+        (true, false, false) => IngestOutcome::Inserted,
+        (false, false, true) => IngestOutcome::Deleted,
+        _ => IngestOutcome::Updated,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1776,181 +2044,11 @@ const fn record_contract_error_class(error: &AnalyticsEngineError) -> &'static s
         AnalyticsEngineError::MissingIdentifier(_) => "missing_identifier",
         AnalyticsEngineError::AttributeConversion(_) => "attribute_conversion",
         AnalyticsEngineError::InvalidRetentionTimestamp(_) => "invalid_retention_timestamp",
+        AnalyticsEngineError::InvalidRowExpansionRecord(_) => "invalid_row_expansion_record",
+        AnalyticsEngineError::MissingRowExpansionPath => "missing_row_expansion_path",
+        AnalyticsEngineError::DuplicateExpandedRowIdentity => "duplicate_expanded_row_identity",
         _ => "not_record_contract_error",
     }
-}
-
-struct BatchSqlExecutor<'conn> {
-    conn: &'conn Connection,
-    inserts: BTreeMap<BatchStatementKey, duckdb::Statement<'conn>>,
-    updates: BTreeMap<BatchStatementKey, duckdb::Statement<'conn>>,
-    deletes: BTreeMap<String, duckdb::Statement<'conn>>,
-}
-
-impl<'conn> BatchSqlExecutor<'conn> {
-    fn new(conn: &'conn Connection) -> Self {
-        Self {
-            conn,
-            inserts: BTreeMap::new(),
-            updates: BTreeMap::new(),
-            deletes: BTreeMap::new(),
-        }
-    }
-
-    fn apply_upsert(
-        &mut self,
-        table: &TableRegistration,
-        row: &BTreeMap<String, serde_json::Value>,
-    ) -> AnalyticsEngineResult<IngestOutcome> {
-        if self.update_row(table, row)? {
-            Ok(IngestOutcome::Updated)
-        } else {
-            self.insert_row(table, row)?;
-            Ok(IngestOutcome::Inserted)
-        }
-    }
-
-    fn insert_row(
-        &mut self,
-        table: &TableRegistration,
-        row: &BTreeMap<String, serde_json::Value>,
-    ) -> AnalyticsEngineResult<()> {
-        let columns = row.keys().cloned().collect::<Vec<_>>();
-        let key = BatchStatementKey {
-            table_name: table.analytics_table_name.clone(),
-            columns,
-        };
-        if !self.inserts.contains_key(&key) {
-            let placeholders = placeholder_list(key.columns.len());
-            let sql = format!(
-                "INSERT INTO {} ({}) VALUES ({placeholders})",
-                sql::quote_identifier(table.analytics_table_name.as_str()),
-                key.columns
-                    .iter()
-                    .map(|column| sql::quote_identifier(column))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            self.inserts
-                .insert(key.clone(), self.conn.prepare(sql.as_str())?);
-        }
-        let values = key
-            .columns
-            .iter()
-            .map(|column| {
-                json_value_to_duckdb_value_for_column(
-                    row.get(column).unwrap_or(&serde_json::Value::Null),
-                    column_type_for_name(table, column),
-                )
-            })
-            .collect::<Vec<_>>();
-        self.inserts
-            .get_mut(&key)
-            .ok_or_else(|| {
-                AnalyticsEngineError::TableNotRegistered(table.analytics_table_name.clone())
-            })?
-            .execute(duckdb::params_from_iter(values))?;
-        Ok(())
-    }
-
-    fn update_row(
-        &mut self,
-        table: &TableRegistration,
-        row: &BTreeMap<String, serde_json::Value>,
-    ) -> AnalyticsEngineResult<bool> {
-        let tenant_id = row
-            .get("tenant_id")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
-        let row_id = row
-            .get("__id")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
-        let table_value = row
-            .get("table_name")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
-
-        let columns = row
-            .keys()
-            .filter(|column| !matches!(column.as_str(), "tenant_id" | "__id" | "table_name"))
-            .cloned()
-            .collect::<Vec<_>>();
-        if columns.is_empty() {
-            return Ok(false);
-        }
-
-        let key = BatchStatementKey {
-            table_name: table.analytics_table_name.clone(),
-            columns,
-        };
-        if !self.updates.contains_key(&key) {
-            let set_clause = assignment_set_clause(key.columns.iter().map(String::as_str));
-            let sql = format!(
-                "UPDATE {} SET {set_clause} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
-                sql::quote_identifier(table.analytics_table_name.as_str())
-            );
-            self.updates
-                .insert(key.clone(), self.conn.prepare(sql.as_str())?);
-        }
-        let mut values = key
-            .columns
-            .iter()
-            .map(|column| {
-                json_value_to_duckdb_value_for_column(
-                    row.get(column).unwrap_or(&serde_json::Value::Null),
-                    column_type_for_name(table, column),
-                )
-            })
-            .collect::<Vec<_>>();
-        values.push(json_value_to_duckdb_value(table_value));
-        values.push(json_value_to_duckdb_value(tenant_id));
-        values.push(json_value_to_duckdb_value(row_id));
-        let changed = self
-            .updates
-            .get_mut(&key)
-            .ok_or_else(|| {
-                AnalyticsEngineError::TableNotRegistered(table.analytics_table_name.clone())
-            })?
-            .execute(duckdb::params_from_iter(values))?;
-        Ok(changed > 0)
-    }
-
-    fn apply_delete(
-        &mut self,
-        table_name: &str,
-        row: &BTreeMap<String, serde_json::Value>,
-    ) -> AnalyticsEngineResult<IngestOutcome> {
-        let tenant_id = row
-            .get("tenant_id")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("tenant_id"))?;
-        let row_id = row
-            .get("__id")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("__id"))?;
-        let table_value = row
-            .get("table_name")
-            .ok_or(AnalyticsEngineError::MissingIdentifier("table_name"))?;
-        if !self.deletes.contains_key(table_name) {
-            let sql = format!(
-                "DELETE FROM {} WHERE table_name = ? AND tenant_id = ? AND __id = ?",
-                sql::quote_identifier(table_name)
-            );
-            self.deletes
-                .insert(table_name.to_string(), self.conn.prepare(sql.as_str())?);
-        }
-        self.deletes
-            .get_mut(table_name)
-            .ok_or_else(|| AnalyticsEngineError::TableNotRegistered(table_name.to_string()))?
-            .execute(duckdb::params_from_iter(vec![
-                json_value_to_duckdb_value(table_value),
-                json_value_to_duckdb_value(tenant_id),
-                json_value_to_duckdb_value(row_id),
-            ]))?;
-        Ok(IngestOutcome::Deleted)
-    }
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct BatchStatementKey {
-    table_name: String,
-    columns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2179,10 +2277,7 @@ fn current_time_millis() -> i64 {
         })
 }
 
-fn rollback_batch<T>(
-    conn: &Connection,
-    error: AnalyticsEngineError,
-) -> AnalyticsEngineResult<Vec<T>> {
+fn rollback_batch<T>(conn: &Connection, error: AnalyticsEngineError) -> AnalyticsEngineResult<T> {
     let _ = conn.execute_batch("ROLLBACK");
     Err(error)
 }
@@ -2264,7 +2359,7 @@ fn retention_from_policy(policy: &RetentionPolicy) -> IngestRetention {
     }
 }
 
-fn json_value_to_duckdb_value(value: &serde_json::Value) -> duckdb::types::Value {
+pub(crate) fn json_value_to_duckdb_value(value: &serde_json::Value) -> duckdb::types::Value {
     match value {
         serde_json::Value::String(text) => duckdb::types::Value::Text(text.clone()),
         serde_json::Value::Number(number) => duckdb::types::Value::Text(number.to_string()),
@@ -2276,7 +2371,7 @@ fn json_value_to_duckdb_value(value: &serde_json::Value) -> duckdb::types::Value
     }
 }
 
-fn json_value_to_duckdb_value_for_column(
+pub(crate) fn json_value_to_duckdb_value_for_column(
     value: &serde_json::Value,
     column_type: Option<AnalyticsColumnType>,
 ) -> duckdb::types::Value {
@@ -2311,7 +2406,7 @@ fn is_timestamp_column(column_type: Option<&AnalyticsColumnType>) -> bool {
     )
 }
 
-fn column_type_for_name(
+pub(crate) fn column_type_for_name(
     table: &TableRegistration,
     column_name: &str,
 ) -> Option<AnalyticsColumnType> {

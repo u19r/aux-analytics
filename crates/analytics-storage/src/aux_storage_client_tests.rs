@@ -90,6 +90,24 @@ async fn source_polling_lease_table_is_the_shared_system_jobs_table() {
 }
 
 #[tokio::test]
+async fn existing_source_polling_lease_table_is_ready() {
+    for body in [
+        r#"{"__type":"com.amazonaws.dynamodb.v20120810#ResourceInUseException","message":"Table already exists: sys_jobs"}"#,
+        r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"#,
+    ] {
+        let (base_url, requests) = serve_responses(vec![(400, body)]).await;
+        let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
+
+        client
+            .ensure_source_polling_lease_table()
+            .await
+            .expect("existing lease table is ready");
+
+        assert_eq!(requests.lock().expect("requests").len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn source_polling_lease_acquire_uses_one_global_lock() {
     let (base_url, requests) = serve_responses(vec![(200, r#"{}"#)]).await;
     let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
@@ -111,7 +129,7 @@ async fn source_polling_lease_acquire_uses_one_global_lock() {
     );
     assert_eq!(
         body["ConditionExpression"],
-        "(attribute_not_exists(lease_until_ms) OR lease_until_ms < :now)"
+        "(attribute_not_exists(lease_until_ms) OR lease_until_ms < :now OR leased_by = :worker)"
     );
     assert_eq!(
         body["ExpressionAttributeValues"][":lease_token"],
@@ -120,10 +138,9 @@ async fn source_polling_lease_acquire_uses_one_global_lock() {
 }
 
 #[tokio::test]
-async fn stale_lease_tokens_cannot_renew_or_release_the_global_lock() {
+async fn stale_lease_tokens_cannot_renew_the_global_lock() {
     let conditional_failure = r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"conditional request failed"}"#;
-    let (base_url, _requests) =
-        serve_responses(vec![(400, conditional_failure), (400, conditional_failure)]).await;
+    let (base_url, _requests) = serve_responses(vec![(400, conditional_failure)]).await;
     let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
 
     assert!(
@@ -131,12 +148,6 @@ async fn stale_lease_tokens_cannot_renew_or_release_the_global_lock() {
             .renew_source_polling_lease("worker-a", "stale-token", 62_000)
             .await
             .expect("conditional renewal")
-    );
-    assert!(
-        !client
-            .release_source_polling_lease("worker-a", "stale-token", 9_999)
-            .await
-            .expect("conditional release")
     );
 }
 

@@ -17,6 +17,10 @@ pub struct SourceCheckpoint {
 
 #[derive(Debug, Clone)]
 pub struct PollBatch {
+    pub source_response_count: usize,
+    pub source_nonempty_response_count: usize,
+    pub source_record_count: usize,
+    pub source_encoded_bytes: usize,
     pub records: Vec<PolledRecord>,
     pub checkpoints: Vec<SourceCheckpoint>,
 }

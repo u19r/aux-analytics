@@ -434,6 +434,7 @@ fn security_manifest() -> AnalyticsManifest {
         source_table_name: "shared_users".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::Attribute {
             attribute_name: "tenant_id".to_string(),

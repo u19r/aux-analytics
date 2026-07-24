@@ -1,10 +1,12 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use analytics_api::{AppState, SourceHealthStatus, SourcePollingPhase};
 use analytics_storage::{AuxStorageLeaseOutcome, SourcePoller};
 use config::AnalyticsSourceConfig;
 
-use crate::source_polling::{batch::*, health::*, legacy_lease::*, metrics::*, time::*};
+use crate::source_polling::{
+    batch::*, health::*, legacy_lease::*, metrics::*, planning::*, time::*,
+};
 
 pub(crate) async fn run_source_poller(
     mut poller: SourcePoller,
@@ -14,10 +16,13 @@ pub(crate) async fn run_source_poller(
     let lease_client = source_polling_lease_client(&source).map(Arc::new);
     let worker_id = source_polling_worker_id();
     let mut source_polling_lease_table_ready = lease_client.is_none();
+    let mut retained_leadership = false;
     let mut interval = tokio::time::interval(poller.poll_interval());
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
+        metrics::gauge!(SOURCE_LEADER_METRIC).set(0.0);
+        metrics::gauge!(SOURCE_LEASE_REMAINING_MS_METRIC).set(0.0);
         apply_source_job_phase_to_app_state(
             &app_state,
             SourcePollingPhase::WaitingForLease,
@@ -33,7 +38,7 @@ pub(crate) async fn run_source_poller(
                 match lease_client.ensure_source_polling_lease_table().await {
                     Ok(()) => {
                         source_polling_lease_table_ready = true;
-                        tracing::warn!(
+                        tracing::info!(
                             job_id = SOURCE_POLLING_JOB_ID,
                             worker_id,
                             "analytics source polling lease table ensured"
@@ -61,6 +66,46 @@ pub(crate) async fn run_source_poller(
             }
             match acquire_source_polling_lease(lease_client, &lease).await {
                 Ok(AuxStorageLeaseOutcome::Acquired) => {
+                    if !retained_leadership {
+                        let checkpoints = app_state
+                            .engine
+                            .with_read(|engine| engine.load_source_checkpoints())
+                            .await;
+                        match checkpoints {
+                            Ok(Ok(checkpoints)) => {
+                                poller.commit(&storage_checkpoints_from_engine(checkpoints));
+                            }
+                            Ok(Err(error)) => {
+                                metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
+                                tracing::warn!(
+                                    error = %error,
+                                    job_id = SOURCE_POLLING_JOB_ID,
+                                    worker_id,
+                                    "analytics source polling leader failed to reload checkpoints"
+                                );
+                                continue;
+                            }
+                            Err(error) => {
+                                metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
+                                tracing::warn!(
+                                    error = %error,
+                                    job_id = SOURCE_POLLING_JOB_ID,
+                                    worker_id,
+                                    "analytics source polling leader failed to reload checkpoints"
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    retained_leadership = true;
+                    metrics::counter!(
+                        SOURCE_LEASE_ATTEMPTS_TOTAL_METRIC,
+                        "outcome" => "acquired"
+                    )
+                    .increment(1);
+                    metrics::gauge!(SOURCE_LEADER_METRIC).set(1.0);
+                    metrics::gauge!(SOURCE_LEASE_REMAINING_MS_METRIC)
+                        .set(milliseconds_i64_to_f64(SOURCE_POLLING_LEASE_DURATION_MS));
                     apply_source_job_phase_to_app_state(
                         &app_state,
                         SourcePollingPhase::LeaseHeld,
@@ -75,6 +120,12 @@ pub(crate) async fn run_source_poller(
                     ))
                 }
                 Ok(AuxStorageLeaseOutcome::HeldByAnotherWorker) => {
+                    retained_leadership = false;
+                    metrics::counter!(
+                        SOURCE_LEASE_ATTEMPTS_TOTAL_METRIC,
+                        "outcome" => "standby"
+                    )
+                    .increment(1);
                     apply_source_job_phase_to_app_state(
                         &app_state,
                         SourcePollingPhase::Standby,
@@ -91,6 +142,12 @@ pub(crate) async fn run_source_poller(
                     continue;
                 }
                 Err(error) => {
+                    retained_leadership = false;
+                    metrics::counter!(
+                        SOURCE_LEASE_ATTEMPTS_TOTAL_METRIC,
+                        "outcome" => "error"
+                    )
+                    .increment(1);
                     metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
                     {
                         let mut health = app_state.source_health.write().await;
@@ -110,6 +167,7 @@ pub(crate) async fn run_source_poller(
                 }
             }
         } else {
+            metrics::gauge!(SOURCE_LEADER_METRIC).set(1.0);
             apply_source_job_phase_to_app_state(
                 &app_state,
                 SourcePollingPhase::LeaseHeld,
@@ -136,8 +194,21 @@ pub(crate) async fn run_source_poller(
             health.total_polls = health.total_polls.saturating_add(1);
         }
         metrics::counter!(SOURCE_POLLS_TOTAL_METRIC).increment(1);
-        match poller.poll_once().await {
+        let poll_started = Instant::now();
+        let poll_result = poller.poll_once().await;
+        metrics::histogram!(SOURCE_POLL_DURATION_MS_METRIC)
+            .record(poll_started.elapsed().as_secs_f64() * 1_000.0);
+        match poll_result {
             Ok(batch) => {
+                metrics::counter!(SOURCE_RESPONSES_TOTAL_METRIC)
+                    .increment(u64::try_from(batch.source_response_count).unwrap_or(u64::MAX));
+                metrics::counter!(SOURCE_NONEMPTY_RESPONSES_TOTAL_METRIC).increment(
+                    u64::try_from(batch.source_nonempty_response_count).unwrap_or(u64::MAX),
+                );
+                metrics::counter!(SOURCE_RECORDS_FETCHED_TOTAL_METRIC)
+                    .increment(u64::try_from(batch.source_record_count).unwrap_or(u64::MAX));
+                metrics::counter!(SOURCE_ENCODED_BYTES_TOTAL_METRIC)
+                    .increment(u64::try_from(batch.source_encoded_bytes).unwrap_or(u64::MAX));
                 apply_source_job_phase_to_app_state(
                     &app_state,
                     SourcePollingPhase::Ingesting,
@@ -168,6 +239,7 @@ pub(crate) async fn run_source_poller(
                     .await;
                     poller.commit(&batch.checkpoints);
                 } else if outcome.ownership_lost {
+                    retained_leadership = false;
                     metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
                     {
                         let mut health = app_state.source_health.write().await;
@@ -193,8 +265,6 @@ pub(crate) async fn run_source_poller(
                         "analytics source polling lease lost before checkpoint commit; batch will \
                          be retried"
                     );
-                    release_source_polling_lease_after_epoch(lease_client.as_ref(), lease_renewal)
-                        .await;
                     let checkpoint_count =
                         usize_to_f64(app_state.source_health.read().await.checkpoints.len());
                     metrics::gauge!(SOURCE_CHECKPOINTS_METRIC).set(checkpoint_count);
@@ -210,6 +280,10 @@ pub(crate) async fn run_source_poller(
                     &batch.checkpoints,
                 )
                 .await;
+                if outcome.checkpoints_saved > 0 {
+                    metrics::gauge!(SOURCE_CHECKPOINT_SAVED_TIMESTAMP_SECONDS_METRIC)
+                        .set(milliseconds_to_seconds_f64(now_ms()));
+                }
             }
             Err(error) => {
                 metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
@@ -220,7 +294,8 @@ pub(crate) async fn run_source_poller(
                 tracing::warn!(error = %error, "analytics source polling failed");
             }
         }
-        release_source_polling_lease_after_epoch(lease_client.as_ref(), lease_renewal).await;
+        drop(lease_renewal);
+        metrics::gauge!(SOURCE_LEASE_REMAINING_MS_METRIC).set(0.0);
         let checkpoint_count = usize_to_f64(app_state.source_health.read().await.checkpoints.len());
         metrics::gauge!(SOURCE_CHECKPOINTS_METRIC).set(checkpoint_count);
     }

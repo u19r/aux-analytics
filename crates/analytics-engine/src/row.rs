@@ -11,44 +11,48 @@ use crate::{
     projection,
 };
 
+pub(crate) struct RowSource<'source> {
+    pub source_table_name: &'source str,
+    pub record_key: &'source [u8],
+    pub record_keys: &'source StorageItem,
+}
+
 impl AnalyticsEngine {
     pub(crate) fn row_from_item(
         &self,
         table: &TableRegistration,
-        source_table_name: &str,
-        record_key: &[u8],
-        record_keys: &StorageItem,
-        item: StorageItem,
+        source: RowSource<'_>,
+        item: &StorageItem,
         ingested_at_ms: i64,
         retention: Option<&IngestRetention>,
     ) -> AnalyticsEngineResult<BTreeMap<String, serde_json::Value>> {
-        let full_item = item.clone();
-        let full_item_json = storage_item_to_json(&full_item)?;
-        let item = if let Some(columns) = table.projection_columns.as_deref() {
-            projection::project_item(&item, columns, table.expression_attribute_names.as_ref())?
+        let full_item_json = storage_item_to_json(item)?;
+        let projected_item = if let Some(columns) = table.projection_columns.as_deref() {
+            projection::project_item(item, columns, table.expression_attribute_names.as_ref())?
         } else if let Some(attribute_names) = table.projection_attribute_names.as_deref() {
-            item.into_iter()
-                .filter(|(name, _)| attribute_names.iter().any(|candidate| candidate == name))
+            item.iter()
+                .filter(|(name, _)| attribute_names.iter().any(|candidate| candidate == *name))
+                .map(|(name, value)| (name.clone(), value.clone()))
                 .collect()
         } else if table.columns.is_empty() {
             StorageItem::new()
         } else {
-            item
+            item.clone()
         };
 
         let tenant_id = resolve_tenant_id(
             table,
-            source_table_name,
-            &full_item,
+            source.source_table_name,
+            item,
             &mut self.caches.borrow_mut(),
         )?;
-        let mut row = attribute_map_to_json(item)?;
+        let mut row = attribute_map_to_json(projected_item)?;
         if let Some(document_column) = table.document_column.as_deref() {
             row.insert(document_column.to_string(), full_item_json);
         }
         row.insert(
             "table_name".to_string(),
-            serde_json::Value::String(source_table_name.to_string()),
+            serde_json::Value::String(source.source_table_name.to_string()),
         );
         row.insert(
             "tenant_id".to_string(),
@@ -58,14 +62,14 @@ impl AnalyticsEngine {
             "__id".to_string(),
             serde_json::Value::String(row_id_from_record(
                 table,
-                record_key,
-                record_keys,
-                &full_item,
+                source.record_key,
+                source.record_keys,
+                item,
                 &mut self.caches.borrow_mut(),
             )?),
         );
         if let Some(retention) = retention {
-            apply_retention_columns(&mut row, &full_item, ingested_at_ms, retention)?;
+            apply_retention_columns(&mut row, item, ingested_at_ms, retention)?;
         }
         Ok(row)
     }
@@ -284,6 +288,21 @@ fn row_id_from_record(
         RowIdentity::Attribute { attribute_name } => Ok(row_id_from_key_bytes(
             string_attribute(item, attribute_name)?.as_bytes(),
         )),
+        RowIdentity::Attributes { attribute_names } => {
+            let values = attribute_names
+                .iter()
+                .map(|attribute_name| {
+                    item.get(attribute_name)
+                        .map(|value| (attribute_name, value))
+                        .ok_or_else(|| {
+                            AnalyticsEngineError::MissingAttribute(attribute_name.clone())
+                        })
+                })
+                .collect::<AnalyticsEngineResult<Vec<_>>>()?;
+            Ok(row_id_from_key_bytes(
+                serde_json::to_vec(&values)?.as_slice(),
+            ))
+        }
         RowIdentity::AttributeRegex {
             attribute_name,
             regex,

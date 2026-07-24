@@ -12,7 +12,7 @@
       "endpoint_url": "http://127.0.0.1:39124/storage",
       "poll_interval_ms": 100,
       "poll_max_shards": 16,
-      "poll_max_responses_per_interval": 160,
+      "poll_max_responses_per_interval": 4,
       "tables": [
         {
           "table_name": "analytics_canary"

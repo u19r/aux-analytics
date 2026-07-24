@@ -8,6 +8,7 @@ fn manifest_serializes_to_stable_snake_case_contract() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -149,6 +150,7 @@ fn manifest_validation_rejects_duplicate_output_tables() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -180,6 +182,7 @@ fn manifest_validation_rejects_layout_columns_that_are_not_projected() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -266,6 +269,7 @@ fn manifest_validation_rejects_reserved_projection_column_names() {
             source_table_name: "tenant_01".to_string(),
             analytics_table_name: "users".to_string(),
             source_table_name_prefix: None,
+            row_expansion: None,
             tenant_id: Some("tenant_01".to_string()),
             tenant_selector: TenantSelector::TableName,
             row_identity: RowIdentity::RecordKey,
@@ -303,6 +307,7 @@ fn base_table(source_table_name: &str, analytics_table_name: &str) -> TableRegis
         source_table_name: source_table_name.to_string(),
         analytics_table_name: analytics_table_name.to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -328,6 +333,7 @@ fn manifest_validation_rejects_duplicate_output_columns_across_sources() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -378,6 +384,7 @@ fn manifest_validation_allows_reserved_columns_as_layout_references() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -410,6 +417,7 @@ fn manifest_validation_accepts_static_retention() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -442,6 +450,7 @@ fn manifest_validation_rejects_zero_retention_period() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -492,6 +501,7 @@ fn manifest_validation_rejects_internal_retention_columns() {
             source_table_name: "tenant_01".to_string(),
             analytics_table_name: "users".to_string(),
             source_table_name_prefix: None,
+            row_expansion: None,
             tenant_id: Some("tenant_01".to_string()),
             tenant_selector: TenantSelector::TableName,
             row_identity: RowIdentity::RecordKey,
@@ -594,6 +604,7 @@ fn manifest_supports_generic_document_tables_without_tenant_layout() {
         source_table_name: "existing_table".to_string(),
         analytics_table_name: "existing_items".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::None,
         row_identity: RowIdentity::StreamKeys,
@@ -613,6 +624,148 @@ fn manifest_supports_generic_document_tables_without_tenant_layout() {
     }]);
 
     manifest.validate().expect("generic manifest");
+}
+
+#[test]
+fn manifest_accepts_typed_row_expansion_paths() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attribute {
+        attribute_name: "event_id".to_string(),
+    };
+    table.projection_attribute_names = None;
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload"), row_index(1)],
+        source_fields: vec![row_field("tenant_id", vec![row_attribute("tenant_id")])],
+        element_fields: vec![
+            row_field("event_id", vec![row_index(5)]),
+            row_field("series_name", vec![row_index(0)]),
+        ],
+        ordinal_attribute_name: Some("ordinal".to_string()),
+    });
+
+    AnalyticsManifest::new(vec![table])
+        .validate()
+        .expect("typed row expansion");
+}
+
+#[test]
+fn manifest_rejects_ambiguous_row_expansion_outputs() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload")],
+        source_fields: vec![row_field("event_id", vec![row_attribute("batch_id")])],
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::DuplicateRowExpansionAttribute {
+            attribute,
+            ..
+        }) if attribute == "event_id"
+    ));
+}
+
+#[test]
+fn manifest_rejects_empty_row_expansion_attribute_segment() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute(" ")],
+        source_fields: Vec::new(),
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidRowExpansion { .. })
+    ));
+}
+
+#[test]
+fn manifest_rejects_row_expansion_missing_projection_input() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attribute {
+        attribute_name: "event_id".to_string(),
+    };
+    table.projection_attribute_names = None;
+    table.projection_columns = Some(vec![ProjectionColumn {
+        column_name: "series_name".to_string(),
+        attribute_path: "series_name".to_string(),
+        column_type: None,
+    }]);
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload")],
+        source_fields: Vec::new(),
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::UnknownRowExpansionOutput {
+            attribute,
+            ..
+        }) if attribute == "series_name"
+    ));
+}
+
+#[test]
+fn manifest_rejects_duplicate_composite_identity_attributes() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attributes {
+        attribute_names: vec!["batch_id".to_string(), "batch_id".to_string()],
+    };
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidRowIdentity { .. })
+    ));
+}
+
+fn row_field(output_attribute_name: &str, path: Vec<RowPathSegment>) -> RowProjectionField {
+    RowProjectionField {
+        output_attribute_name: output_attribute_name.to_string(),
+        path,
+    }
+}
+
+fn row_attribute(name: &str) -> RowPathSegment {
+    RowPathSegment::Attribute {
+        name: name.to_string(),
+    }
+}
+
+const fn row_index(index: usize) -> RowPathSegment {
+    RowPathSegment::Index { index }
+}
+
+#[test]
+fn given_numeric_column_types_when_resolved_then_lossless_duckdb_types_are_used() {
+    let unsigned = AnalyticsColumnType::Primitive {
+        primitive: PrimitiveColumnType::UnsignedBigInt,
+    };
+    let double = AnalyticsColumnType::Primitive {
+        primitive: PrimitiveColumnType::Double,
+    };
+
+    assert_eq!(unsigned.duckdb_type(), "UBIGINT");
+    assert_eq!(double.duckdb_type(), "DOUBLE");
+    assert_eq!(
+        serde_json::to_value(unsigned).expect("serialize unsigned type"),
+        serde_json::json!({
+            "kind": "primitive",
+            "primitive": "unsigned_big_int"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(double).expect("serialize double type"),
+        serde_json::json!({
+            "kind": "primitive",
+            "primitive": "double"
+        })
+    );
 }
 
 #[test]

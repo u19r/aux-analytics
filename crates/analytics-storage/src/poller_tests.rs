@@ -232,8 +232,13 @@ fn given_aws_stream_records_and_next_iterator_when_response_is_batched_then_reco
         "shard-0001",
         vec![stream_record("seq-1"), stream_record("seq-2")],
         Some("next-iterator".to_string()),
-    );
+    )
+    .expect("batch stream response");
 
+    assert_eq!(batch.source_response_count, 1);
+    assert_eq!(batch.source_nonempty_response_count, 1);
+    assert_eq!(batch.source_record_count, 2);
+    assert!(batch.source_encoded_bytes > 0);
     assert_eq!(batch.records.len(), 4);
     assert_eq!(batch.records[0].analytics_table_name, "users");
     assert_eq!(batch.records[1].analytics_table_name, "accounts");
@@ -253,8 +258,13 @@ fn given_aws_stream_response_without_records_when_batched_then_only_iterator_che
         "shard-0001",
         Vec::new(),
         Some("next-iterator".to_string()),
-    );
+    )
+    .expect("batch empty stream response");
 
+    assert_eq!(batch.source_response_count, 1);
+    assert_eq!(batch.source_nonempty_response_count, 0);
+    assert_eq!(batch.source_record_count, 0);
+    assert_eq!(batch.source_encoded_bytes, 2);
     assert!(batch.records.is_empty());
     assert_eq!(batch.checkpoints.len(), 1);
     assert_eq!(batch.checkpoints[0].shard_id, "__iterator:shard-0001");
@@ -275,6 +285,10 @@ async fn given_terminal_aux_storage_page_when_polled_then_last_record_sequence_i
 
     let batch = poller.poll_once(1).await.expect("poll aux-storage page");
 
+    assert_eq!(batch.source_response_count, 1);
+    assert_eq!(batch.source_nonempty_response_count, 1);
+    assert_eq!(batch.source_record_count, 2);
+    assert!(batch.source_encoded_bytes > 0);
     assert_eq!(batch.records.len(), 2);
     assert_eq!(batch.records[0].record_key, "seq-1");
     assert_eq!(batch.checkpoints.len(), 1);
@@ -306,6 +320,7 @@ async fn unmatched_global_record_advances_checkpoint_without_emitting_work() {
 
     let batch = poller.poll_once(1).await.expect("poll aux-storage page");
 
+    assert_eq!(batch.source_record_count, 1);
     assert!(batch.records.is_empty());
     assert_eq!(batch.checkpoints.len(), 1);
     assert_eq!(batch.checkpoints[0].position, "seq-1");
@@ -381,6 +396,10 @@ async fn given_local_fixture_when_used_as_execution_inputs_then_snapshot_and_cat
         records: vec![polled_record("users", "snapshot-1")],
     }]);
     let catchup_fixture = LocalExecutionSource::with_stream_batches([PollBatch {
+        source_response_count: 1,
+        source_nonempty_response_count: 1,
+        source_record_count: 1,
+        source_encoded_bytes: 1,
         records: vec![polled_record("users", "seq-2")],
         checkpoints: vec![catchup_checkpoint.clone()],
     }]);
@@ -507,6 +526,10 @@ impl SnapshotChunkSource for LocalExecutionSource {
 impl StreamCatchupSource for LocalExecutionSource {
     async fn poll_stream_catchup(&mut self) -> crate::AnalyticsStorageResult<PollBatch> {
         Ok(self.stream_batches.pop_front().unwrap_or(PollBatch {
+            source_response_count: 0,
+            source_nonempty_response_count: 0,
+            source_record_count: 0,
+            source_encoded_bytes: 0,
             records: Vec::new(),
             checkpoints: Vec::new(),
         }))

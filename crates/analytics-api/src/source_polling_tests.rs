@@ -4,12 +4,29 @@ use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamT
 
 use crate::source_polling::{
     SourcePollingStartup, apply_source_job_phase, apply_source_poll_error_health,
-    apply_source_success_health, is_iterator_checkpoint, persistable_checkpoints,
-    source_batch_outcome, source_batch_outcome_with_ownership_loss,
+    apply_source_success_health, is_iterator_checkpoint, parse_linux_resident_memory_bytes,
+    persistable_checkpoints, source_batch_outcome, source_batch_outcome_with_ownership_loss,
     source_plans_are_aux_storage_only, source_polling_lease_renew_interval,
-    source_polling_lease_until_ms, source_polling_released_until_ms, source_polling_startup,
-    upsert_checkpoint_health,
+    source_polling_lease_until_ms, source_polling_startup, upsert_checkpoint_health,
 };
+
+#[test]
+fn given_linux_process_status_when_resident_memory_is_parsed_then_bytes_are_returned() {
+    let status = "Name:\taux-analytics\nVmSize:\t100 kB\nVmRSS:\t65536 kB\n";
+
+    assert_eq!(
+        parse_linux_resident_memory_bytes(status),
+        Some(64 * 1_024 * 1_024)
+    );
+}
+
+#[test]
+fn given_process_status_without_resident_memory_when_parsed_then_measurement_is_absent() {
+    assert_eq!(
+        parse_linux_resident_memory_bytes("Name:\taux-analytics\n"),
+        None
+    );
+}
 
 #[test]
 fn given_new_checkpoint_when_health_is_updated_then_checkpoint_is_appended() {
@@ -183,11 +200,6 @@ fn given_source_polling_lease_is_held_then_renewal_interval_is_five_seconds() {
         source_polling_lease_renew_interval(),
         std::time::Duration::from_secs(5)
     );
-}
-
-#[test]
-fn given_source_polling_lease_is_released_then_next_acquire_can_succeed_immediately() {
-    assert_eq!(source_polling_released_until_ms(10_000), 9_999);
 }
 
 #[test]

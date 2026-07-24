@@ -16,6 +16,7 @@ fn table() -> TableRegistration {
         source_table_name: "source_users".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::None,
         row_identity: RowIdentity::RecordKey,

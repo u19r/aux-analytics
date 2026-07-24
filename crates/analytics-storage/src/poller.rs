@@ -154,6 +154,10 @@ impl SourcePoller {
     pub async fn poll_once(&mut self) -> AnalyticsStorageResult<PollBatch> {
         if self.tables.is_empty() {
             return Ok(PollBatch {
+                source_response_count: 0,
+                source_nonempty_response_count: 0,
+                source_record_count: 0,
+                source_encoded_bytes: 0,
                 records: Vec::new(),
                 checkpoints: Vec::new(),
             });
@@ -175,6 +179,10 @@ impl SourcePoller {
             .find(|table| table.is_aux_storage_source_table(source_table_name))
         else {
             return Ok(PollBatch {
+                source_response_count: 0,
+                source_nonempty_response_count: 0,
+                source_record_count: 0,
+                source_encoded_bytes: 0,
                 records: Vec::new(),
                 checkpoints: Vec::new(),
             });
@@ -237,6 +245,10 @@ impl AuxStorageGlobalPoller {
         max_responses: usize,
     ) -> AnalyticsStorageResult<PollBatch> {
         let mut records = Vec::new();
+        let mut source_response_count: usize = 0;
+        let mut source_nonempty_response_count: usize = 0;
+        let mut source_record_count: usize = 0;
+        let mut source_encoded_bytes: usize = 0;
         let mut last_checkpoint = None;
         let mut cursor = self.last_evaluated_key.clone();
         for _ in 0..max_responses {
@@ -254,6 +266,12 @@ impl AuxStorageGlobalPoller {
                 .records
                 .last()
                 .map(|record| record.sequence_number.clone());
+            source_response_count = source_response_count.saturating_add(1);
+            source_nonempty_response_count = source_nonempty_response_count
+                .saturating_add(usize::from(!response.records.is_empty()));
+            source_record_count = source_record_count.saturating_add(response.records.len());
+            source_encoded_bytes =
+                source_encoded_bytes.saturating_add(serde_json::to_vec(&response.records)?.len());
             cursor = next_aux_storage_cursor(response.last_evaluated_key, latest_record_key);
             records.extend(route_global_records(&self.routes, response.records)?);
             if let Some(position) = cursor.clone() {
@@ -268,6 +286,10 @@ impl AuxStorageGlobalPoller {
             }
         }
         Ok(PollBatch {
+            source_response_count,
+            source_nonempty_response_count,
+            source_record_count,
+            source_encoded_bytes,
             records,
             checkpoints: last_checkpoint.into_iter().collect(),
         })
@@ -295,6 +317,10 @@ impl AwsStreamTablePoller {
             .await?;
         }
         let mut records = Vec::new();
+        let mut source_response_count: usize = 0;
+        let mut source_nonempty_response_count: usize = 0;
+        let mut source_record_count: usize = 0;
+        let mut source_encoded_bytes: usize = 0;
         let mut checkpoints = Vec::new();
         let mut get_records_tasks = JoinSet::new();
         let active_iterator_count = max_responses.min(self.shard_iterators.len());
@@ -339,11 +365,21 @@ impl AwsStreamTablePoller {
                 shard_id.as_str(),
                 contract_records,
                 response.next_shard_iterator().map(ToOwned::to_owned),
-            );
+            )?;
+            source_response_count =
+                source_response_count.saturating_add(batch.source_response_count);
+            source_nonempty_response_count =
+                source_nonempty_response_count.saturating_add(batch.source_nonempty_response_count);
+            source_record_count = source_record_count.saturating_add(batch.source_record_count);
+            source_encoded_bytes = source_encoded_bytes.saturating_add(batch.source_encoded_bytes);
             records.extend(batch.records);
             checkpoints.extend(batch.checkpoints);
         }
         Ok(PollBatch {
+            source_response_count,
+            source_nonempty_response_count,
+            source_record_count,
+            source_encoded_bytes,
             records,
             checkpoints,
         })
@@ -412,7 +448,9 @@ pub(crate) fn aws_stream_response_batch(
     shard_id: &str,
     contract_records: Vec<StorageStreamRecord>,
     next_iterator: Option<String>,
-) -> PollBatch {
+) -> AnalyticsStorageResult<PollBatch> {
+    let source_encoded_bytes = serde_json::to_vec(&contract_records)?.len();
+    let source_record_count = contract_records.len();
     let mut checkpoints = Vec::new();
     if let Some(last_record) = contract_records.last() {
         checkpoints.push(SourceCheckpoint {
@@ -429,10 +467,14 @@ pub(crate) fn aws_stream_response_batch(
             position: next_iterator,
         });
     }
-    PollBatch {
+    Ok(PollBatch {
+        source_response_count: 1,
+        source_nonempty_response_count: usize::from(source_record_count > 0),
+        source_record_count,
+        source_encoded_bytes,
         records,
         checkpoints,
-    }
+    })
 }
 
 pub(crate) fn expand_records(

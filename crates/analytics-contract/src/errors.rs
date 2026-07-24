@@ -6,6 +6,10 @@ pub enum ManifestValidationError {
     DuplicateColumnName { table: String, column: String },
     GlobalReferenceHasTenantScope { table: String },
     InvalidJoinPolicy { table: String, reason: &'static str },
+    InvalidRowIdentity { reason: &'static str },
+    InvalidRowExpansion { table: String, reason: &'static str },
+    DuplicateRowExpansionAttribute { table: String, attribute: String },
+    UnknownRowExpansionOutput { table: String, attribute: String },
     ReservedOutputColumn { table: String, column: String },
     UnknownLayoutColumn { table: String, column: String },
     InvalidRetentionPeriod { table: String },
@@ -37,6 +41,28 @@ impl std::fmt::Display for ManifestValidationError {
                 write!(
                     f,
                     "join policy for analytics table {table} is invalid: {reason}"
+                )
+            }
+            Self::InvalidRowIdentity { reason } => {
+                write!(f, "row identity is invalid: {reason}")
+            }
+            Self::InvalidRowExpansion { table, reason } => {
+                write!(
+                    f,
+                    "row expansion for analytics table {table} is invalid: {reason}"
+                )
+            }
+            Self::DuplicateRowExpansionAttribute { table, attribute } => {
+                write!(
+                    f,
+                    "row expansion attribute {attribute} is duplicated in analytics table {table}"
+                )
+            }
+            Self::UnknownRowExpansionOutput { table, attribute } => {
+                write!(
+                    f,
+                    "row expansion output {attribute} required by analytics table {table} is not \
+                     declared"
                 )
             }
             Self::ReservedOutputColumn { table, column } => {

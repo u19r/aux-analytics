@@ -764,7 +764,34 @@ async fn ingest_batch_endpoint_ingests_records_in_one_request() {
     let body = response_json(response).await;
     assert_eq!(body["record_count"], 2);
     assert_eq!(body["outcomes"][0]["outcome"], "inserted");
-    assert_query_email(router, "first@example.com").await;
+    let query_response = post_json(
+        router,
+        "/tenant-query",
+        json!({
+            "target_tenant_id": "tenant_01",
+            "query": {
+                "analytics_table_name": "users",
+                "select": [{"kind": "column", "column_name": "email"}],
+                "filters": [],
+                "group_by": [],
+                "order_by": [{
+                    "expression": {"kind": "column", "column_name": "email"},
+                    "direction": "asc"
+                }],
+                "limit": 10
+            }
+        }),
+    )
+    .await;
+    assert_eq!(query_response.status(), StatusCode::OK);
+    let query_body = response_json(query_response).await;
+    assert_eq!(
+        query_body["rows"],
+        json!([
+            {"email": "first@example.com"},
+            {"email": "second@example.com"}
+        ])
+    );
 }
 
 #[tokio::test]

@@ -140,10 +140,17 @@ impl AuxStorageLeaseClient {
     }
 
     pub async fn ensure_source_polling_lease_table(&self) -> AnalyticsStorageResult<()> {
-        self.client
+        match self
+            .client
             .dynamo::<_, serde_json::Value>("CreateTable", &source_polling_lease_table_request())
             .await
-            .map(|_| ())
+        {
+            Ok(_) => Ok(()),
+            Err(error) if is_resource_in_use(&error) || is_conditional_check_failed(&error) => {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn try_acquire_source_polling_lease(
@@ -171,21 +178,6 @@ impl AuxStorageLeaseClient {
         lease_until_ms: i64,
     ) -> AnalyticsStorageResult<bool> {
         let request = source_polling_lease_renew_request(worker_id, lease_token, lease_until_ms);
-        match self.client.update_item(&request).await {
-            Ok(_) => Ok(true),
-            Err(error) if is_conditional_check_failed(&error) => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub async fn release_source_polling_lease(
-        &self,
-        worker_id: &str,
-        lease_token: &str,
-        released_until_ms: i64,
-    ) -> AnalyticsStorageResult<bool> {
-        let request =
-            source_polling_lease_release_request(worker_id, lease_token, released_until_ms);
         match self.client.update_item(&request).await {
             Ok(_) => Ok(true),
             Err(error) if is_conditional_check_failed(&error) => Ok(false),
@@ -232,7 +224,8 @@ fn source_polling_lease_acquire_request(
         lease_token,
         lease_until_ms,
         Some(now_ms),
-        "(attribute_not_exists(lease_until_ms) OR lease_until_ms < :now)".to_string(),
+        "(attribute_not_exists(lease_until_ms) OR lease_until_ms < :now OR leased_by = :worker)"
+            .to_string(),
         "acquired",
     )
 }
@@ -249,21 +242,6 @@ fn source_polling_lease_renew_request(
         None,
         "leased_by = :worker AND lease_token = :lease_token".to_string(),
         "renewed",
-    )
-}
-
-fn source_polling_lease_release_request(
-    worker_id: &str,
-    lease_token: &str,
-    released_until_ms: i64,
-) -> UpdateItemRequest {
-    source_polling_lease_update_request(
-        worker_id,
-        lease_token,
-        released_until_ms,
-        None,
-        "leased_by = :worker AND lease_token = :lease_token".to_string(),
-        "released",
     )
 }
 
@@ -319,4 +297,8 @@ fn source_polling_lease_update_request(
 
 fn is_conditional_check_failed(error: &AnalyticsStorageError) -> bool {
     error.to_string().contains("ConditionalCheckFailed")
+}
+
+fn is_resource_in_use(error: &AnalyticsStorageError) -> bool {
+    error.to_string().contains("ResourceInUseException")
 }

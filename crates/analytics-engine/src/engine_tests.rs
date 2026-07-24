@@ -7,9 +7,9 @@ use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, ClusteringKey, PrimitiveColumnType, PrivacyPolicy,
     ProjectionColumn, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
     QueryExpression, QueryJoin, QueryJoinKind, QueryJoinPredicate, QueryOrder, QueryPredicate,
-    QuerySelect, RetentionPolicy, RetentionTimestamp, RowIdentity, SortOrder, SourcePosition,
-    StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration, TenantRangePurgeRequest,
-    TenantSelector,
+    QuerySelect, RetentionPolicy, RetentionTimestamp, RowExpansion, RowIdentity, RowPathSegment,
+    RowProjectionField, SortOrder, SourcePosition, StorageStreamRecord, StorageValue,
+    StructuredQuery, TableRegistration, TenantRangePurgeRequest, TenantSelector,
 };
 use analytics_fixtures::{
     generic_items_manifest, legacy_item, metric_points_manifest, storage_key, user_item,
@@ -21,6 +21,30 @@ use super::{
     AnalyticsEngine, AnalyticsEngineError, IngestOutcome, PrivacyTableRemediationMode,
     SourceCheckpoint, StreamRecordBatchItem,
 };
+use crate::engine::ducklake_schema_convergence_message;
+
+#[test]
+fn concurrent_ducklake_create_conflicts_are_converged_schema() {
+    assert!(ducklake_schema_convergence_message(
+        "TransactionContext Error: Failed to commit DuckLake transaction. Transaction conflict - \
+         invalid mutation: conflict creating table analytics_checkpoints: name already exists in \
+         schema 0"
+    ));
+    assert!(ducklake_schema_convergence_message(
+        "DuckLake transaction failed because the table has been created by another transaction \
+         already"
+    ));
+}
+
+#[test]
+fn unrelated_ducklake_failures_are_not_converged_schema() {
+    assert!(!ducklake_schema_convergence_message(
+        "DuckLake transaction failed: permission denied"
+    ));
+    assert!(!ducklake_schema_convergence_message(
+        "Transaction conflict - invalid mutation: name already exists"
+    ));
+}
 
 #[test]
 fn record_contract_failures_are_distinct_from_retryable_runtime_failures() {
@@ -160,6 +184,7 @@ fn stream_records_are_projected_into_queryable_rows() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: analytics_contract::RowIdentity::RecordKey,
@@ -225,6 +250,7 @@ fn timestamp_projection_epoch_millis_ingests_as_duckdb_timestamp() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "sessions".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: RowIdentity::RecordKey,
@@ -283,6 +309,7 @@ fn existing_tables_gain_new_projection_columns_before_layout_is_applied() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "metric_events_raw".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: analytics_contract::RowIdentity::RecordKey,
@@ -308,6 +335,7 @@ fn existing_tables_gain_new_projection_columns_before_layout_is_applied() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "metric_events_raw".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: analytics_contract::RowIdentity::RecordKey,
@@ -377,6 +405,96 @@ fn stream_record_batches_are_ingested_in_one_transaction_boundary() {
         .query_unscoped_sql_json("select count(*) as row_count from users")
         .expect("query");
     assert_eq!(rows[0]["row_count"], 2);
+}
+
+#[test]
+fn given_existing_row_when_batch_updates_then_row_is_replaced() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    engine
+        .ingest_stream_record(
+            &manifest,
+            "users",
+            b"user-1",
+            email_record("1", "before@example.test"),
+        )
+        .expect("initial ingest");
+
+    let outcomes = engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![StreamRecordBatchItem {
+                analytics_table_name: "users".to_string(),
+                source_table_name: "tenant_01".to_string(),
+                record_key: b"user-1".to_vec(),
+                record: StorageStreamRecord {
+                    sequence_number: "2".to_string(),
+                    keys: HashMap::new(),
+                    old_image: Some(user_item("1", "before@example.test", "org-a")),
+                    new_image: Some(user_item("1", "after@example.test", "org-a")),
+                },
+            }],
+        )
+        .expect("batch update");
+
+    assert_eq!(outcomes, vec![IngestOutcome::Updated]);
+    let rows = engine
+        .query_unscoped_sql_json("select email from users")
+        .expect("query");
+    assert_eq!(
+        rows,
+        vec![serde_json::json!({"email": "after@example.test"})]
+    );
+}
+
+#[test]
+fn given_repeated_identity_when_batch_ends_with_delete_then_row_is_absent() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = users_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let updated = user_item("1", "after@example.test", "org-a");
+
+    engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    source_table_name: "tenant_01".to_string(),
+                    record_key: b"user-1".to_vec(),
+                    record: email_record("1", "before@example.test"),
+                },
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    source_table_name: "tenant_01".to_string(),
+                    record_key: b"user-1".to_vec(),
+                    record: StorageStreamRecord {
+                        sequence_number: "2".to_string(),
+                        keys: HashMap::new(),
+                        old_image: Some(user_item("1", "before@example.test", "org-a")),
+                        new_image: Some(updated.clone()),
+                    },
+                },
+                StreamRecordBatchItem {
+                    analytics_table_name: "users".to_string(),
+                    source_table_name: "tenant_01".to_string(),
+                    record_key: b"user-1".to_vec(),
+                    record: StorageStreamRecord {
+                        sequence_number: "3".to_string(),
+                        keys: HashMap::new(),
+                        old_image: Some(updated),
+                        new_image: None,
+                    },
+                },
+            ],
+        )
+        .expect("batch mutations");
+
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query");
+    assert_eq!(rows[0]["row_count"], 0);
 }
 
 #[test]
@@ -543,6 +661,318 @@ fn deterministic_poison_is_quarantined_without_blocking_later_records() {
     assert_eq!(quarantine[0]["error_class"], "missing_attribute");
 }
 
+#[test]
+fn manifest_expands_one_source_record_into_declared_rows() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = expanded_metric_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let outcome = engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![expanded_metric_batch_item(
+                "batch-1",
+                expanded_metric_item(&[
+                    ("event-1", "api_requests", "10"),
+                    ("event-2", "api_requests", "20"),
+                ]),
+            )],
+        )
+        .expect("ingest expanded metric batch");
+
+    assert_eq!(outcome, vec![IngestOutcome::Inserted]);
+    let rows = engine
+        .query_unscoped_sql_json(
+            "select event_id, value_i64, wal_batch_id, wal_row_ordinal from \
+             metric_points_expanded order by wal_row_ordinal",
+        )
+        .expect("query expanded rows");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["event_id"], "event-1");
+    assert_eq!(rows[0]["value_i64"], 10);
+    assert_eq!(rows[0]["wal_batch_id"], "batch-1");
+    assert_eq!(rows[0]["wal_row_ordinal"], 0);
+    assert_eq!(rows[1]["event_id"], "event-2");
+    assert_eq!(rows[1]["value_i64"], 20);
+    assert_eq!(rows[1]["wal_row_ordinal"], 1);
+}
+
+#[test]
+fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut manifest = expanded_metric_manifest();
+    let table = manifest.tables.first_mut().expect("expanded table");
+    table
+        .projection_columns
+        .as_mut()
+        .expect("expanded projections")
+        .push(unsigned_bigint_projection("value_u64"));
+    table
+        .projection_columns
+        .as_mut()
+        .expect("expanded projections")
+        .push(double_projection("value_f64"));
+    table
+        .row_expansion
+        .as_mut()
+        .expect("row expansion")
+        .element_fields
+        .push(row_field("value_u64", vec![row_index(3)]));
+    table
+        .row_expansion
+        .as_mut()
+        .expect("row expansion")
+        .element_fields
+        .push(row_field("value_f64", vec![row_index(4)]));
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let mut item = expanded_metric_item(&[("event-1", "api_requests", "10")]);
+    item.insert(
+        "p".to_string(),
+        StorageValue::L(vec![
+            StorageValue::N("2".to_string()),
+            StorageValue::L(vec![StorageValue::L(vec![
+                StorageValue::S("api_requests".to_string()),
+                StorageValue::S("event-1".to_string()),
+                StorageValue::N("10".to_string()),
+                StorageValue::N(u64::MAX.to_string()),
+                StorageValue::N(f64::MAX.to_string()),
+            ])]),
+        ]),
+    );
+
+    engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![expanded_metric_batch_item("batch-unsigned", item)],
+        )
+        .expect("ingest unsigned metric");
+
+    let rows = engine
+        .query_unscoped_sql_json("select value_u64, value_f64 from metric_points_expanded")
+        .expect("query numeric values");
+    assert_eq!(
+        rows,
+        vec![serde_json::json!({
+            "value_u64": u64::MAX,
+            "value_f64": f64::MAX
+        })]
+    );
+}
+
+#[test]
+fn expanded_registration_skips_unrelated_source_entities() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = expanded_metric_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let mut unrelated = expanded_metric_item(&[("event-1", "api_requests", "10")]);
+    unrelated.insert("et".to_string(), StorageValue::S("USER".to_string()));
+
+    let outcome = engine
+        .ingest_stream_record_batch(
+            &manifest,
+            vec![expanded_metric_batch_item("user-1", unrelated)],
+        )
+        .expect("skip unrelated entity");
+
+    assert_eq!(outcome, vec![IngestOutcome::Skipped]);
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from metric_points_expanded")
+        .expect("query rows");
+    assert_eq!(rows[0]["row_count"], 0);
+}
+
+#[test]
+fn malformed_expansion_is_quarantined_and_checkpoint_advances() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let manifest = expanded_metric_manifest();
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+    let checkpoint = SourceCheckpoint {
+        source_table_name: "__global_system_stream".to_string(),
+        shard_id: "aux-storage".to_string(),
+        position: "cursor-expanded".to_string(),
+    };
+    let mut malformed = expanded_metric_item(&[("event-bad", "api_requests", "10")]);
+    malformed.insert(
+        "p".to_string(),
+        StorageValue::L(vec![
+            StorageValue::N("2".to_string()),
+            StorageValue::L(vec![StorageValue::L(vec![StorageValue::S(
+                "too-short".to_string(),
+            )])]),
+        ]),
+    );
+
+    let outcome = engine
+        .ingest_stream_page_and_checkpoint(
+            &manifest,
+            vec![
+                expanded_metric_batch_item("bad", malformed),
+                expanded_metric_batch_item(
+                    "good",
+                    expanded_metric_item(&[("event-good", "api_requests", "7")]),
+                ),
+            ],
+            &checkpoint,
+        )
+        .expect("quarantine malformed expansion");
+
+    assert_eq!(outcome.outcomes, vec![IngestOutcome::Inserted]);
+    assert_eq!(outcome.quarantined.len(), 1);
+    assert_eq!(outcome.quarantined[0].input_index, 0);
+    assert_eq!(
+        outcome.quarantined[0].error_class,
+        "missing_row_expansion_path"
+    );
+    assert_eq!(
+        engine.load_source_checkpoints().expect("checkpoints"),
+        vec![checkpoint]
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select event_id from metric_points_expanded")
+        .expect("query rows");
+    assert_eq!(rows, vec![serde_json::json!({"event_id": "event-good"})]);
+}
+
+fn expanded_metric_manifest() -> AnalyticsManifest {
+    let mut table = filtered_entity_table("nsystem", "metric_points_expanded", "METRIC_WAL_BATCH");
+    table.tenant_selector = TenantSelector::Attribute {
+        attribute_name: "tenant_id".to_string(),
+    };
+    table.row_identity = RowIdentity::Attributes {
+        attribute_names: vec!["wal_batch_id".to_string(), "wal_row_ordinal".to_string()],
+    };
+    table.document_column = None;
+    table.skip_delete = true;
+    table.projection_attribute_names = None;
+    table.projection_columns = Some(vec![
+        varchar_projection("event_id"),
+        varchar_projection("series_name"),
+        bigint_projection("value_i64"),
+        varchar_projection("wal_batch_id"),
+        bigint_projection("wal_row_ordinal"),
+    ]);
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("p"), row_index(1)],
+        source_fields: vec![
+            row_field("tenant_id", vec![row_attribute("tenant_id")]),
+            row_field("wal_batch_id", vec![row_attribute("b_id")]),
+        ],
+        element_fields: vec![
+            row_field("series_name", vec![row_index(0)]),
+            row_field("event_id", vec![row_index(1)]),
+            row_field("value_i64", vec![row_index(2)]),
+        ],
+        ordinal_attribute_name: Some("wal_row_ordinal".to_string()),
+    });
+    AnalyticsManifest::new(vec![table])
+}
+
+fn expanded_metric_item(points: &[(&str, &str, &str)]) -> HashMap<String, StorageValue> {
+    HashMap::from([
+        (
+            "et".to_string(),
+            StorageValue::S("METRIC_WAL_BATCH".to_string()),
+        ),
+        (
+            "tenant_id".to_string(),
+            StorageValue::S("tenant-a".to_string()),
+        ),
+        ("b_id".to_string(), StorageValue::S("batch-1".to_string())),
+        (
+            "p".to_string(),
+            StorageValue::L(vec![
+                StorageValue::N("2".to_string()),
+                StorageValue::L(
+                    points
+                        .iter()
+                        .map(|(event_id, series_name, value)| {
+                            StorageValue::L(vec![
+                                StorageValue::S((*series_name).to_string()),
+                                StorageValue::S((*event_id).to_string()),
+                                StorageValue::N((*value).to_string()),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn expanded_metric_batch_item(
+    sequence_number: &str,
+    item: HashMap<String, StorageValue>,
+) -> StreamRecordBatchItem {
+    StreamRecordBatchItem {
+        analytics_table_name: "metric_points_expanded".to_string(),
+        source_table_name: "nsystem".to_string(),
+        record_key: sequence_number.as_bytes().to_vec(),
+        record: StorageStreamRecord {
+            keys: HashMap::new(),
+            sequence_number: sequence_number.to_string(),
+            old_image: None,
+            new_image: Some(item),
+        },
+    }
+}
+
+fn row_field(output_attribute_name: &str, path: Vec<RowPathSegment>) -> RowProjectionField {
+    RowProjectionField {
+        output_attribute_name: output_attribute_name.to_string(),
+        path,
+    }
+}
+
+fn row_attribute(name: &str) -> RowPathSegment {
+    RowPathSegment::Attribute {
+        name: name.to_string(),
+    }
+}
+
+const fn row_index(index: usize) -> RowPathSegment {
+    RowPathSegment::Index { index }
+}
+
+fn varchar_projection(attribute_path: &str) -> ProjectionColumn {
+    ProjectionColumn {
+        column_name: attribute_path.to_string(),
+        attribute_path: attribute_path.to_string(),
+        column_type: Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::VarChar,
+        }),
+    }
+}
+
+fn bigint_projection(attribute_path: &str) -> ProjectionColumn {
+    ProjectionColumn {
+        column_name: attribute_path.to_string(),
+        attribute_path: attribute_path.to_string(),
+        column_type: Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::BigInt,
+        }),
+    }
+}
+
+fn unsigned_bigint_projection(attribute_path: &str) -> ProjectionColumn {
+    ProjectionColumn {
+        column_name: attribute_path.to_string(),
+        attribute_path: attribute_path.to_string(),
+        column_type: Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::UnsignedBigInt,
+        }),
+    }
+}
+
+fn double_projection(attribute_path: &str) -> ProjectionColumn {
+    ProjectionColumn {
+        column_name: attribute_path.to_string(),
+        attribute_path: attribute_path.to_string(),
+        column_type: Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::Double,
+        }),
+    }
+}
+
 fn metric_batch_item(
     record_key: &str,
     item: HashMap<String, StorageValue>,
@@ -576,6 +1006,7 @@ fn privacy_policy_removes_denied_field_before_projection() {
         source_table_name: "tenant_01".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_01".to_string()),
         tenant_selector: TenantSelector::TableName,
         row_identity: analytics_contract::RowIdentity::RecordKey,
@@ -916,6 +1347,7 @@ fn generic_document_tables_do_not_require_tenant_or_projection_layout() {
         source_table_name: "legacy_items".to_string(),
         analytics_table_name: "legacy_items".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::None,
         row_identity: RowIdentity::StreamKeys,
@@ -1332,6 +1764,7 @@ fn tenant_scoped_structured_queries_only_return_target_tenant_rows() {
         source_table_name: "shared_users".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::Attribute {
             attribute_name: "tenant_id".to_string(),
@@ -1730,6 +2163,7 @@ fn partition_key_prefix_selector_maps_aux_storage_namespace_prefix_to_tenant_id(
         source_table_name: "s00000".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::PartitionKeyPrefix {
             attribute_name: "pk".to_string(),
@@ -1855,6 +2289,7 @@ fn regex_selectors_extract_tenant_and_row_identity() {
         source_table_name: "shared_items".to_string(),
         analytics_table_name: "orders".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::AttributeRegex {
             attribute_name: "pk".to_string(),
@@ -2004,6 +2439,7 @@ fn filtered_entity_table(
         source_table_name: source_table_name.to_string(),
         analytics_table_name: analytics_table_name.to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: None,
         tenant_selector: TenantSelector::None,
         row_identity: RowIdentity::Attribute {

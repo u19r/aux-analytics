@@ -1250,6 +1250,7 @@ fn table_registration(count: usize) -> TableRegistration {
         source_table_name: "tenant_users".to_string(),
         analytics_table_name: "users".to_string(),
         source_table_name_prefix: None,
+        row_expansion: None,
         tenant_id: Some("tenant_a".to_string()),
         tenant_selector: TenantSelector::default(),
         row_identity: RowIdentity::default(),

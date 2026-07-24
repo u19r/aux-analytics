@@ -4,6 +4,7 @@ mod entry;
 mod health;
 mod legacy;
 mod legacy_lease;
+mod memory;
 mod metrics;
 mod planning;
 mod time;
@@ -22,6 +23,8 @@ pub(crate) use health::{
     upsert_checkpoint_health,
 };
 #[cfg(test)]
+pub(crate) use memory::parse_linux_resident_memory_bytes;
+#[cfg(test)]
 pub(crate) use planning::{
     SourcePollingStartup, source_plans_are_aux_storage_only, source_polling_startup,
     storage_checkpoints_from_engine,
@@ -29,4 +32,4 @@ pub(crate) use planning::{
 #[cfg(test)]
 pub(crate) use time::source_polling_lease_renew_interval;
 #[cfg(test)]
-pub(crate) use time::{source_polling_lease_until_ms, source_polling_released_until_ms};
+pub(crate) use time::source_polling_lease_until_ms;

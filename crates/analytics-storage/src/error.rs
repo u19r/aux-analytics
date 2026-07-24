@@ -54,7 +54,6 @@ impl AnalyticsStorageError {
             source: Some(Box::new(source)),
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

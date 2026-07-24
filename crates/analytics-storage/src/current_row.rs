@@ -120,8 +120,7 @@ impl<Client> DynamoDbCurrentRowPageReader<Client> {
 }
 
 impl<Client> ProductionCurrentRowPageReader for AuxStorageCurrentRowPageReader<Client>
-where
-    Client: AuxStorageCurrentRowClient,
+where Client: AuxStorageCurrentRowClient
 {
     fn current_row_page(
         &self,
@@ -156,8 +155,7 @@ where
 }
 
 impl<Client> ProductionCurrentRowPageReader for DynamoDbCurrentRowPageReader<Client>
-where
-    Client: DynamoDbCurrentRowClient,
+where Client: DynamoDbCurrentRowClient
 {
     fn current_row_page(
         &self,

@@ -105,7 +105,7 @@
           "default": {
             "poll_interval_ms": 100,
             "poll_max_records_per_response": 8192,
-            "poll_max_responses_per_interval": 160,
+            "poll_max_responses_per_interval": 4,
             "poll_max_shards": 16,
             "poll_request_timeout_ms": 5000,
             "tables": []
@@ -338,7 +338,7 @@
           "type": "integer"
         },
         "poll_max_responses_per_interval": {
-          "default": 160,
+          "default": 4,
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -803,7 +803,7 @@
         "source": {
           "poll_interval_ms": 100,
           "poll_max_records_per_response": 8192,
-          "poll_max_responses_per_interval": 160,
+          "poll_max_responses_per_interval": 4,
           "poll_max_shards": 16,
           "poll_request_timeout_ms": 5000,
           "tables": []

@@ -205,7 +205,9 @@
         "var_char",
         "json",
         "big_int",
+        "unsigned_big_int",
         "decimal",
+        "double",
         "timestamp"
       ],
       "type": "string"
@@ -295,6 +297,44 @@
         }
       ]
     },
+    "RowExpansion": {
+      "description": "Manifest-controlled projection from a source list to analytical rows.",
+      "properties": {
+        "element_fields": {
+          "description": "Fields copied from each list element into its expanded row.",
+          "items": {
+            "$ref": "#/$defs/RowProjectionField"
+          },
+          "type": "array"
+        },
+        "list_path": {
+          "description": "Path from the source item to the list of row elements.",
+          "items": {
+            "$ref": "#/$defs/RowPathSegment"
+          },
+          "type": "array"
+        },
+        "ordinal_attribute_name": {
+          "description": "Optional output attribute populated with the zero-based list ordinal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_fields": {
+          "description": "Fields copied from the source item into every expanded row.",
+          "items": {
+            "$ref": "#/$defs/RowProjectionField"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "list_path",
+        "element_fields"
+      ],
+      "type": "object"
+    },
     "RowIdentity": {
       "description": "Stable row identity extraction rule.",
       "oneOf": [
@@ -343,6 +383,27 @@
           "type": "object"
         },
         {
+          "description": "Hash an ordered tuple of source attributes into one stable row id.\nThis is useful for expanded rows whose identity is a parent id plus\nlist ordinal.",
+          "properties": {
+            "attribute_names": {
+              "description": "Ordered source attributes that together identify the row.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "attributes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "attribute_names"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Extract row identity from a named regex capture group on a string\nattribute.",
           "properties": {
             "attribute_name": {
@@ -371,6 +432,66 @@
           "type": "object"
         }
       ]
+    },
+    "RowPathSegment": {
+      "description": "One typed segment in a source-item row-expansion path.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "attribute",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "index",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "index"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RowProjectionField": {
+      "description": "One field copied into an expanded source row.",
+      "properties": {
+        "output_attribute_name": {
+          "description": "Attribute name presented to tenant, identity, retention, and column\nprojections after expansion.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path relative to the source item or current list element.",
+          "items": {
+            "$ref": "#/$defs/RowPathSegment"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "output_attribute_name",
+        "path"
+      ],
+      "type": "object"
     },
     "SortOrder": {
       "description": "Sort direction for clustering and structured order clauses.",
@@ -631,6 +752,17 @@
             }
           ],
           "description": "Optional static retention policy for rows in this analytical table."
+        },
+        "row_expansion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowExpansion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional expansion that turns one source item containing a list into\none analytical source row per list element. Conditions are evaluated\nagainst the source item before expansion."
         },
         "row_identity": {
           "$ref": "#/$defs/RowIdentity",
