@@ -1,11 +1,11 @@
 use std::{sync::Arc, time::Instant};
 
-use analytics_api::{AppState, SourceHealthStatus, SourcePollingPhase};
 use analytics_storage::{AuxStorageLeaseOutcome, SourcePoller};
 use config::AnalyticsSourceConfig;
 
-use crate::source_polling::{
-    batch::*, health::*, legacy_lease::*, metrics::*, planning::*, time::*,
+use crate::{
+    AppState, SourceHealthStatus, SourcePollingPhase,
+    source_polling::{batch::*, health::*, legacy_lease::*, metrics::*, planning::*, time::*},
 };
 
 pub(crate) async fn run_source_poller(

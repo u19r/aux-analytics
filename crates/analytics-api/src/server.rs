@@ -1,10 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use analytics_api::{
-    AppState, EndpointConfig, MetricsEndpointConfig, PrometheusMetricsEndpointConfig,
-    retention::{RetentionRuntime, spawn_retention_sweeper},
-    server_router_with_config,
-};
 use analytics_contract::read_manifest;
 use analytics_engine::AnalyticsEngine;
 use axum::http::HeaderValue;
@@ -19,11 +14,14 @@ use tracing_subscriber::{
 };
 
 use crate::{
+    AppState, EndpointConfig, MetricsEndpointConfig, PrometheusMetricsEndpointConfig,
     cli::ApiCli,
     error::ApiResult,
+    retention::{RetentionRuntime, spawn_retention_sweeper},
     runtime_config::{
         load_privacy_policy, load_serve_config, resolve_manifest_path, validate_source_config,
     },
+    server_router_with_config,
     source_polling::spawn_source_polling,
 };
 

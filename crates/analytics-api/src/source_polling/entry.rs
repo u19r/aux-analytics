@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use analytics_api::{AppState, SourceHealth};
 use analytics_storage::SourcePoller;
 use config::{AnalyticsIngestConfig, AnalyticsSourceConfig};
 
 use crate::{
+    AppState, SourceHealth,
     error::ApiResult,
     source_polling::{legacy::run_source_poller, planning::*},
 };

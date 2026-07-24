@@ -1,13 +1,15 @@
-use analytics_api::{CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase};
 use analytics_storage::SourceCheckpoint;
 use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamType};
 
-use crate::source_polling::{
-    SourcePollingStartup, apply_source_job_phase, apply_source_poll_error_health,
-    apply_source_success_health, is_iterator_checkpoint, parse_linux_resident_memory_bytes,
-    persistable_checkpoints, source_batch_outcome, source_batch_outcome_with_ownership_loss,
-    source_plans_are_aux_storage_only, source_polling_lease_renew_interval,
-    source_polling_lease_until_ms, source_polling_startup, upsert_checkpoint_health,
+use crate::{
+    CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase,
+    source_polling::{
+        SourcePollingStartup, apply_source_job_phase, apply_source_poll_error_health,
+        apply_source_success_health, is_iterator_checkpoint, parse_linux_resident_memory_bytes,
+        persistable_checkpoints, source_batch_outcome, source_batch_outcome_with_ownership_loss,
+        source_plans_are_aux_storage_only, source_polling_lease_renew_interval,
+        source_polling_lease_until_ms, source_polling_startup, upsert_checkpoint_health,
+    },
 };
 
 #[test]

@@ -4206,7 +4206,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage-condition"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=91c84ca1ff9ae6eee9674c53fefb9718de0b47b3#91c84ca1ff9ae6eee9674c53fefb9718de0b47b3"
+source = "git+https://github.com/u19r/aux-storage?rev=b387426185950b5f359e2f0e24932f94ef314cda#b387426185950b5f359e2f0e24932f94ef314cda"
 dependencies = [
  "serde_json",
  "storage-types",
@@ -4216,7 +4216,7 @@ dependencies = [
 [[package]]
 name = "storage-types"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=91c84ca1ff9ae6eee9674c53fefb9718de0b47b3#91c84ca1ff9ae6eee9674c53fefb9718de0b47b3"
+source = "git+https://github.com/u19r/aux-storage?rev=b387426185950b5f359e2f0e24932f94ef314cda#b387426185950b5f359e2f0e24932f94ef314cda"
 dependencies = [
  "base64",
  "chrono",

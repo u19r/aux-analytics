@@ -1,13 +1,15 @@
-use analytics_api::{SourceHealth, SourceHealthStatus};
 use analytics_engine::SourceCheckpoint as EngineSourceCheckpoint;
 use analytics_storage::SourceCheckpoint;
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
 
-use crate::source_polling::{
-    SourcePollingStartup, apply_source_poll_error_health, apply_source_success_health,
-    is_iterator_checkpoint, persistable_checkpoints, source_batch_integration_outcome,
-    source_batch_outcome, source_polling_startup, storage_checkpoints_from_engine,
+use crate::{
+    SourceHealth, SourceHealthStatus,
+    source_polling::{
+        SourcePollingStartup, apply_source_poll_error_health, apply_source_success_health,
+        is_iterator_checkpoint, persistable_checkpoints, source_batch_integration_outcome,
+        source_batch_outcome, source_polling_startup, storage_checkpoints_from_engine,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]

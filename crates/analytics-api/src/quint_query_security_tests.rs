@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use analytics_api::{AppState, server_router};
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, ProjectionColumn, QuerySelect,
     RowIdentity, StorageStreamRecord, StorageValue, StructuredQuery, TableRegistration,
@@ -21,6 +20,8 @@ use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
 use serde_json::json;
 use tower::ServiceExt as _;
+
+use crate::{AppState, server_router};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]

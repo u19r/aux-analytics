@@ -6,11 +6,13 @@ use std::{
     time::Duration,
 };
 
-use analytics_api::{AppState, SourcePollingPhase};
 use analytics_storage::{AuxStorageLeaseClient, AuxStorageLeaseOutcome};
 use config::AnalyticsSourceConfig;
 
-use crate::source_polling::{health::apply_source_job_phase, metrics::*, time::*};
+use crate::{
+    AppState, SourcePollingPhase,
+    source_polling::{health::apply_source_job_phase, metrics::*, time::*},
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SourcePollingLease {

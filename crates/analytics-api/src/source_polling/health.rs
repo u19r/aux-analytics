@@ -1,7 +1,9 @@
-use analytics_api::{CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase};
 use analytics_storage::SourceCheckpoint as StorageSourceCheckpoint;
 
-use crate::source_polling::{batch::is_iterator_checkpoint, metrics::*};
+use crate::{
+    CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase,
+    source_polling::{batch::is_iterator_checkpoint, metrics::*},
+};
 
 pub(crate) fn apply_source_poll_error_health(
     health: &mut SourceHealth,

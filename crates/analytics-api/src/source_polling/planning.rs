@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use analytics_api::AppState;
 use analytics_storage::{
     SourceCheckpoint as StorageSourceCheckpoint, SourceTablePlan, table_plans,
 };
@@ -8,7 +7,7 @@ use config::AnalyticsSourceConfig;
 #[cfg(test)]
 use config::AnalyticsStreamType;
 
-use crate::error::ApiResult;
+use crate::{AppState, error::ApiResult};
 pub(crate) fn source_table_count(
     source: &AnalyticsSourceConfig,
     manifest: &analytics_contract::AnalyticsManifest,

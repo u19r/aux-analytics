@@ -1,17 +1,19 @@
 use std::{sync::Arc, time::Instant};
 
-use analytics_api::AppState;
 use analytics_storage::{
     AuxStorageLeaseClient, PollBatch, SourceCheckpoint as StorageSourceCheckpoint,
 };
 
-use crate::source_polling::{
-    checkpoint_lease::source_polling_lease_permits_progress,
-    health::apply_source_success_health,
-    legacy_lease::SourcePollingLeaseRenewal,
-    memory::{BatchResidentMemorySampler, record_batch_memory_increment},
-    metrics::*,
-    time::{now_ms, usize_to_f64},
+use crate::{
+    AppState,
+    source_polling::{
+        checkpoint_lease::source_polling_lease_permits_progress,
+        health::apply_source_success_health,
+        legacy_lease::SourcePollingLeaseRenewal,
+        memory::{BatchResidentMemorySampler, record_batch_memory_increment},
+        metrics::*,
+        time::{now_ms, usize_to_f64},
+    },
 };
 pub(crate) async fn handle_source_batch(
     app_state: &Arc<AppState>,

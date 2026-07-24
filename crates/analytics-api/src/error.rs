@@ -1,16 +1,17 @@
 use std::{fmt, net::AddrParseError};
 
-use analytics_api::AnalyticsEngineAccessError;
 use analytics_engine::AnalyticsEngineError;
 use config::ConfigError;
 use thiserror::Error;
 use tracing_subscriber::util::TryInitError;
 
-pub(crate) type ApiResult<T> = Result<T, ApiError>;
+use crate::AnalyticsEngineAccessError;
+
+pub type ApiResult<T> = Result<T, ApiError>;
 
 #[derive(Debug, Error)]
 #[error("{kind}{debug}")]
-pub(crate) struct ApiError {
+pub struct ApiError {
     kind: ApiErrorKind,
     debug: ApiErrorDebug,
     #[source]
