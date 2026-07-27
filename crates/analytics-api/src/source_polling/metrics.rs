@@ -3,6 +3,7 @@ use std::time::Duration;
 pub(crate) const SOURCE_POLLS_TOTAL_METRIC: &str = "analytics.source.polls_total";
 pub(crate) const SOURCE_POLL_ERRORS_TOTAL_METRIC: &str = "analytics.source.poll_errors_total";
 pub(crate) const SOURCE_POLL_DURATION_MS_METRIC: &str = "analytics.source.poll_duration_ms";
+pub(crate) const SOURCE_RETRY_DELAY_MS_METRIC: &str = "analytics.source.retry_delay_ms";
 pub(crate) const SOURCE_RECORDS_PER_POLL_METRIC: &str = "analytics.source.records_per_poll";
 pub(crate) const SOURCE_RECORDS_FETCHED_TOTAL_METRIC: &str =
     "analytics.source.records_fetched_total";
@@ -38,4 +39,5 @@ pub(crate) const SOURCE_LEASE_REMAINING_MS_METRIC: &str = "analytics.source.leas
 pub(crate) const SOURCE_LEASE_ATTEMPTS_TOTAL_METRIC: &str = "analytics.source.lease_attempts_total";
 pub(crate) const SOURCE_POLLING_LEASE_DURATION_MS: i64 = 10_000;
 pub(crate) const SOURCE_POLLING_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const SOURCE_SLOW_WRITE_THRESHOLD: Duration = Duration::from_secs(5);
 pub(crate) const SOURCE_POLLING_JOB_ID: &str = "analytics_source_polling";

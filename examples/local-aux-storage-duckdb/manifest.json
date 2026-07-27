@@ -8,7 +8,7 @@
         "kind": "none"
       },
       "row_identity": {
-        "kind": "record_key"
+        "kind": "stream_keys"
       },
       "document_column": "item",
       "projection_columns": [

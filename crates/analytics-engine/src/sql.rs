@@ -123,7 +123,7 @@ pub(crate) fn object_storage_secret_sql(
         options.push(format!("REGION '{}'", escape_sql_string(region)));
     }
     if let Some(endpoint) = object_storage.endpoint_url.as_deref() {
-        options.push(format!("ENDPOINT '{}'", escape_sql_string(endpoint)));
+        append_endpoint_options(&mut options, endpoint);
         options.push("URL_STYLE 'path'".to_string());
     }
     if let Some(credentials) = object_storage.credentials.as_ref() {
@@ -136,6 +136,22 @@ pub(crate) fn object_storage_secret_sql(
         "CREATE OR REPLACE SECRET aux_analytics_object_store (TYPE S3, {});",
         options.join(", ")
     ))
+}
+
+fn append_endpoint_options(options: &mut Vec<String>, endpoint: &str) {
+    let (endpoint, use_ssl) = endpoint
+        .strip_prefix("http://")
+        .map(|endpoint| (endpoint, Some(false)))
+        .or_else(|| {
+            endpoint
+                .strip_prefix("https://")
+                .map(|endpoint| (endpoint, Some(true)))
+        })
+        .unwrap_or((endpoint, None));
+    options.push(format!("ENDPOINT '{}'", escape_sql_string(endpoint)));
+    if let Some(use_ssl) = use_ssl {
+        options.push(format!("USE_SSL {}", use_ssl));
+    }
 }
 
 fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCredentialsConfig) {
@@ -333,12 +349,20 @@ pub(crate) fn alter_table_sorted_by(
 pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_path: &str) -> String {
     let catalog_reference = ducklake_catalog_reference(catalog, catalog_path);
     let meta_type = ducklake_meta_type(catalog);
+    let data_inlining_row_limit = ducklake_data_inlining_row_limit(catalog);
     format!(
         "ATTACH 'ducklake:{}' AS dlake (DATA_PATH '{}'{meta_type}, ENCRYPTED, \
-         DATA_INLINING_ROW_LIMIT 0, AUTOMATIC_MIGRATION true);",
+         DATA_INLINING_ROW_LIMIT {data_inlining_row_limit}, AUTOMATIC_MIGRATION true);",
         escape_sql_string(catalog_reference.as_str()),
         escape_sql_string(data_path),
     )
+}
+
+const fn ducklake_data_inlining_row_limit(catalog: CatalogType) -> usize {
+    match catalog {
+        CatalogType::AuxCatalog => 100,
+        CatalogType::Sqlite | CatalogType::MotherDuck => 0,
+    }
 }
 
 fn ducklake_catalog_reference(catalog: CatalogType, catalog_path: &str) -> String {

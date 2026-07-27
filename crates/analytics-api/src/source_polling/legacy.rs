@@ -17,8 +17,10 @@ pub(crate) async fn run_source_poller(
     let worker_id = source_polling_worker_id();
     let mut source_polling_lease_table_ready = lease_client.is_none();
     let mut retained_leadership = false;
+    let mut consecutive_failures = 0_u32;
     let mut interval = tokio::time::interval(poller.poll_interval());
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    metrics::gauge!(SOURCE_RETRY_DELAY_MS_METRIC).set(0.0);
     loop {
         interval.tick().await;
         metrics::gauge!(SOURCE_LEADER_METRIC).set(0.0);
@@ -196,6 +198,7 @@ pub(crate) async fn run_source_poller(
         metrics::counter!(SOURCE_POLLS_TOTAL_METRIC).increment(1);
         let poll_started = Instant::now();
         let poll_result = poller.poll_once().await;
+        let cycle_failed;
         metrics::histogram!(SOURCE_POLL_DURATION_MS_METRIC)
             .record(poll_started.elapsed().as_secs_f64() * 1_000.0);
         match poll_result {
@@ -226,6 +229,7 @@ pub(crate) async fn run_source_poller(
                     lease_renewal.as_ref(),
                 )
                 .await;
+                cycle_failed = !outcome.all_records_ingested;
                 if outcome.should_commit {
                     apply_source_job_phase_to_app_state(
                         &app_state,
@@ -286,6 +290,7 @@ pub(crate) async fn run_source_poller(
                 }
             }
             Err(error) => {
+                cycle_failed = true;
                 metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
                 {
                     let mut health = app_state.source_health.write().await;
@@ -298,5 +303,14 @@ pub(crate) async fn run_source_poller(
         metrics::gauge!(SOURCE_LEASE_REMAINING_MS_METRIC).set(0.0);
         let checkpoint_count = usize_to_f64(app_state.source_health.read().await.checkpoints.len());
         metrics::gauge!(SOURCE_CHECKPOINTS_METRIC).set(checkpoint_count);
+        if cycle_failed {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            let delay = source_retry_delay(consecutive_failures);
+            metrics::gauge!(SOURCE_RETRY_DELAY_MS_METRIC).set(delay.as_secs_f64() * 1_000.0);
+            tokio::time::sleep(delay).await;
+        } else {
+            consecutive_failures = 0;
+            metrics::gauge!(SOURCE_RETRY_DELAY_MS_METRIC).set(0.0);
+        }
     }
 }

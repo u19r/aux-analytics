@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use analytics_contract::{
     INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN, INTERNAL_MISSING_RETENTION_COLUMN,
@@ -16,6 +19,7 @@ use crate::{
 
 const ORDINAL_COLUMN: &str = "__analytics_batch_ordinal";
 const UPSERT_COLUMN: &str = "__analytics_batch_upsert";
+const SLOW_DUCKLAKE_PHASE_THRESHOLD: Duration = Duration::from_secs(1);
 
 pub(crate) struct BatchSqlExecutor<'conn> {
     conn: &'conn Connection,
@@ -91,6 +95,7 @@ struct PendingTable<'conn> {
     columns: Vec<String>,
     appender: Option<Appender<'conn>>,
     next_ordinal: i64,
+    has_deletes: bool,
 }
 
 impl<'conn> PendingTable<'conn> {
@@ -101,7 +106,14 @@ impl<'conn> PendingTable<'conn> {
     ) -> AnalyticsEngineResult<Self> {
         let stage_name = format!("__analytics_ingest_stage_{index}");
         let columns = batch_columns(&registration);
+        let started = Instant::now();
         create_stage(conn, &stage_name, &registration, &columns)?;
+        record_slow_table_phase(
+            &registration.analytics_table_name,
+            "create_stage",
+            0,
+            started.elapsed(),
+        );
         let mut appender_columns = columns.iter().map(String::as_str).collect::<Vec<_>>();
         appender_columns.extend([ORDINAL_COLUMN, UPSERT_COLUMN]);
         let appender = conn.appender_with_columns(&stage_name, &appender_columns)?;
@@ -111,6 +123,7 @@ impl<'conn> PendingTable<'conn> {
             columns,
             appender: Some(appender),
             next_ordinal: 0,
+            has_deletes: false,
         })
     }
 
@@ -132,6 +145,7 @@ impl<'conn> PendingTable<'conn> {
         values.push(Value::BigInt(self.next_ordinal));
         values.push(Value::Boolean(is_upsert));
         self.next_ordinal = self.next_ordinal.saturating_add(1);
+        self.has_deletes |= !is_upsert;
         self.appender
             .as_mut()
             .expect("pending table retains its appender until flush")
@@ -140,15 +154,66 @@ impl<'conn> PendingTable<'conn> {
     }
 
     fn flush(mut self, conn: &Connection) -> AnalyticsEngineResult<()> {
+        let staged_rows = usize::try_from(self.next_ordinal).unwrap_or(usize::MAX);
         if let Some(mut appender) = self.appender.take() {
+            let started = Instant::now();
             appender.flush()?;
+            record_slow_table_phase(
+                &self.registration.analytics_table_name,
+                "flush_stage",
+                staged_rows,
+                started.elapsed(),
+            );
         }
-        replace_rows(conn, &self.stage_name, &self.registration, &self.columns)?;
+        let started = Instant::now();
+        replace_rows(
+            conn,
+            &self.stage_name,
+            &self.registration,
+            &self.columns,
+            self.has_deletes,
+        )?;
+        record_slow_table_phase(
+            &self.registration.analytics_table_name,
+            "merge_rows",
+            staged_rows,
+            started.elapsed(),
+        );
+        let started = Instant::now();
         conn.execute_batch(
             format!("DROP TABLE {}", sql::quote_identifier(&self.stage_name)).as_str(),
         )?;
+        record_slow_table_phase(
+            &self.registration.analytics_table_name,
+            "drop_stage",
+            staged_rows,
+            started.elapsed(),
+        );
         Ok(())
     }
+}
+
+fn record_slow_table_phase(
+    analytics_table_name: &str,
+    phase: &'static str,
+    staged_rows: usize,
+    elapsed: Duration,
+) {
+    if !ducklake_table_phase_is_slow(elapsed) {
+        return;
+    }
+    tracing::warn!(
+        operation = "analytics_ingest_batch",
+        phase,
+        analytics_table_name,
+        staged_rows,
+        elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        "slow DuckLake table write phase"
+    );
+}
+
+pub(crate) fn ducklake_table_phase_is_slow(elapsed: Duration) -> bool {
+    elapsed >= SLOW_DUCKLAKE_PHASE_THRESHOLD
 }
 
 fn validate_identity(row: &BTreeMap<String, serde_json::Value>) -> AnalyticsEngineResult<()> {
@@ -191,18 +256,45 @@ fn create_stage(
     table: &TableRegistration,
     columns: &[String],
 ) -> AnalyticsEngineResult<()> {
-    let selected = quoted_columns(columns);
-    let statement = format!(
-        "CREATE TEMP TABLE {stage} AS
-         SELECT {selected}, 0::BIGINT AS {ordinal}, false::BOOLEAN AS {upsert}
-         FROM {target} LIMIT 0",
-        stage = sql::quote_identifier(stage_name),
-        ordinal = sql::quote_identifier(ORDINAL_COLUMN),
-        upsert = sql::quote_identifier(UPSERT_COLUMN),
-        target = sql::quote_identifier(&table.analytics_table_name),
-    );
+    let statement = create_stage_statement(stage_name, table, columns);
     conn.execute_batch(&statement)?;
     Ok(())
+}
+
+pub(crate) fn create_stage_statement(
+    stage_name: &str,
+    table: &TableRegistration,
+    columns: &[String],
+) -> String {
+    let mut definitions = columns
+        .iter()
+        .map(|column| {
+            format!(
+                "{} {}",
+                sql::quote_identifier(column),
+                stage_column_type(table, column)
+            )
+        })
+        .collect::<Vec<_>>();
+    definitions.push(format!("{} BIGINT", sql::quote_identifier(ORDINAL_COLUMN)));
+    definitions.push(format!("{} BOOLEAN", sql::quote_identifier(UPSERT_COLUMN)));
+    format!(
+        "CREATE TEMP TABLE {} ({})",
+        sql::quote_identifier(stage_name),
+        definitions.join(", ")
+    )
+}
+
+fn stage_column_type(table: &TableRegistration, column: &str) -> &'static str {
+    match column {
+        "table_name" | "tenant_id" | "__id" => "VARCHAR",
+        sql::SOURCE_POSITION_COLUMN => "JSON",
+        INTERNAL_INGESTED_AT_COLUMN | INTERNAL_EXPIRY_COLUMN => "BIGINT",
+        INTERNAL_MISSING_RETENTION_COLUMN => "BOOLEAN",
+        _ => column_type_for_name(table, column)
+            .expect("batch columns are declared by their table registration")
+            .duckdb_type(),
+    }
 }
 
 fn replace_rows(
@@ -210,36 +302,85 @@ fn replace_rows(
     stage_name: &str,
     table: &TableRegistration,
     columns: &[String],
+    has_deletes: bool,
 ) -> AnalyticsEngineResult<()> {
-    let target = sql::quote_identifier(&table.analytics_table_name);
-    let stage = sql::quote_identifier(stage_name);
-    conn.execute_batch(
-        format!(
-            "DELETE FROM {target} AS target USING {stage} AS staged
-             WHERE target.table_name = staged.table_name
-               AND target.tenant_id = staged.tenant_id
-               AND target.__id = staged.__id"
-        )
-        .as_str(),
-    )?;
-    let selected = quoted_columns(columns);
-    conn.execute_batch(
-        format!(
-            "INSERT INTO {target} ({selected})
-             SELECT {selected} FROM (
-               SELECT *, row_number() OVER (
-                 PARTITION BY table_name, tenant_id, __id
-                 ORDER BY {ordinal} DESC
-               ) AS __analytics_batch_rank
-               FROM {stage}
-             ) AS staged
-             WHERE __analytics_batch_rank = 1 AND {upsert}",
-            ordinal = sql::quote_identifier(ORDINAL_COLUMN),
-            upsert = sql::quote_identifier(UPSERT_COLUMN),
-        )
-        .as_str(),
-    )?;
+    conn.execute_batch(&replace_rows_statement(
+        stage_name,
+        &table.analytics_table_name,
+        columns,
+        has_deletes,
+    ))?;
     Ok(())
+}
+
+pub(crate) fn replace_rows_statement(
+    stage_name: &str,
+    analytics_table_name: &str,
+    columns: &[String],
+    has_deletes: bool,
+) -> String {
+    let target = sql::quote_identifier(analytics_table_name);
+    let stage = sql::quote_identifier(stage_name);
+    let selected = quoted_columns(columns);
+    let values = columns
+        .iter()
+        .map(|column| {
+            let column = sql::quote_identifier(column);
+            format!("staged.{column}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let assignments = columns
+        .iter()
+        .map(|column| {
+            let column = sql::quote_identifier(column);
+            format!("{column} = staged.{column}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let latest_rows = format!(
+        "SELECT * EXCLUDE (__analytics_batch_rank) FROM (
+           SELECT *, row_number() OVER (
+             PARTITION BY table_name, tenant_id, __id
+             ORDER BY {ordinal} DESC
+           ) AS __analytics_batch_rank
+           FROM {stage}
+         )
+         WHERE __analytics_batch_rank = 1",
+        ordinal = sql::quote_identifier(ORDINAL_COLUMN),
+    );
+    let mut statement = format!(
+        "MERGE INTO {target} AS target
+         USING (
+           SELECT * FROM ({latest_rows})
+           WHERE {upsert}
+         ) AS staged
+         ON target.table_name = staged.table_name
+            AND target.tenant_id = staged.tenant_id
+            AND target.__id = staged.__id
+         WHEN MATCHED THEN UPDATE SET {assignments}
+         WHEN NOT MATCHED THEN
+           INSERT ({selected}) VALUES ({values})",
+        upsert = sql::quote_identifier(UPSERT_COLUMN),
+    );
+    if has_deletes {
+        statement.push_str(
+            format!(
+                ";
+                 DELETE FROM {target} AS target
+                 USING (
+                   SELECT * FROM ({latest_rows})
+                   WHERE NOT {upsert}
+                 ) AS staged
+                 WHERE target.table_name = staged.table_name
+                   AND target.tenant_id = staged.tenant_id
+                   AND target.__id = staged.__id",
+                upsert = sql::quote_identifier(UPSERT_COLUMN),
+            )
+            .as_str(),
+        );
+    }
+    statement
 }
 
 fn quoted_columns(columns: &[String]) -> String {

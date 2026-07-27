@@ -137,7 +137,7 @@ fn given_aux_catalog_when_attached_then_meta_type_is_set() {
     assert_eq!(
         sql,
         "ATTACH 'ducklake:/var/lib/aux-analytics/metadata.duckdb' AS dlake (DATA_PATH \
-         's3://bucket/data', META_TYPE 'aux_catalog', ENCRYPTED, DATA_INLINING_ROW_LIMIT 0, \
+         's3://bucket/data', META_TYPE 'aux_catalog', ENCRYPTED, DATA_INLINING_ROW_LIMIT 100, \
          AUTOMATIC_MIGRATION true);"
     );
 }
@@ -165,6 +165,22 @@ fn s3_object_store_secret_sql_uses_static_credentials() {
          'AKIA''KEY', SECRET 'secret''value', SESSION_TOKEN 'session''token');"
     );
     assert!(!sql.contains("credential_chain"));
+}
+
+#[test]
+fn s3_object_store_secret_sql_supports_plain_http_test_endpoints() {
+    let sql = object_storage_secret_sql(&AnalyticsObjectStorageConfig {
+        bucket: Some("analytics-bucket".to_string()),
+        endpoint_url: Some("http://minio:9000".to_string()),
+        ..AnalyticsObjectStorageConfig::default()
+    })
+    .expect("secret sql");
+
+    assert_eq!(
+        sql,
+        "CREATE OR REPLACE SECRET aux_analytics_object_store (TYPE S3, ENDPOINT 'minio:9000', \
+         USE_SSL false, URL_STYLE 'path');"
+    );
 }
 
 #[test]

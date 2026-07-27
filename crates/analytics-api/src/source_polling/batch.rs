@@ -110,12 +110,34 @@ async fn handle_vector_source_batch(
             engine.ingest_stream_page_and_checkpoint(&manifest, records, &engine_checkpoint)
         })
         .await;
+    let write_elapsed = write_started.elapsed();
     if let Some(increment_bytes) = memory_sampler.finish().await {
         let peak_bytes = record_batch_memory_increment(increment_bytes);
         metrics::gauge!(SOURCE_BATCH_MEMORY_INCREMENT_BYTES_METRIC).set(peak_bytes as f64);
     }
     metrics::histogram!(SOURCE_WRITE_DURATION_MS_METRIC)
-        .record(write_started.elapsed().as_secs_f64() * 1_000.0);
+        .record(write_elapsed.as_secs_f64() * 1_000.0);
+    if source_write_is_slow(write_elapsed) {
+        let analytics_table_count = batch
+            .records
+            .iter()
+            .map(|record| record.analytics_table_name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        tracing::warn!(
+            job_id = SOURCE_POLLING_JOB_ID,
+            phase = "write",
+            elapsed_ms = u64::try_from(write_elapsed.as_millis()).unwrap_or(u64::MAX),
+            records = batch.records.len(),
+            source_records = batch.source_record_count,
+            source_responses = batch.source_response_count,
+            encoded_bytes = batch.source_encoded_bytes,
+            analytics_table_count,
+            checkpoint_count = batch.checkpoints.len(),
+            succeeded = result.is_ok(),
+            "slow analytics source polling job phase"
+        );
+    }
     match result {
         Ok(page) => {
             metrics::counter!(SOURCE_WRITE_TRANSACTIONS_TOTAL_METRIC).increment(1);
@@ -171,6 +193,10 @@ async fn handle_vector_source_batch(
             }
         }
     }
+}
+
+pub(crate) fn source_write_is_slow(elapsed: std::time::Duration) -> bool {
+    elapsed >= SOURCE_SLOW_WRITE_THRESHOLD
 }
 
 async fn ingest_source_records_with_lease_guard(

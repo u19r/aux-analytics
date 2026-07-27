@@ -20,6 +20,8 @@ pub use structured_query::{
 };
 
 #[cfg(test)]
+mod batch_writer_tests;
+#[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
 mod condition_tests;

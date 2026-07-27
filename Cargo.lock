@@ -173,6 +173,7 @@ dependencies = [
  "storage-types",
  "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

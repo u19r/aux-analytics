@@ -8,9 +8,18 @@ use crate::{
         apply_source_success_health, is_iterator_checkpoint, parse_linux_resident_memory_bytes,
         persistable_checkpoints, source_batch_outcome, source_batch_outcome_with_ownership_loss,
         source_plans_are_aux_storage_only, source_polling_lease_renew_interval,
-        source_polling_lease_until_ms, source_polling_startup, upsert_checkpoint_health,
+        source_polling_lease_until_ms, source_polling_startup, source_retry_delay,
+        source_write_is_slow, upsert_checkpoint_health,
     },
 };
+
+#[test]
+fn given_source_write_duration_when_classified_then_five_seconds_is_slow() {
+    assert!(!source_write_is_slow(std::time::Duration::from_millis(
+        4_999
+    )));
+    assert!(source_write_is_slow(std::time::Duration::from_secs(5)));
+}
 
 #[test]
 fn given_linux_process_status_when_resident_memory_is_parsed_then_bytes_are_returned() {
@@ -202,6 +211,14 @@ fn given_source_polling_lease_is_held_then_renewal_interval_is_five_seconds() {
         source_polling_lease_renew_interval(),
         std::time::Duration::from_secs(5)
     );
+}
+
+#[test]
+fn given_repeated_source_failures_when_retrying_then_backoff_is_bounded() {
+    assert_eq!(source_retry_delay(0), std::time::Duration::ZERO);
+    assert_eq!(source_retry_delay(1), std::time::Duration::from_millis(100));
+    assert_eq!(source_retry_delay(4), std::time::Duration::from_millis(800));
+    assert_eq!(source_retry_delay(20), std::time::Duration::from_secs(5));
 }
 
 #[test]

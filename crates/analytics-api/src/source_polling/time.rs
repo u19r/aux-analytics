@@ -1,16 +1,26 @@
-#[cfg(test)]
-use std::time::Duration;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::source_polling::metrics::*;
 
 static SOURCE_POLLING_LEASE_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
+const SOURCE_RETRY_BASE_DELAY: Duration = Duration::from_millis(100);
+const SOURCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
 pub(crate) fn source_polling_lease_until_ms(now_ms: i64) -> i64 {
     now_ms.saturating_add(SOURCE_POLLING_LEASE_DURATION_MS)
+}
+
+pub(crate) fn source_retry_delay(consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    SOURCE_RETRY_BASE_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(SOURCE_RETRY_MAX_DELAY)
 }
 
 #[cfg(test)]

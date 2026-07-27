@@ -14,7 +14,7 @@ pub(crate) use batch::source_batch_integration_outcome;
 #[cfg(test)]
 pub(crate) use batch::{
     is_iterator_checkpoint, persistable_checkpoints, source_batch_outcome,
-    source_batch_outcome_with_ownership_loss,
+    source_batch_outcome_with_ownership_loss, source_write_is_slow,
 };
 pub(crate) use entry::spawn_source_polling;
 #[cfg(test)]
@@ -33,3 +33,5 @@ pub(crate) use planning::{
 pub(crate) use time::source_polling_lease_renew_interval;
 #[cfg(test)]
 pub(crate) use time::source_polling_lease_until_ms;
+#[cfg(test)]
+pub(crate) use time::source_retry_delay;
