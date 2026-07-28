@@ -39,7 +39,8 @@ async fn renew_source_polling_checkpoint_lease(
     }
     let next_lease_until_ms = source_polling_lease_until_ms(now_ms_i64());
     match lease_client
-        .renew_source_polling_lease(
+        .renew_job_lease(
+            SOURCE_POLLING_JOB_ID,
             lease_renewal.worker_id.as_str(),
             lease_renewal.lease_token.as_str(),
             next_lease_until_ms,

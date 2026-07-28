@@ -24,7 +24,7 @@ pub(crate) struct SourcePollingLease {
 impl SourcePollingLease {
     pub(crate) fn new(worker_id: String, lease_until_ms: i64) -> Self {
         Self {
-            token: source_polling_lease_token(worker_id.as_str()),
+            token: job_lease_token(worker_id.as_str()),
             worker_id,
             lease_until_ms,
         }
@@ -145,23 +145,17 @@ pub(crate) fn spawn_source_polling_lease_renewal(
     }
 }
 
-pub(crate) fn source_polling_lease_client(
+pub(crate) fn job_lease_client(
     source: &AnalyticsSourceConfig,
-) -> Option<AuxStorageLeaseClient> {
-    let endpoint_url = source.endpoint_url.as_deref()?;
-    match AuxStorageLeaseClient::new(
+) -> analytics_storage::AnalyticsStorageResult<Option<AuxStorageLeaseClient>> {
+    let Some(endpoint_url) = source.endpoint_url.as_deref() else {
+        return Ok(None);
+    };
+    AuxStorageLeaseClient::new(
         endpoint_url,
         Duration::from_millis(source.poll_request_timeout_ms),
-    ) {
-        Ok(client) => Some(client),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "analytics source polling lease client construction failed; polling will continue without lease"
-            );
-            None
-        }
-    }
+    )
+    .map(Some)
 }
 
 pub(crate) async fn apply_source_job_phase_to_app_state(
@@ -189,7 +183,8 @@ pub(crate) async fn acquire_source_polling_lease(
 ) -> analytics_storage::AnalyticsStorageResult<AuxStorageLeaseOutcome> {
     let now = now_ms_i64();
     lease_client
-        .try_acquire_source_polling_lease(
+        .try_acquire_job_lease(
+            SOURCE_POLLING_JOB_ID,
             lease.worker_id.as_str(),
             lease.token(),
             now,
@@ -204,6 +199,11 @@ pub(crate) async fn renew_source_polling_lease(
     lease_until_ms: i64,
 ) -> analytics_storage::AnalyticsStorageResult<bool> {
     lease_client
-        .renew_source_polling_lease(lease.worker_id.as_str(), lease.token(), lease_until_ms)
+        .renew_job_lease(
+            SOURCE_POLLING_JOB_ID,
+            lease.worker_id.as_str(),
+            lease.token(),
+            lease_until_ms,
+        )
         .await
 }

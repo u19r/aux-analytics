@@ -9,12 +9,22 @@ use analytics_contract::{
     TenantSelector,
 };
 use analytics_engine::IngestRetention;
-use analytics_storage::RetentionPolicyLookup;
-use config::{AnalyticsRetentionConfig, AnalyticsRetentionTableConfig, RetentionTimestampConfig};
+use analytics_storage::{AuxStorageLeaseClient, AuxStorageLeaseOutcome, RetentionPolicyLookup};
+use config::{
+    AnalyticsRetentionConfig, AnalyticsRetentionTableConfig, AnalyticsSourceConfig,
+    RetentionTimestampConfig,
+};
 use tokio::sync::RwLock;
 
-use crate::types::{AppState, RetentionHealth, RetentionHealthStatus};
+use crate::{
+    source_polling::{job_lease_client, job_lease_token, job_worker_id},
+    types::{AppState, RetentionHealth, RetentionHealthStatus},
+};
 
+const RETENTION_JOB_ID: &str = "analytics_retention_sweep";
+const RETENTION_LEASE_DURATION_MS: i64 = 60_000;
+const RETENTION_LEASE_RENEW_INTERVAL: Duration = Duration::from_secs(20);
+const RETENTION_LEASE_ATTEMPTS_TOTAL_METRIC: &str = "analytics.retention.lease_attempts_total";
 const RETENTION_LOOKUPS_TOTAL_METRIC: &str = "analytics.retention.lookups_total";
 const RETENTION_LOOKUP_LATENCY_METRIC: &str = "analytics.retention.lookup_latency_ms";
 const RETENTION_LOOKUP_FAILURES_TOTAL_METRIC: &str = "analytics.retention.lookup_failures_total";
@@ -177,25 +187,163 @@ impl RetentionRuntime {
 pub async fn spawn_retention_sweeper(
     retention: Option<Arc<RetentionRuntime>>,
     app_state: Arc<AppState>,
-) {
+    source: &AnalyticsSourceConfig,
+) -> crate::error::ApiResult<()> {
     let Some(retention) = retention else {
         *app_state.retention_health.write().await = RetentionHealth::disabled();
-        return;
+        return Ok(());
     };
+    let lease_client = job_lease_client(source)?.map(Arc::new);
     *app_state.retention_health.write().await = RetentionHealth::starting(retention.tables.len());
-    tokio::spawn(run_retention_sweeper(retention, app_state));
+    tokio::spawn(run_retention_sweeper(retention, app_state, lease_client));
+    Ok(())
 }
 
-async fn run_retention_sweeper(retention: Arc<RetentionRuntime>, app_state: Arc<AppState>) {
+async fn run_retention_sweeper(
+    retention: Arc<RetentionRuntime>,
+    app_state: Arc<AppState>,
+    lease_client: Option<Arc<AuxStorageLeaseClient>>,
+) {
     let mut interval =
         tokio::time::interval(Duration::from_millis(retention.config.sweep_interval_ms));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let worker_id = format!("{}-retention", job_worker_id());
+    let mut lease_table_ready = lease_client.is_none();
     loop {
         interval.tick().await;
-        for table_name in retention.table_names() {
-            sweep_table(&retention, &app_state, table_name).await;
+        let Some(lease_client) = lease_client.as_ref() else {
+            run_retention_sweep_cycle(&retention, &app_state).await;
+            continue;
+        };
+        if !lease_table_ready {
+            match lease_client.ensure_job_lease_table().await {
+                Ok(()) => lease_table_ready = true,
+                Err(error) => {
+                    record_retention_lease_error(&app_state).await;
+                    tracing::warn!(
+                        error = %error,
+                        job_id = RETENTION_JOB_ID,
+                        worker_id,
+                        "analytics retention lease table ensure failed"
+                    );
+                    continue;
+                }
+            }
+        }
+        let now_ms = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+        let lease_until_ms = now_ms.saturating_add(RETENTION_LEASE_DURATION_MS);
+        let lease_token = job_lease_token(worker_id.as_str());
+        match lease_client
+            .try_acquire_job_lease(
+                RETENTION_JOB_ID,
+                worker_id.as_str(),
+                lease_token.as_str(),
+                now_ms,
+                lease_until_ms,
+            )
+            .await
+        {
+            Ok(AuxStorageLeaseOutcome::Acquired) => {
+                metrics::counter!(
+                    RETENTION_LEASE_ATTEMPTS_TOTAL_METRIC,
+                    "outcome" => "acquired"
+                )
+                .increment(1);
+                run_retention_sweep_with_lease(
+                    &retention,
+                    &app_state,
+                    lease_client,
+                    worker_id.as_str(),
+                    lease_token.as_str(),
+                )
+                .await;
+            }
+            Ok(AuxStorageLeaseOutcome::HeldByAnotherWorker) => {
+                metrics::counter!(
+                    RETENTION_LEASE_ATTEMPTS_TOTAL_METRIC,
+                    "outcome" => "standby"
+                )
+                .increment(1);
+                app_state.retention_health.write().await.status = RetentionHealthStatus::Healthy;
+            }
+            Err(error) => {
+                metrics::counter!(
+                    RETENTION_LEASE_ATTEMPTS_TOTAL_METRIC,
+                    "outcome" => "error"
+                )
+                .increment(1);
+                record_retention_lease_error(&app_state).await;
+                tracing::warn!(
+                    error = %error,
+                    job_id = RETENTION_JOB_ID,
+                    worker_id,
+                    "analytics retention lease acquisition failed"
+                );
+            }
         }
     }
+}
+
+async fn run_retention_sweep_with_lease(
+    retention: &RetentionRuntime,
+    app_state: &Arc<AppState>,
+    lease_client: &AuxStorageLeaseClient,
+    worker_id: &str,
+    lease_token: &str,
+) {
+    let sweep = run_retention_sweep_cycle(retention, app_state);
+    tokio::pin!(sweep);
+    loop {
+        tokio::select! {
+            () = &mut sweep => return,
+            () = tokio::time::sleep(RETENTION_LEASE_RENEW_INTERVAL) => {
+                let now_ms = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+                let lease_until_ms = now_ms.saturating_add(RETENTION_LEASE_DURATION_MS);
+                match lease_client
+                    .renew_job_lease(
+                        RETENTION_JOB_ID,
+                        worker_id,
+                        lease_token,
+                        lease_until_ms,
+                    )
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        record_retention_lease_error(app_state).await;
+                        tracing::warn!(
+                            job_id = RETENTION_JOB_ID,
+                            worker_id,
+                            "analytics retention sweep stopped after losing its lease"
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        record_retention_lease_error(app_state).await;
+                        tracing::warn!(
+                            error = %error,
+                            job_id = RETENTION_JOB_ID,
+                            worker_id,
+                            "analytics retention lease renewal failed"
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn run_retention_sweep_cycle(retention: &RetentionRuntime, app_state: &Arc<AppState>) {
+    for table_name in retention.table_names() {
+        sweep_table(retention, app_state, table_name).await;
+    }
+}
+
+async fn record_retention_lease_error(app_state: &Arc<AppState>) {
+    let mut health = app_state.retention_health.write().await;
+    health.status = RetentionHealthStatus::Degraded;
+    health.total_sweep_errors = health.total_sweep_errors.saturating_add(1);
 }
 
 async fn sweep_table(retention: &RetentionRuntime, app_state: &Arc<AppState>, table_name: &str) {

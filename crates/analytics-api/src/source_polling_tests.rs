@@ -5,13 +5,32 @@ use crate::{
     CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase,
     source_polling::{
         SourcePollingStartup, apply_source_job_phase, apply_source_poll_error_health,
-        apply_source_success_health, is_iterator_checkpoint, parse_linux_resident_memory_bytes,
-        persistable_checkpoints, source_batch_outcome, source_batch_outcome_with_ownership_loss,
-        source_plans_are_aux_storage_only, source_polling_lease_renew_interval,
-        source_polling_lease_until_ms, source_polling_startup, source_retry_delay,
-        source_write_is_slow, upsert_checkpoint_health,
+        apply_source_success_health, is_iterator_checkpoint, job_lease_client,
+        parse_linux_resident_memory_bytes, persistable_checkpoints, source_batch_outcome,
+        source_batch_outcome_with_ownership_loss, source_plans_are_aux_storage_only,
+        source_polling_lease_renew_interval, source_polling_lease_until_ms, source_polling_startup,
+        source_retry_delay, source_write_is_slow, upsert_checkpoint_health,
     },
 };
+
+#[test]
+fn absent_remote_source_endpoint_keeps_job_leases_optional_for_local_operation() {
+    assert!(
+        job_lease_client(&AnalyticsSourceConfig::default())
+            .expect("optional lease client")
+            .is_none()
+    );
+}
+
+#[test]
+fn invalid_remote_source_endpoint_fails_job_lease_client_construction() {
+    let source = AnalyticsSourceConfig {
+        endpoint_url: Some("://invalid".to_string()),
+        ..AnalyticsSourceConfig::default()
+    };
+
+    assert!(job_lease_client(&source).is_err());
+}
 
 #[test]
 fn given_source_write_duration_when_classified_then_five_seconds_is_slow() {

@@ -22,6 +22,7 @@ pub(crate) use health::{
     apply_source_job_phase, apply_source_poll_error_health, apply_source_success_health,
     upsert_checkpoint_health,
 };
+pub(crate) use legacy_lease::job_lease_client;
 #[cfg(test)]
 pub(crate) use memory::parse_linux_resident_memory_bytes;
 #[cfg(test)]
@@ -35,3 +36,4 @@ pub(crate) use time::source_polling_lease_renew_interval;
 pub(crate) use time::source_polling_lease_until_ms;
 #[cfg(test)]
 pub(crate) use time::source_retry_delay;
+pub(crate) use time::{job_lease_token, job_worker_id};

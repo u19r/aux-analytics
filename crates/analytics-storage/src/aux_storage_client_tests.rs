@@ -68,12 +68,12 @@ async fn stream_error_preserves_http_status_and_body() {
 }
 
 #[tokio::test]
-async fn source_polling_lease_table_is_the_shared_system_jobs_table() {
+async fn job_lease_table_is_the_shared_system_jobs_table() {
     let (base_url, requests) = serve_responses(vec![(200, r#"{}"#)]).await;
     let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
 
     client
-        .ensure_source_polling_lease_table()
+        .ensure_job_lease_table()
         .await
         .expect("ensure lease table");
 
@@ -90,7 +90,7 @@ async fn source_polling_lease_table_is_the_shared_system_jobs_table() {
 }
 
 #[tokio::test]
-async fn existing_source_polling_lease_table_is_ready() {
+async fn existing_job_lease_table_is_ready() {
     for body in [
         r#"{"__type":"com.amazonaws.dynamodb.v20120810#ResourceInUseException","message":"Table already exists: sys_jobs"}"#,
         r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"#,
@@ -99,7 +99,7 @@ async fn existing_source_polling_lease_table_is_ready() {
         let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
 
         client
-            .ensure_source_polling_lease_table()
+            .ensure_job_lease_table()
             .await
             .expect("existing lease table is ready");
 
@@ -113,7 +113,13 @@ async fn source_polling_lease_acquire_uses_one_global_lock() {
     let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
 
     let outcome = client
-        .try_acquire_source_polling_lease("worker-a", "token-a", 1_000, 61_000)
+        .try_acquire_job_lease(
+            "analytics_source_polling",
+            "worker-a",
+            "token-a",
+            1_000,
+            61_000,
+        )
         .await
         .expect("lease request");
 
@@ -138,6 +144,38 @@ async fn source_polling_lease_acquire_uses_one_global_lock() {
 }
 
 #[tokio::test]
+async fn different_jobs_use_distinct_global_lock_keys() {
+    let (base_url, requests) = serve_responses(vec![(200, r#"{}"#), (200, r#"{}"#)]).await;
+    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
+
+    for job_id in ["analytics_source_polling", "analytics_retention_sweep"] {
+        client
+            .try_acquire_job_lease(job_id, "worker-a", "token-a", 1_000, 61_000)
+            .await
+            .expect("lease request");
+    }
+
+    let requests = requests.lock().expect("requests");
+    let keys = requests
+        .iter()
+        .map(|request| {
+            let body: Value = serde_json::from_str(&request.body).expect("request body");
+            body["Key"]["pk"]["S"]
+                .as_str()
+                .expect("lease partition key")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        vec![
+            "JOB#analytics_source_polling",
+            "JOB#analytics_retention_sweep"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn stale_lease_tokens_cannot_renew_the_global_lock() {
     let conditional_failure = r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"conditional request failed"}"#;
     let (base_url, _requests) = serve_responses(vec![(400, conditional_failure)]).await;
@@ -145,7 +183,12 @@ async fn stale_lease_tokens_cannot_renew_the_global_lock() {
 
     assert!(
         !client
-            .renew_source_polling_lease("worker-a", "stale-token", 62_000)
+            .renew_job_lease(
+                "analytics_source_polling",
+                "worker-a",
+                "stale-token",
+                62_000,
+            )
             .await
             .expect("conditional renewal")
     );
@@ -161,7 +204,13 @@ async fn held_global_lease_returns_standby_outcome() {
     let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
 
     let outcome = client
-        .try_acquire_source_polling_lease("worker-b", "token-b", 2_000, 62_000)
+        .try_acquire_job_lease(
+            "analytics_source_polling",
+            "worker-b",
+            "token-b",
+            2_000,
+            62_000,
+        )
         .await
         .expect("conditional acquire");
 

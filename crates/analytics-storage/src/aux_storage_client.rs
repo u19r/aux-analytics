@@ -139,10 +139,10 @@ impl AuxStorageLeaseClient {
         })
     }
 
-    pub async fn ensure_source_polling_lease_table(&self) -> AnalyticsStorageResult<()> {
+    pub async fn ensure_job_lease_table(&self) -> AnalyticsStorageResult<()> {
         match self
             .client
-            .dynamo::<_, serde_json::Value>("CreateTable", &source_polling_lease_table_request())
+            .dynamo::<_, serde_json::Value>("CreateTable", &job_lease_table_request())
             .await
         {
             Ok(_) => Ok(()),
@@ -153,15 +153,16 @@ impl AuxStorageLeaseClient {
         }
     }
 
-    pub async fn try_acquire_source_polling_lease(
+    pub async fn try_acquire_job_lease(
         &self,
+        job_id: &str,
         worker_id: &str,
         lease_token: &str,
         now_ms: i64,
         lease_until_ms: i64,
     ) -> AnalyticsStorageResult<AuxStorageLeaseOutcome> {
         let request =
-            source_polling_lease_acquire_request(worker_id, lease_token, now_ms, lease_until_ms);
+            job_lease_acquire_request(job_id, worker_id, lease_token, now_ms, lease_until_ms);
         match self.client.update_item(&request).await {
             Ok(_) => Ok(AuxStorageLeaseOutcome::Acquired),
             Err(error) if is_conditional_check_failed(&error) => {
@@ -171,13 +172,14 @@ impl AuxStorageLeaseClient {
         }
     }
 
-    pub async fn renew_source_polling_lease(
+    pub async fn renew_job_lease(
         &self,
+        job_id: &str,
         worker_id: &str,
         lease_token: &str,
         lease_until_ms: i64,
     ) -> AnalyticsStorageResult<bool> {
-        let request = source_polling_lease_renew_request(worker_id, lease_token, lease_until_ms);
+        let request = job_lease_renew_request(job_id, worker_id, lease_token, lease_until_ms);
         match self.client.update_item(&request).await {
             Ok(_) => Ok(true),
             Err(error) if is_conditional_check_failed(&error) => Ok(false),
@@ -186,7 +188,7 @@ impl AuxStorageLeaseClient {
     }
 }
 
-fn source_polling_lease_table_request() -> CreateTableRequest {
+fn job_lease_table_request() -> CreateTableRequest {
     CreateTableRequest::new(
         TableName::new("sys_jobs"),
         vec![
@@ -213,13 +215,15 @@ fn source_polling_lease_table_request() -> CreateTableRequest {
     )
 }
 
-fn source_polling_lease_acquire_request(
+fn job_lease_acquire_request(
+    job_id: &str,
     worker_id: &str,
     lease_token: &str,
     now_ms: i64,
     lease_until_ms: i64,
 ) -> UpdateItemRequest {
-    source_polling_lease_update_request(
+    job_lease_update_request(
+        job_id,
         worker_id,
         lease_token,
         lease_until_ms,
@@ -230,12 +234,14 @@ fn source_polling_lease_acquire_request(
     )
 }
 
-fn source_polling_lease_renew_request(
+fn job_lease_renew_request(
+    job_id: &str,
     worker_id: &str,
     lease_token: &str,
     lease_until_ms: i64,
 ) -> UpdateItemRequest {
-    source_polling_lease_update_request(
+    job_lease_update_request(
+        job_id,
         worker_id,
         lease_token,
         lease_until_ms,
@@ -245,7 +251,8 @@ fn source_polling_lease_renew_request(
     )
 }
 
-fn source_polling_lease_update_request(
+fn job_lease_update_request(
+    job_id: &str,
     worker_id: &str,
     lease_token: &str,
     lease_until_ms: i64,
@@ -254,10 +261,7 @@ fn source_polling_lease_update_request(
     state: &str,
 ) -> UpdateItemRequest {
     let mut key = KeyAttributes::new();
-    key.insert(
-        "pk".to_string(),
-        AttributeValue::S("JOB#analytics_source_polling".to_string()),
-    );
+    key.insert("pk".to_string(), AttributeValue::S(format!("JOB#{job_id}")));
     key.insert("sk".to_string(), AttributeValue::S("LOCK".to_string()));
 
     let mut values = HashMap::new();
@@ -276,10 +280,7 @@ fn source_polling_lease_update_request(
         ":lease_token".to_string(),
         AttributeValue::S(lease_token.to_string()),
     );
-    values.insert(
-        ":job_id".to_string(),
-        AttributeValue::S("analytics_source_polling".to_string()),
-    );
+    values.insert(":job_id".to_string(), AttributeValue::S(job_id.to_string()));
     values.insert(":state".to_string(), AttributeValue::S(state.to_string()));
 
     UpdateItemRequest::builder()

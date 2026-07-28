@@ -13,8 +13,25 @@ pub(crate) async fn run_source_poller(
     source: AnalyticsSourceConfig,
     app_state: Arc<AppState>,
 ) {
-    let lease_client = source_polling_lease_client(&source).map(Arc::new);
-    let worker_id = source_polling_worker_id();
+    let worker_id = job_worker_id();
+    let lease_client = match job_lease_client(&source) {
+        Ok(client) => client.map(Arc::new),
+        Err(error) => {
+            let mut health = app_state.source_health.write().await;
+            apply_source_poll_error_health(
+                &mut health,
+                format!("source polling lease client construction failed: {error}"),
+                now_ms(),
+            );
+            tracing::error!(
+                error = %error,
+                job_id = SOURCE_POLLING_JOB_ID,
+                worker_id,
+                "analytics source polling stopped because its lease client is invalid"
+            );
+            return;
+        }
+    };
     let mut source_polling_lease_table_ready = lease_client.is_none();
     let mut retained_leadership = false;
     let mut consecutive_failures = 0_u32;
@@ -37,7 +54,7 @@ pub(crate) async fn run_source_poller(
         let lease = SourcePollingLease::new(worker_id.clone(), lease_until_ms);
         let lease_renewal = if let Some(lease_client) = lease_client.as_ref() {
             if !source_polling_lease_table_ready {
-                match lease_client.ensure_source_polling_lease_table().await {
+                match lease_client.ensure_job_lease_table().await {
                     Ok(()) => {
                         source_polling_lease_table_ready = true;
                         tracing::info!(

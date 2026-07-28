@@ -5,7 +5,7 @@ use std::{
 
 use crate::source_polling::metrics::*;
 
-static SOURCE_POLLING_LEASE_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
+static JOB_LEASE_TOKEN_COUNTER: AtomicU64 = AtomicU64::new(0);
 const SOURCE_RETRY_BASE_DELAY: Duration = Duration::from_millis(100);
 const SOURCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 
@@ -28,12 +28,12 @@ pub(crate) fn source_polling_lease_renew_interval() -> Duration {
     SOURCE_POLLING_LEASE_RENEW_INTERVAL
 }
 
-pub(crate) fn source_polling_lease_token(worker_id: &str) -> String {
-    let sequence = SOURCE_POLLING_LEASE_TOKEN_COUNTER.fetch_add(1, Ordering::SeqCst);
+pub(crate) fn job_lease_token(worker_id: &str) -> String {
+    let sequence = JOB_LEASE_TOKEN_COUNTER.fetch_add(1, Ordering::SeqCst);
     format!("{}-{}-{}", worker_id, now_ms_i64(), sequence)
 }
 
-pub(crate) fn source_polling_worker_id() -> String {
+pub(crate) fn job_worker_id() -> String {
     std::env::var("AUX_ANALYTICS_WORKER_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())

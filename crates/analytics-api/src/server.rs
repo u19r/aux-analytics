@@ -85,7 +85,7 @@ pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
     .await?;
     tracing::info!("analytics source polling initialized");
     tracing::info!("analytics retention sweeper initialization starting");
-    spawn_retention_sweeper(retention_runtime, app_state.clone()).await;
+    spawn_retention_sweeper(retention_runtime, app_state.clone(), &root.analytics.source).await?;
     tracing::info!("analytics retention sweeper initialized");
     let metrics_config = metrics_endpoint_config(&root.features.metrics)?;
     spawn_prometheus_upkeep(&metrics_config);
