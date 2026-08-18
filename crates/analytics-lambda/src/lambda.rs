@@ -230,7 +230,7 @@ impl AnalyticsLambdaHandler {
                     .engine
                     .with_read(move |engine| engine.query_unscoped_sql_json(sql.as_str()))
                     .await??;
-                Ok(json!(QueryLambdaResponse { rows }))
+                self.query_response(QueryLambdaResponse { rows })
             }
             AnalyticsLambdaEvent::UnscopedStructuredQuery { query } => {
                 let started = Instant::now();

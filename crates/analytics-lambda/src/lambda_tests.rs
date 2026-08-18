@@ -365,6 +365,40 @@ async fn lambda_rejects_query_responses_that_exceed_configured_size() {
 }
 
 #[tokio::test]
+async fn lambda_rejects_unscoped_sql_responses_that_exceed_configured_size() {
+    let handler = test_handler_with_response_config(LambdaResponseConfig {
+        max_response_size_kb: Some(1),
+        response_compression: AnalyticsLambdaResponseCompression::None,
+        query_only: false,
+        disable_duckdb_interrupt: false,
+    });
+    let large_email = format!("{}@example.com", "raw-response-payload".repeat(128));
+    handler
+        .handle_event(json!({
+            "operation": "ingest",
+            "analytics_table_name": "users",
+            "record_key": "user-1",
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "NewImage": user_item("user-1", large_email.as_str(), "org-a"),
+            }
+        }))
+        .await
+        .expect("ingest");
+
+    let error = handler
+        .handle_event(json!({
+            "operation": "unscoped_sql_query",
+            "sql": "select email from users",
+        }))
+        .await
+        .expect_err("raw SQL response too large");
+
+    assert!(error.to_string().contains("analytics_response_too_large"));
+}
+
+#[tokio::test]
 async fn lambda_compresses_query_response_when_raw_json_exceeds_configured_size() {
     let handler = test_handler_with_response_config(LambdaResponseConfig {
         max_response_size_kb: Some(1),

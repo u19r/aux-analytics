@@ -19,7 +19,6 @@ aws-credentials = { workspace = true }
 config = { workspace = true }
 duckdb = { workspace = true }
 regex = { workspace = true }
-rust_decimal = { workspace = true }
 serde_json = { workspace = true }
 storage-condition = { workspace = true }
 storage-types = { workspace = true }

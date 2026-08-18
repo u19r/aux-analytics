@@ -234,6 +234,87 @@ fn stream_records_are_projected_into_queryable_rows() {
     assert_eq!(rows[0]["email"], "a@example.com");
 }
 
+#[test]
+fn updating_tenant_identity_removes_the_old_analytics_grain() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
+    let mut table = users_manifest().tables[0].clone();
+    table.tenant_id = None;
+    table.tenant_selector = TenantSelector::Attribute {
+        attribute_name: "tenant_id".to_string(),
+    };
+    let manifest = AnalyticsManifest::new(vec![table]);
+    engine.ensure_manifest(&manifest).expect("ensure manifest");
+
+    let old_image = HashMap::from([
+        (
+            "tenant_id".to_string(),
+            StorageValue::S("tenant-a".to_string()),
+        ),
+        ("user_id".to_string(), StorageValue::S("user-1".to_string())),
+        (
+            "profile".to_string(),
+            StorageValue::M(HashMap::from([(
+                "email".to_string(),
+                StorageValue::S("a@example.com".to_string()),
+            )])),
+        ),
+    ]);
+    let new_image = HashMap::from([
+        (
+            "tenant_id".to_string(),
+            StorageValue::S("tenant-b".to_string()),
+        ),
+        ("user_id".to_string(), StorageValue::S("user-1".to_string())),
+        (
+            "profile".to_string(),
+            StorageValue::M(HashMap::from([(
+                "email".to_string(),
+                StorageValue::S("b@example.com".to_string()),
+            )])),
+        ),
+    ]);
+    engine
+        .ingest_stream_record(
+            &manifest,
+            "users",
+            b"user-1",
+            StorageStreamRecord {
+                sequence_number: "1".to_string(),
+                keys: HashMap::new(),
+                old_image: None,
+                new_image: Some(old_image.clone()),
+            },
+        )
+        .expect("insert initial tenant row");
+    assert_eq!(
+        engine
+            .ingest_stream_record(
+                &manifest,
+                "users",
+                b"user-1",
+                StorageStreamRecord {
+                    sequence_number: "2".to_string(),
+                    keys: HashMap::new(),
+                    old_image: Some(old_image),
+                    new_image: Some(new_image),
+                },
+            )
+            .expect("relocate tenant row"),
+        IngestOutcome::Updated
+    );
+
+    let rows = engine
+        .query_unscoped_sql_json("select tenant_id, email from users order by tenant_id")
+        .expect("query relocated row");
+    assert_eq!(
+        rows,
+        vec![serde_json::json!({
+            "tenant_id": "tenant-b",
+            "email": "b@example.com"
+        })]
+    );
+}
+
 fn insert_record(new_image: HashMap<String, StorageValue>) -> StorageStreamRecord {
     StorageStreamRecord {
         keys: HashMap::new(),
@@ -698,7 +779,7 @@ fn manifest_expands_one_source_record_into_declared_rows() {
 }
 
 #[test]
-fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
+fn expanded_registration_preserves_unsigned_decimal_and_floating_point_ranges() {
     let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect");
     let mut manifest = expanded_metric_manifest();
     let table = manifest.tables.first_mut().expect("expanded table");
@@ -713,6 +794,11 @@ fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
         .expect("expanded projections")
         .push(double_projection("value_f64"));
     table
+        .projection_columns
+        .as_mut()
+        .expect("expanded projections")
+        .push(decimal_projection("value_decimal"));
+    table
         .row_expansion
         .as_mut()
         .expect("row expansion")
@@ -724,6 +810,12 @@ fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
         .expect("row expansion")
         .element_fields
         .push(row_field("value_f64", vec![row_index(4)]));
+    table
+        .row_expansion
+        .as_mut()
+        .expect("row expansion")
+        .element_fields
+        .push(row_field("value_decimal", vec![row_index(5)]));
     engine.ensure_manifest(&manifest).expect("ensure manifest");
     let mut item = expanded_metric_item(&[("event-1", "api_requests", "10")]);
     item.insert(
@@ -736,6 +828,7 @@ fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
                 StorageValue::N("10".to_string()),
                 StorageValue::N(u64::MAX.to_string()),
                 StorageValue::N(f64::MAX.to_string()),
+                StorageValue::N("1250.250000000000000001".to_string()),
             ])]),
         ]),
     );
@@ -748,13 +841,17 @@ fn expanded_registration_preserves_unsigned_and_floating_point_ranges() {
         .expect("ingest unsigned metric");
 
     let rows = engine
-        .query_unscoped_sql_json("select value_u64, value_f64 from metric_points_expanded")
+        .query_unscoped_sql_json(
+            "select value_u64, value_f64, cast(value_decimal as varchar) as value_decimal from \
+             metric_points_expanded",
+        )
         .expect("query numeric values");
     assert_eq!(
         rows,
         vec![serde_json::json!({
             "value_u64": u64::MAX,
-            "value_f64": f64::MAX
+            "value_f64": f64::MAX,
+            "value_decimal": "1250.250000000000000001"
         })]
     );
 }
@@ -959,6 +1056,16 @@ fn unsigned_bigint_projection(attribute_path: &str) -> ProjectionColumn {
         attribute_path: attribute_path.to_string(),
         column_type: Some(AnalyticsColumnType::Primitive {
             primitive: PrimitiveColumnType::UnsignedBigInt,
+        }),
+    }
+}
+
+fn decimal_projection(attribute_path: &str) -> ProjectionColumn {
+    ProjectionColumn {
+        column_name: attribute_path.to_string(),
+        attribute_path: attribute_path.to_string(),
+        column_type: Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::Decimal,
         }),
     }
 }

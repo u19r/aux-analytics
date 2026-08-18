@@ -14,6 +14,7 @@ use config::{
     AnalyticsRetentionConfig, AnalyticsRetentionTableConfig, AnalyticsSourceConfig,
     RetentionTimestampConfig,
 };
+use regex::Regex;
 use tokio::sync::RwLock;
 
 use crate::{
@@ -434,12 +435,32 @@ fn resolve_tenant_id(
         }
         TenantSelector::PartitionKeyPrefix { attribute_name }
         | TenantSelector::TableNameOrPartitionKeyPrefix { attribute_name } => {
-            string_attribute(item, attribute_name)
-                .and_then(|value| value.split('#').nth(1))
-                .map(ToOwned::to_owned)
+            string_attribute(item, attribute_name).and_then(tenant_id_from_partition_key_prefix)
         }
-        TenantSelector::None | TenantSelector::AttributeRegex { .. } => None,
+        TenantSelector::AttributeRegex {
+            attribute_name,
+            regex,
+            capture,
+        } => string_attribute(item, attribute_name).and_then(|value| {
+            Regex::new(regex)
+                .ok()?
+                .captures(value)
+                .and_then(|captures| captures.name(capture))
+                .map(|value| value.as_str().to_string())
+        }),
+        TenantSelector::None => None,
     }
+}
+
+fn tenant_id_from_partition_key_prefix(value: &str) -> Option<String> {
+    let prefix = value.split('#').next()?.trim();
+    if prefix.is_empty() {
+        return None;
+    }
+    Some(prefix.strip_prefix("ns_").map_or_else(
+        || prefix.to_string(),
+        |storage_key| format!("t_{storage_key}"),
+    ))
 }
 
 fn string_attribute<'a>(item: &'a StorageItem, attribute_name: &str) -> Option<&'a str> {
@@ -488,4 +509,60 @@ fn duration_ms(started: Instant) -> f64 {
 #[allow(clippy::cast_precision_loss)]
 fn u64_to_f64(value: u64) -> f64 {
     value as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use analytics_contract::{AnalyticsManifest, StorageValue};
+
+    use super::*;
+
+    fn manifest(selector: TenantSelector) -> AnalyticsManifest {
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "tables": [{
+                "source_table_name": "source_users",
+                "analytics_table_name": "users",
+                "tenant_selector": selector,
+                "row_identity": {"kind": "record_key"}
+            }]
+        }))
+        .expect("valid retention manifest")
+    }
+
+    #[test]
+    fn partition_key_prefix_matches_engine_tenant_mapping() {
+        let item = HashMap::from([(
+            "pk".to_string(),
+            StorageValue::S("ns_acme#user-1".to_string()),
+        )]);
+        let tenant = resolve_tenant_id(
+            &manifest(TenantSelector::PartitionKeyPrefix {
+                attribute_name: "pk".to_string(),
+            }),
+            "users",
+            &item,
+        );
+        assert_eq!(tenant.as_deref(), Some("t_acme"));
+    }
+
+    #[test]
+    fn attribute_regex_uses_named_capture_for_retention_lookup() {
+        let item = HashMap::from([(
+            "pk".to_string(),
+            StorageValue::S("TENANT#acme#USER#1".to_string()),
+        )]);
+        let tenant = resolve_tenant_id(
+            &manifest(TenantSelector::AttributeRegex {
+                attribute_name: "pk".to_string(),
+                regex: r"^TENANT#(?<tenant>[^#]+)#USER#(?<user>[^#]+)$".to_string(),
+                capture: "tenant".to_string(),
+            }),
+            "users",
+            &item,
+        );
+        assert_eq!(tenant.as_deref(), Some("acme"));
+    }
 }

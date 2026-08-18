@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use analytics_engine::PreparedQueryMetadata;
+use analytics_engine::{PreparedQueryMetadata, PreparedQueryResultValueType};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -19,7 +19,7 @@ pub fn build_query_response(
     started: Instant,
 ) -> Result<QueryResponse, QueryResponseBuildError> {
     Ok(QueryResponse {
-        columns: result_columns(rows.as_slice()),
+        columns: result_columns(rows.as_slice(), metadata),
         execution: execution_metadata(metadata, rows.len(), started),
         source_watermark: source_watermark(rows.as_slice()),
         rows,
@@ -34,7 +34,7 @@ pub fn build_query_batch_result(
 ) -> Result<QueryBatchResult, QueryResponseBuildError> {
     Ok(QueryBatchResult {
         name,
-        columns: result_columns(rows.as_slice()),
+        columns: result_columns(rows.as_slice(), metadata),
         execution: execution_metadata(metadata, rows.len(), started),
         source_watermark: source_watermark(rows.as_slice()),
         rows,
@@ -66,14 +66,14 @@ fn execution_metadata(
     }
 }
 
-fn result_columns(rows: &[Value]) -> Vec<QueryResultColumn> {
+fn result_columns(rows: &[Value], metadata: &PreparedQueryMetadata) -> Vec<QueryResultColumn> {
     let Some(row) = rows.first().and_then(Value::as_object) else {
         return Vec::new();
     };
     row.iter()
         .map(|(name, value)| QueryResultColumn {
             name: name.clone(),
-            value_type: result_value_type(name, value),
+            value_type: result_value_type(name, value, metadata),
             nullable: rows
                 .iter()
                 .any(|row| row.get(name).is_none_or(serde_json::Value::is_null)),
@@ -81,7 +81,24 @@ fn result_columns(rows: &[Value]) -> Vec<QueryResultColumn> {
         .collect()
 }
 
-fn result_value_type(name: &str, value: &Value) -> QueryResultValueType {
+fn result_value_type(
+    name: &str,
+    value: &Value,
+    metadata: &PreparedQueryMetadata,
+) -> QueryResultValueType {
+    if let Some(value_type) = metadata
+        .result_columns
+        .iter()
+        .find(|column| column.name == name)
+        .map(|column| column.value_type)
+    {
+        return match value_type {
+            PreparedQueryResultValueType::I64 => QueryResultValueType::I64,
+            PreparedQueryResultValueType::U64 => QueryResultValueType::U64,
+            PreparedQueryResultValueType::Decimal => QueryResultValueType::Decimal,
+            PreparedQueryResultValueType::F64 => QueryResultValueType::F64,
+        };
+    }
     match value {
         Value::Bool(_) => QueryResultValueType::Boolean,
         Value::String(value) if looks_like_decimal(value) => QueryResultValueType::Decimal,
@@ -121,10 +138,10 @@ fn looks_like_decimal(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use analytics_contract::{
-        QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch, QueryExpression,
-        QuerySelect, StructuredQuery,
+        AnalyticsManifest, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
+        QueryExpression, QuerySelect, StructuredQuery, TableRegistration,
     };
-    use analytics_engine::PreparedQueryMetadata;
+    use analytics_engine::{PreparedQueryMetadata, prepare_unscoped_structured_query};
     use serde_json::json;
 
     use super::build_query_response;
@@ -185,5 +202,52 @@ mod tests {
         let encoded = serde_json::to_string(&response.execution.plan_shape).expect("serialize");
         assert!(!encoded.contains("sensitive-cutoff"));
         assert!(!encoded.contains("sensitive-class"));
+    }
+
+    #[test]
+    fn given_unsigned_source_with_arbitrary_alias_when_response_is_built_then_u64_is_preserved() {
+        let table: TableRegistration = serde_json::from_value(json!({
+            "source_table_name": "source_points",
+            "analytics_table_name": "points",
+            "document_column": null,
+            "columns": [{
+                "column_name": "unsigned_value",
+                "column_type": {"kind": "primitive", "primitive": "unsigned_big_int"}
+            }]
+        }))
+        .expect("table registration");
+        let query = StructuredQuery {
+            analytics_table_name: "points".to_string(),
+            table_alias: None,
+            joins: Vec::new(),
+            select: vec![QuerySelect::Sum {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "unsigned_value".to_string(),
+                },
+                alias: "arbitrary_total".to_string(),
+            }],
+            filters: Vec::new(),
+            group_by: Vec::new(),
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
+        };
+        let prepared =
+            prepare_unscoped_structured_query(&AnalyticsManifest::new(vec![table]), &query)
+                .expect("prepared query");
+
+        let response = build_query_response(
+            vec![json!({"arbitrary_total": 10})],
+            prepared.metadata(),
+            std::time::Instant::now(),
+        )
+        .expect("response metadata");
+
+        assert_eq!(response.columns.len(), 1);
+        assert!(matches!(
+            response.columns[0].value_type,
+            crate::types::QueryResultValueType::U64
+        ));
     }
 }

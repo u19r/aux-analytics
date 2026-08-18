@@ -158,6 +158,19 @@ impl OperationStore {
 
     pub fn request_cancellation(&self, operation_id: &OperationId) -> OperationStoreResult<()> {
         let operation = self.show_operation(operation_id)?;
+        if matches!(
+            operation.status,
+            OperationStatus::Cancelling
+                | OperationStatus::Cancelled
+                | OperationStatus::Failed
+                | OperationStatus::Succeeded
+        ) {
+            return Err(OperationStoreError::InvalidStatusTransition {
+                operation_id: operation_id.clone(),
+                current_status: operation.status,
+                next_status: OperationStatus::Cancelling,
+            });
+        }
         let updated = self.conn.execute(
             "UPDATE __analytics_operations
              SET status = ?, cancellation_state = ?, updated_at_ms = now_ms()

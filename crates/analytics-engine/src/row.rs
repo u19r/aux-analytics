@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use analytics_contract::{
-    INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN, INTERNAL_MISSING_RETENTION_COLUMN,
-    RetentionTimestamp, RowIdentity, StorageItem, StorageValue, TableRegistration, TenantSelector,
+    AnalyticsColumnType, INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN,
+    INTERNAL_MISSING_RETENTION_COLUMN, PrimitiveColumnType, RetentionTimestamp, RowIdentity,
+    StorageItem, StorageValue, TableRegistration, TenantSelector,
 };
 
 use crate::{
@@ -46,7 +47,7 @@ impl AnalyticsEngine {
             item,
             &mut self.caches.borrow_mut(),
         )?;
-        let mut row = attribute_map_to_json(projected_item)?;
+        let mut row = attribute_map_to_json(table, projected_item)?;
         if let Some(document_column) = table.document_column.as_deref() {
             row.insert(document_column.to_string(), full_item_json);
         }
@@ -238,16 +239,50 @@ fn cached_regex(
 }
 
 fn attribute_map_to_json(
+    table: &TableRegistration,
     item: StorageItem,
 ) -> AnalyticsEngineResult<BTreeMap<String, serde_json::Value>> {
     let mut row = BTreeMap::new();
     for (name, value) in item {
-        let json = value
-            .to_json_value()
-            .map_err(|_| AnalyticsEngineError::AttributeConversion(name.clone()))?;
+        let json = if is_decimal_projection(table, name.as_str()) {
+            match value {
+                StorageValue::N(value) => serde_json::Value::String(value),
+                other => other
+                    .to_json_value()
+                    .map_err(|_| AnalyticsEngineError::AttributeConversion(name.clone()))?,
+            }
+        } else {
+            value
+                .to_json_value()
+                .map_err(|_| AnalyticsEngineError::AttributeConversion(name.clone()))?
+        };
         row.insert(name, json);
     }
     Ok(row)
+}
+
+fn is_decimal_projection(table: &TableRegistration, column_name: &str) -> bool {
+    let column_type = if table.columns.is_empty() {
+        table
+            .projection_columns
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .find(|column| column.column_name == column_name)
+            .and_then(|column| column.column_type.as_ref())
+    } else {
+        table
+            .columns
+            .iter()
+            .find(|column| column.column_name == column_name)
+            .map(|column| &column.column_type)
+    };
+    matches!(
+        column_type,
+        Some(AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::Decimal
+        })
+    )
 }
 
 fn storage_item_to_json(item: &StorageItem) -> AnalyticsEngineResult<serde_json::Value> {

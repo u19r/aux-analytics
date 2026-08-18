@@ -738,7 +738,7 @@ impl AnalyticsEngine {
                     )?;
                     return batch.apply_delete(table, row);
                 }
-                let row = self.row_from_item(
+                let new_row = self.row_from_item(
                     table,
                     RowSource {
                         source_table_name: item.source_table_name.as_str(),
@@ -749,12 +749,28 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     manifest_retention.as_ref(),
                 )?;
-                let outcome = if old_matches {
-                    BatchUpsertOutcome::Updated
-                } else {
-                    BatchUpsertOutcome::Inserted
-                };
-                batch.apply_upsert(table, row, outcome)
+                if !old_matches {
+                    return batch.apply_upsert(table, new_row, BatchUpsertOutcome::Inserted);
+                }
+                let old_row = self.row_from_item(
+                    table,
+                    RowSource {
+                        source_table_name: item.source_table_name.as_str(),
+                        record_key: item.record_key.as_slice(),
+                        record_keys,
+                    },
+                    old_image,
+                    ingested_at_ms,
+                    None,
+                )?;
+                if same_row_identity(&old_row, &new_row) {
+                    return batch.apply_upsert(table, new_row, BatchUpsertOutcome::Updated);
+                }
+                // Tenant or row-identity changes move the row to a new merge key. Stage
+                // an explicit delete for the old key before the replacement upsert so
+                // the old grain cannot remain readable.
+                batch.apply_delete(table, old_row)?;
+                batch.apply_upsert(table, new_row, BatchUpsertOutcome::Updated)
             }
             (Some(old_image), None) => {
                 if table.skip_delete {
@@ -1076,7 +1092,7 @@ impl AnalyticsEngine {
                     )?;
                     return self.apply_delete(table, &row, source_position);
                 }
-                let row = self.row_from_item(
+                let new_row = self.row_from_item(
                     table,
                     RowSource {
                         source_table_name: table.source_table_name.as_str(),
@@ -1087,7 +1103,46 @@ impl AnalyticsEngine {
                     ingested_at_ms,
                     effective_retention,
                 )?;
-                self.apply_upsert(table, row, source_position)
+                if !old_matches {
+                    return self.apply_upsert(table, new_row, source_position);
+                }
+                let old_row = self.row_from_item(
+                    table,
+                    RowSource {
+                        source_table_name: table.source_table_name.as_str(),
+                        record_key,
+                        record_keys: &record_keys,
+                    },
+                    &old_image,
+                    ingested_at_ms,
+                    None,
+                )?;
+                if same_row_identity(&old_row, &new_row) {
+                    return self.apply_upsert(table, new_row, source_position);
+                }
+                // A changed tenant or row identity is a relocation, not an in-place
+                // update. Keep deletion and replacement atomic so the old key cannot
+                // survive a successful ingest.
+                self.conn.execute_batch("BEGIN TRANSACTION")?;
+                let result = (|| {
+                    let delete_outcome = self.apply_delete(table, &old_row, source_position)?;
+                    let upsert_outcome = self.apply_upsert(table, new_row, source_position)?;
+                    Ok(if upsert_outcome == IngestOutcome::Skipped {
+                        delete_outcome
+                    } else {
+                        IngestOutcome::Updated
+                    })
+                })();
+                match result {
+                    Ok(outcome) => {
+                        self.conn.execute_batch("COMMIT")?;
+                        Ok(outcome)
+                    }
+                    Err(error) => {
+                        self.conn.execute_batch("ROLLBACK")?;
+                        Err(error)
+                    }
+                }
             }
             (Some(old_image), None) => {
                 if table.skip_delete {
@@ -1939,6 +1994,15 @@ pub enum IngestOutcome {
     Updated,
     Deleted,
     Skipped,
+}
+
+fn same_row_identity(
+    left: &BTreeMap<String, serde_json::Value>,
+    right: &BTreeMap<String, serde_json::Value>,
+) -> bool {
+    ["table_name", "tenant_id", "__id"]
+        .into_iter()
+        .all(|column| left.get(column) == right.get(column))
 }
 
 struct ExpandedStreamRows {

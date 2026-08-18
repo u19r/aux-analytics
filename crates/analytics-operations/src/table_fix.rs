@@ -38,6 +38,10 @@ pub enum TableFixError {
     MissingRawBackupIndex(RawBackupObjectId),
     #[error("current source returned stale truth for selected table fix rows")]
     StaleSourceTruth,
+    #[error("current source returned a table-fix row outside the requested selection")]
+    TruthRecordOutsideSelection,
+    #[error("current source returned duplicate truth for a selected table-fix row")]
+    DuplicateTruthRecord,
     #[error("table fix selected {selected_rows} rows but max_rows is {max_rows}")]
     RepairSetTooLarge { selected_rows: u64, max_rows: u64 },
     #[error(
@@ -265,6 +269,8 @@ where Store: RawBackupObjectStore + ?Sized
     ) -> TableFixResult<TableFixReport> {
         request.validate()?;
         let selected_keys = selected_row_keys(&request.selection)?;
+        let selected_rows = u64::try_from(selected_keys.len()).unwrap_or(u64::MAX);
+        validate_selected_row_limit(&request.validation, selected_rows)?;
         let selected_key_set = selected_key_set(selected_keys);
         let object_ids = raw_backup_object_ids(&request.source)?;
         let mut repaired_rows = 0_u64;
@@ -293,8 +299,6 @@ where Store: RawBackupObjectStore + ?Sized
             }
         }
 
-        let selected_rows = u64::try_from(selected_keys.len()).unwrap_or(u64::MAX);
-        validate_selected_row_limit(&request.validation, selected_rows)?;
         let report = TableFixReport {
             operation_id: request.operation_id.clone(),
             table_name: request.table_name.clone(),
@@ -400,8 +404,22 @@ fn execute_truth_records(
     truth: Vec<TableFixTruthRecord>,
     destination: &mut impl TableFixDestination,
 ) -> TableFixResult<TableFixReport> {
+    let selected_rows = u64::try_from(selected_keys.len()).unwrap_or(u64::MAX);
+    validate_selected_row_limit(&request.validation, selected_rows)?;
     if truth.iter().any(|record| record.stale) {
         return Err(TableFixError::StaleSourceTruth);
+    }
+    let selected_key_set = selected_key_set(selected_keys);
+    let mut repaired_key_set = HashSet::new();
+    for record in &truth {
+        if record.table_name != request.table_name
+            || !selected_key_set.contains(record.record_key.as_slice())
+        {
+            return Err(TableFixError::TruthRecordOutsideSelection);
+        }
+        if !repaired_key_set.insert(record.record_key.clone()) {
+            return Err(TableFixError::DuplicateTruthRecord);
+        }
     }
     let mut repaired_rows = 0_u64;
     let mut sample_keys = Vec::new();
@@ -416,8 +434,6 @@ fn execute_truth_records(
         repaired_rows += 1;
         push_sample_key(&mut sample_keys, record.record_key.as_slice());
     }
-    let selected_rows = u64::try_from(selected_keys.len()).unwrap_or(u64::MAX);
-    validate_selected_row_limit(&request.validation, selected_rows)?;
     let report = TableFixReport {
         operation_id: request.operation_id.clone(),
         table_name: request.table_name.clone(),

@@ -31,6 +31,8 @@ pub enum RawBackupError {
     PrivacyPolicy(#[from] analytics_contract::PrivacyPolicyError),
     #[error("raw backup object id cannot be empty")]
     EmptyObjectId,
+    #[error("raw backup object id contains an unsafe path component")]
+    UnsafeObjectId,
     #[error("raw backup table name cannot be empty")]
     EmptyTableName,
     #[error("raw backup source identity cannot be empty")]
@@ -68,6 +70,14 @@ impl RawBackupObjectId {
         let value = value.into();
         if value.trim().is_empty() {
             return Err(RawBackupError::EmptyObjectId);
+        }
+        if value == "."
+            || value == ".."
+            || value.contains('/')
+            || value.contains('\\')
+            || value.chars().any(char::is_control)
+        {
+            return Err(RawBackupError::UnsafeObjectId);
         }
         Ok(Self(value))
     }
@@ -601,7 +611,7 @@ impl FilesystemRawBackupStore {
         &self,
         index: &RawBackupObjectIndex,
     ) -> RawBackupResult<RawBackupReplayReport> {
-        let (bytes, verify) = Self::read_verified_object(index)?;
+        let (bytes, verify) = self.read_verified_object(index)?;
         if !verify.checksum_valid {
             return Err(RawBackupError::ChecksumMismatch {
                 object_id: index.object_id.clone(),
@@ -641,7 +651,7 @@ impl FilesystemRawBackupStore {
         &self,
         index: &RawBackupObjectIndex,
     ) -> RawBackupResult<RawBackupVerifyReport> {
-        Ok(Self::read_verified_object(index)?.1)
+        Ok(self.read_verified_object(index)?.1)
     }
 
     pub fn read_index(
@@ -654,8 +664,9 @@ impl FilesystemRawBackupStore {
     }
 
     pub fn delete_object(&self, index: &RawBackupObjectIndex) -> RawBackupResult<()> {
-        fs::remove_file(Path::new(index.object_path.as_str()))?;
-        fs::remove_file(Path::new(index.index_path.as_str()))?;
+        let (object_path, index_path) = self.validate_index_paths(index)?;
+        fs::remove_file(object_path)?;
+        fs::remove_file(index_path)?;
         Ok(())
     }
 
@@ -666,10 +677,11 @@ impl FilesystemRawBackupStore {
     ) -> RawBackupResult<RawBackupObjectIndex> {
         let quarantine_object_id =
             RawBackupObjectId::new(format!("quarantine_{}", index.object_id.as_str()))?;
+        let source_object_path = self.validate_index_paths(index)?.0;
         fs::create_dir_all(quarantine_store.root.as_path())?;
         let object_path = quarantine_store.object_path(&quarantine_object_id);
         let index_path = quarantine_store.index_path(&quarantine_object_id);
-        fs::copy(Path::new(index.object_path.as_str()), object_path.as_path())?;
+        fs::copy(source_object_path, object_path.as_path())?;
         let mut quarantine_index = index.clone();
         quarantine_index.object_id = quarantine_object_id;
         quarantine_index.object_path = object_path.to_string_lossy().into_owned();
@@ -729,11 +741,29 @@ impl FilesystemRawBackupStore {
         self.root.join(format!("{}.index.json", object_id.as_str()))
     }
 
+    fn validate_index_paths(
+        &self,
+        index: &RawBackupObjectIndex,
+    ) -> RawBackupResult<(PathBuf, PathBuf)> {
+        let object_path = self.object_path(&index.object_id);
+        let index_path = self.index_path(&index.object_id);
+        if Path::new(index.object_path.as_str()) != object_path.as_path()
+            || Path::new(index.index_path.as_str()) != index_path.as_path()
+        {
+            return Err(RawBackupError::ObjectStore(format!(
+                "raw backup index paths do not match object {}",
+                index.object_id
+            )));
+        }
+        Ok((object_path, index_path))
+    }
+
     fn read_verified_object(
+        &self,
         index: &RawBackupObjectIndex,
     ) -> RawBackupResult<(Vec<u8>, RawBackupVerifyReport)> {
         index.validate_schema_version()?;
-        let object_path = Path::new(index.object_path.as_str());
+        let (object_path, _) = self.validate_index_paths(index)?;
         let bytes = fs::read(object_path)?;
         let report = verify_object_bytes(index, bytes.as_slice())?;
         Ok((bytes, report))

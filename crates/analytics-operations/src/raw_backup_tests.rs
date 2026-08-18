@@ -12,6 +12,16 @@ use crate::{
 };
 
 #[test]
+fn given_path_traversal_object_id_when_created_then_it_is_rejected() {
+    for object_id in ["../outside", "nested/object", r"C:\\outside", ".", ".."] {
+        assert!(matches!(
+            RawBackupObjectId::new(object_id),
+            Err(RawBackupError::UnsafeObjectId)
+        ));
+    }
+}
+
+#[test]
 fn given_records_when_filesystem_backup_writes_then_index_tracks_checksum_and_replay_records() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
@@ -282,6 +292,25 @@ fn given_corrupt_backup_object_when_replayed_then_checksum_failure_is_reported()
         error,
         RawBackupError::ChecksumMismatch { object_id, .. } if object_id.as_str() == "users_0002"
     ));
+}
+
+#[test]
+fn given_tampered_filesystem_index_paths_when_replayed_then_it_is_rejected() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let index = store
+        .write_object(&write_request("backup_path", "users_path", "user-1"))
+        .unwrap();
+    let mut tampered = index.clone();
+    tampered.object_path = tempdir
+        .path()
+        .join("outside.jsonl")
+        .to_string_lossy()
+        .into_owned();
+
+    let error = store.replay_object(&tampered).unwrap_err();
+
+    assert!(matches!(error, RawBackupError::ObjectStore(message) if message.contains("paths")));
 }
 
 #[test]

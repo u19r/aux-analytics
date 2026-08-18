@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 
 use analytics_contract::{
-    AnalyticsManifest, QueryColumnComparison, QueryComparisonOperator, QueryConditionalBranch,
-    QueryDocumentPredicate, QueryExpression, QueryJoin, QueryJoinKind, QueryOrder, QueryPredicate,
-    QuerySelect, QueryStringOperator, SortOrder, StructuredQuery, TableRegistration, TableScope,
+    AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, QueryColumnComparison,
+    QueryComparisonOperator, QueryConditionalBranch, QueryDocumentPredicate, QueryExpression,
+    QueryJoin, QueryJoinKind, QueryOrder, QueryPredicate, QuerySelect, QueryStringOperator,
+    SortOrder, StructuredQuery, TableRegistration, TableScope,
 };
 
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
 struct QueryTable<'a> {
     alias: String,
     table: &'a TableRegistration,
-    registered_columns: std::collections::HashSet<String>,
+    registered_columns: std::collections::HashMap<String, AnalyticsColumnType>,
     render_alias: bool,
 }
 
@@ -65,6 +66,21 @@ pub struct PreparedQueryMetadata {
     pub order_expression_count: u32,
     pub aggregate_count: u32,
     pub conditional_expression_count: u32,
+    pub result_columns: Vec<PreparedQueryResultColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedQueryResultColumn {
+    pub name: String,
+    pub value_type: PreparedQueryResultValueType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedQueryResultValueType {
+    I64,
+    U64,
+    Decimal,
+    F64,
 }
 
 impl PreparedStructuredQuery {
@@ -76,7 +92,7 @@ impl PreparedStructuredQuery {
 
 impl PreparedQueryMetadata {
     pub fn from_query(query: &StructuredQuery) -> AnalyticsEngineResult<Self> {
-        prepared_metadata(query)
+        prepared_metadata(query, Vec::new())
     }
 }
 
@@ -151,11 +167,12 @@ fn prepare_structured_query(
         .map_err(|err| AnalyticsEngineError::InvalidStructuredQuery(err.to_string()))?;
     let compiler = QueryCompiler::new(manifest, query, true)?;
     let sql = compiler.compile(query, target_tenant_id)?;
+    let result_columns = compiler.result_columns(query)?;
     let parameters = compiler.parameters.into_inner();
     Ok(PreparedStructuredQuery {
         sql,
         parameters,
-        metadata: prepared_metadata(query)?,
+        metadata: prepared_metadata(query, result_columns)?,
     })
 }
 
@@ -352,6 +369,35 @@ impl<'a> QueryCompiler<'a> {
                 ))
             }
         }
+    }
+
+    fn result_columns(
+        &self,
+        query: &StructuredQuery,
+    ) -> AnalyticsEngineResult<Vec<PreparedQueryResultColumn>> {
+        query
+            .select
+            .iter()
+            .filter_map(|select| self.result_column(select).transpose())
+            .collect()
+    }
+
+    fn result_column(
+        &self,
+        select: &QuerySelect,
+    ) -> AnalyticsEngineResult<Option<PreparedQueryResultColumn>> {
+        let Some((table_alias, column_name)) = select_result_source(select) else {
+            return Ok(None);
+        };
+        let table = self.resolve_table_for_column(table_alias, column_name)?;
+        let value_type = table
+            .registered_columns
+            .get(column_name)
+            .and_then(prepared_result_value_type);
+        Ok(value_type.map(|value_type| PreparedQueryResultColumn {
+            name: select.output_alias(),
+            value_type,
+        }))
     }
 
     fn aggregate_select_sql(
@@ -634,7 +680,7 @@ impl<'a> QueryCompiler<'a> {
         let matches = self
             .tables
             .iter()
-            .filter(|table| table.registered_columns.contains(column_name))
+            .filter(|table| table.registered_columns.contains_key(column_name))
             .collect::<Vec<_>>();
         match matches.as_slice() {
             [table] => Ok(table),
@@ -739,7 +785,10 @@ impl<'a> QueryCompiler<'a> {
     }
 }
 
-fn prepared_metadata(query: &StructuredQuery) -> AnalyticsEngineResult<PreparedQueryMetadata> {
+fn prepared_metadata(
+    query: &StructuredQuery,
+    result_columns: Vec<PreparedQueryResultColumn>,
+) -> AnalyticsEngineResult<PreparedQueryMetadata> {
     Ok(PreparedQueryMetadata {
         query_hash: query.query_hash()?,
         tables: std::iter::once(query.analytics_table_name.clone())
@@ -774,6 +823,7 @@ fn prepared_metadata(query: &StructuredQuery) -> AnalyticsEngineResult<PreparedQ
                 .filter(|expression| matches!(expression, QueryExpression::Conditional { .. }))
                 .count(),
         ),
+        result_columns,
     })
 }
 
@@ -789,6 +839,35 @@ fn select_query_expression(select: &QuerySelect) -> Option<&QueryExpression> {
         | QuerySelect::DocumentPath { .. }
         | QuerySelect::Count { .. } => None,
     }
+}
+
+fn select_result_source(select: &QuerySelect) -> Option<(Option<&str>, &str)> {
+    match select {
+        QuerySelect::Column {
+            table_alias,
+            column_name,
+            ..
+        } => Some((table_alias.as_deref(), column_name.as_str())),
+        QuerySelect::Expression { expression, .. }
+        | QuerySelect::Sum { expression, .. }
+        | QuerySelect::Min { expression, .. }
+        | QuerySelect::Max { expression, .. } => expression_column(expression),
+        QuerySelect::DocumentPath { .. }
+        | QuerySelect::Count { .. }
+        | QuerySelect::Avg { .. }
+        | QuerySelect::CountDistinct { .. } => None,
+    }
+}
+
+fn expression_column(expression: &QueryExpression) -> Option<(Option<&str>, &str)> {
+    let QueryExpression::Column {
+        table_alias,
+        column_name,
+    } = expression
+    else {
+        return None;
+    };
+    Some((table_alias.as_deref(), column_name.as_str()))
 }
 
 fn predicate_query_expression(predicate: &QueryPredicate) -> Option<&QueryExpression> {
@@ -839,16 +918,39 @@ impl<'a> QueryTable<'a> {
     }
 }
 
-fn registered_column_names(table: &TableRegistration) -> std::collections::HashSet<String> {
-    let mut names = std::collections::HashSet::from([
-        "tenant_id".to_string(),
-        "__id".to_string(),
-        "table_name".to_string(),
+fn registered_column_names(
+    table: &TableRegistration,
+) -> std::collections::HashMap<String, AnalyticsColumnType> {
+    let string_type = AnalyticsColumnType::Primitive {
+        primitive: PrimitiveColumnType::VarChar,
+    };
+    let mut columns = std::collections::HashMap::from([
+        ("tenant_id".to_string(), string_type.clone()),
+        ("__id".to_string(), string_type.clone()),
+        ("table_name".to_string(), string_type),
     ]);
     for column in columns_for_registration(table) {
-        names.insert(column.column_name);
+        columns.insert(column.column_name, column.column_type);
     }
-    names
+    columns
+}
+
+fn prepared_result_value_type(
+    column_type: &AnalyticsColumnType,
+) -> Option<PreparedQueryResultValueType> {
+    let AnalyticsColumnType::Primitive { primitive } = column_type else {
+        return None;
+    };
+    match primitive {
+        PrimitiveColumnType::BigInt => Some(PreparedQueryResultValueType::I64),
+        PrimitiveColumnType::UnsignedBigInt => Some(PreparedQueryResultValueType::U64),
+        PrimitiveColumnType::Decimal => Some(PreparedQueryResultValueType::Decimal),
+        PrimitiveColumnType::Double => Some(PreparedQueryResultValueType::F64),
+        PrimitiveColumnType::Boolean
+        | PrimitiveColumnType::VarChar
+        | PrimitiveColumnType::Json
+        | PrimitiveColumnType::Timestamp => None,
+    }
 }
 
 fn find_registered_table<'a>(
@@ -964,7 +1066,7 @@ fn non_aggregate_select_expression(select: &QuerySelect) -> Option<QueryExpressi
 
 fn validate_document_column(
     table: &TableRegistration,
-    registered_columns: &std::collections::HashSet<String>,
+    registered_columns: &std::collections::HashMap<String, AnalyticsColumnType>,
     document_column: &str,
 ) -> AnalyticsEngineResult<()> {
     validate_registered_column(registered_columns, document_column)?;
@@ -978,10 +1080,10 @@ fn validate_document_column(
 }
 
 fn validate_registered_column(
-    registered_columns: &std::collections::HashSet<String>,
+    registered_columns: &std::collections::HashMap<String, AnalyticsColumnType>,
     column_name: &str,
 ) -> AnalyticsEngineResult<()> {
-    if registered_columns.contains(column_name) {
+    if registered_columns.contains_key(column_name) {
         return Ok(());
     }
     Err(AnalyticsEngineError::InvalidStructuredQuery(format!(

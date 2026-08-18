@@ -227,6 +227,25 @@ fn given_table_fix_exceeds_max_rows_when_executed_then_it_is_rejected() {
             max_rows: 0
         }
     ));
+    assert!(destination.applied.is_empty());
+}
+
+#[test]
+fn given_current_source_returns_an_out_of_scope_row_when_fix_executes_then_it_is_rejected_before_mutation()
+ {
+    let store = FilesystemRawBackupStore::new(tempfile::tempdir().unwrap().path());
+    let source = UntrustedCurrentSource {
+        records: vec![truth_record("orders", "user-1", false)],
+    };
+    let request = current_source_fix_request(false, "fix_out_of_scope", b"user-1".to_vec());
+    let mut destination = CapturingDestination::default();
+
+    let error = TableFixExecutor::new(&store)
+        .execute_current_source(&request, &source, &mut destination)
+        .unwrap_err();
+
+    assert!(matches!(error, TableFixError::TruthRecordOutsideSelection));
+    assert!(destination.applied.is_empty());
 }
 
 #[test]
@@ -413,6 +432,21 @@ impl TableFixDestination for CapturingDestination {
 
 struct FakeCurrentSource {
     records: Vec<TableFixTruthRecord>,
+}
+
+struct UntrustedCurrentSource {
+    records: Vec<TableFixTruthRecord>,
+}
+
+impl crate::TableFixCurrentSource for UntrustedCurrentSource {
+    fn read_truth(
+        &self,
+        _source_identity: &str,
+        _table_name: &str,
+        _row_keys: &[Vec<u8>],
+    ) -> crate::TableFixResult<Vec<TableFixTruthRecord>> {
+        Ok(self.records.clone())
+    }
 }
 
 impl crate::TableFixCurrentSource for FakeCurrentSource {

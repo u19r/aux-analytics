@@ -15,8 +15,8 @@ pub use engine::{
     PrivacyTableScrubReport, SourceCheckpoint, StreamRecordBatchItem,
 };
 pub use structured_query::{
-    PreparedQueryMetadata, PreparedStructuredQuery, prepare_tenant_structured_query,
-    prepare_unscoped_structured_query,
+    PreparedQueryMetadata, PreparedQueryResultColumn, PreparedQueryResultValueType,
+    PreparedStructuredQuery, prepare_tenant_structured_query, prepare_unscoped_structured_query,
 };
 
 #[cfg(test)]

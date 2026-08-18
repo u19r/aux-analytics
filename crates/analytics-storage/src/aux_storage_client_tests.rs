@@ -242,8 +242,8 @@ async fn serve_responses(
                 "Service Unavailable"
             };
             let response = format!(
-                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: \
-                 {}\r\n\r\n{body}",
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nConnection: \
+                 close\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             );
             socket.write_all(response.as_bytes()).await.unwrap();

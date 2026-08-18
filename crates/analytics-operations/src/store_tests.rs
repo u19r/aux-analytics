@@ -93,6 +93,47 @@ fn given_running_operation_when_cancel_requested_then_status_and_audit_update() 
 }
 
 #[test]
+fn given_terminal_operation_when_cancel_requested_then_state_is_unchanged() {
+    let store = OperationStore::connect_in_memory().unwrap();
+    let operation = request("op_terminal_cancel");
+    store.create_operation(&operation).unwrap();
+    store
+        .transition(
+            &operation.operation_id,
+            OperationPhase::Completed,
+            OperationStatus::Succeeded,
+            None,
+            OperationEventKind::Succeeded,
+            Some("operation completed"),
+        )
+        .unwrap();
+
+    let error = store
+        .request_cancellation(&operation.operation_id)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::OperationStoreError::InvalidStatusTransition {
+            current_status: OperationStatus::Succeeded,
+            next_status: OperationStatus::Cancelling,
+            ..
+        }
+    ));
+    assert_eq!(
+        store
+            .show_operation(&operation.operation_id)
+            .unwrap()
+            .status,
+        OperationStatus::Succeeded
+    );
+    assert_eq!(
+        store.audit_events(&operation.operation_id).unwrap().len(),
+        2
+    );
+}
+
+#[test]
 fn given_operation_store_reopened_when_operation_resumes_then_durable_cursor_is_preserved() {
     let tempdir = tempfile::tempdir().unwrap();
     let db_path = tempdir.path().join("operations.duckdb");

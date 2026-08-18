@@ -779,6 +779,7 @@ pub enum QueryResultValueType {
     Boolean,
     String,
     I64,
+    U64,
     Decimal,
     F64,
     Json,
