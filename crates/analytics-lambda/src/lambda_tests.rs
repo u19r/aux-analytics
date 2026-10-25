@@ -3,15 +3,19 @@ use std::{collections::BTreeMap, io::Read, sync::Arc};
 use analytics_contract::{
     AnalyticsManifest, PrivacyPolicy, QueryExpression, QueryPredicate, QuerySelect, StructuredQuery,
 };
+use analytics_engine::{AnalyticsEngineError, IngestOutcome, StorageBackend};
 use analytics_fixtures::{user_item, users_manifest};
+use analytics_operations::OperationStore;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use config::{AnalyticsCatalogBackend, RootConfig};
+use config::{AnalyticsCatalogBackend, AnalyticsLambdaResponseCompression, LambdaEnvironment};
 use flate2::read::GzDecoder;
+use serde_json::json;
 
-use super::*;
+use super::lambda::*;
+use crate::AnalyticsLambdaError;
 
 #[tokio::test]
-async fn lambda_ingests_and_queries_rows() {
+async fn given_lambda_handler_when_rows_ingested_and_queried_then_rows_are_visible() {
     let handler = test_handler();
 
     let ingest_response = handler
@@ -31,8 +35,8 @@ async fn lambda_ingests_and_queries_rows() {
 
     let query_response = handler
         .handle_event(json!({
-            "operation": "unscoped_sql_query",
-            "sql": "select email from users",
+            "operation": "unscoped_structured_query",
+            "query": email_query(None),
         }))
         .await
         .expect("query");
@@ -42,11 +46,12 @@ async fn lambda_ingests_and_queries_rows() {
 #[tokio::test]
 async fn given_expanded_registration_when_lambda_ingests_compact_list_then_rows_are_queryable() {
     let manifest = expanded_lambda_manifest();
-    let handler = AnalyticsLambdaHandler::new(
+    let handler = AnalyticsLambdaHandler::try_new(
         manifest,
         &StorageBackend::DuckDb {
             path: ":memory:".to_string(),
         },
+        crate::LambdaHandlerOptions::default(),
     )
     .expect("handler");
 
@@ -77,8 +82,29 @@ async fn given_expanded_registration_when_lambda_ingests_compact_list_then_rows_
 
     let query_response = handler
         .handle_event(json!({
-            "operation": "unscoped_sql_query",
-            "sql": "select event_id, series_name from metric_points order by event_id",
+            "operation": "unscoped_structured_query",
+            "query": StructuredQuery {
+                analytics_table_name: "metric_points".to_string(),
+                table_alias: None,
+                joins: Vec::new(),
+                select: vec![
+                    QuerySelect::Column {
+                        table_alias: None,
+                        column_name: "event_id".to_string(),
+                        alias: None,
+                    },
+                    QuerySelect::Column {
+                        table_alias: None,
+                        column_name: "series_name".to_string(),
+                        alias: None,
+                    },
+                ],
+                filters: Vec::new(),
+                group_by: Vec::new(),
+                order_by: Vec::new(),
+                limit: None,
+                offset: None,
+            },
         }))
         .await
         .expect("query");
@@ -93,9 +119,9 @@ async fn given_expanded_registration_when_lambda_ingests_compact_list_then_rows_
 }
 
 #[tokio::test]
-async fn lambda_ingest_applies_configured_privacy_policy() {
+async fn given_lambda_privacy_policy_when_ingested_then_denied_fields_are_filtered() {
     let handler = test_handler_with_privacy_policy(
-        PrivacyPolicy::new("privacy-v1")
+        PrivacyPolicy::try_new("privacy-v1")
             .expect("policy")
             .with_denied_key_name("email"),
     );
@@ -116,8 +142,8 @@ async fn lambda_ingest_applies_configured_privacy_policy() {
 
     let query_response = handler
         .handle_event(json!({
-            "operation": "unscoped_sql_query",
-            "sql": "select email from users",
+            "operation": "unscoped_structured_query",
+            "query": email_query(None),
         }))
         .await
         .expect("query");
@@ -125,7 +151,7 @@ async fn lambda_ingest_applies_configured_privacy_policy() {
 }
 
 #[tokio::test]
-async fn lambda_runs_structured_queries() {
+async fn given_lambda_rows_when_structured_query_executed_then_rows_are_returned() {
     let handler = test_handler();
 
     handler
@@ -178,7 +204,7 @@ async fn lambda_runs_structured_queries() {
 }
 
 #[tokio::test]
-async fn lambda_runs_tenant_scoped_queries() {
+async fn given_lambda_tenant_rows_when_queried_then_only_target_tenant_rows_are_returned() {
     let handler = test_handler();
 
     for (record_key, email, org_id) in [
@@ -258,7 +284,7 @@ async fn lambda_runs_tenant_scoped_queries() {
 }
 
 #[tokio::test]
-async fn lambda_tenant_query_batch_returns_named_results() {
+async fn given_lambda_named_queries_when_batch_executed_then_named_results_are_returned() {
     let handler = test_handler();
     handler
         .handle_event(json!({
@@ -330,12 +356,12 @@ async fn lambda_tenant_query_batch_returns_named_results() {
 }
 
 #[tokio::test]
-async fn lambda_rejects_query_responses_that_exceed_configured_size() {
+async fn given_lambda_when_requested_then_query_responses_that_exceed_configured_size_rejected() {
     let handler = test_handler_with_response_config(LambdaResponseConfig {
         max_response_size_kb: Some(1),
         response_compression: AnalyticsLambdaResponseCompression::None,
         query_only: false,
-        disable_duckdb_interrupt: false,
+        disable_query_deadline: false,
     });
     let large_email = format!("{}@example.com", "large-response-payload".repeat(128));
     handler
@@ -365,46 +391,12 @@ async fn lambda_rejects_query_responses_that_exceed_configured_size() {
 }
 
 #[tokio::test]
-async fn lambda_rejects_unscoped_sql_responses_that_exceed_configured_size() {
-    let handler = test_handler_with_response_config(LambdaResponseConfig {
-        max_response_size_kb: Some(1),
-        response_compression: AnalyticsLambdaResponseCompression::None,
-        query_only: false,
-        disable_duckdb_interrupt: false,
-    });
-    let large_email = format!("{}@example.com", "raw-response-payload".repeat(128));
-    handler
-        .handle_event(json!({
-            "operation": "ingest",
-            "analytics_table_name": "users",
-            "record_key": "user-1",
-            "record": {
-                "Keys": {},
-                "SequenceNumber": "1",
-                "NewImage": user_item("user-1", large_email.as_str(), "org-a"),
-            }
-        }))
-        .await
-        .expect("ingest");
-
-    let error = handler
-        .handle_event(json!({
-            "operation": "unscoped_sql_query",
-            "sql": "select email from users",
-        }))
-        .await
-        .expect_err("raw SQL response too large");
-
-    assert!(error.to_string().contains("analytics_response_too_large"));
-}
-
-#[tokio::test]
-async fn lambda_compresses_query_response_when_raw_json_exceeds_configured_size() {
+async fn given_oversized_raw_json_when_lambda_query_compressed_then_response_fits_limit() {
     let handler = test_handler_with_response_config(LambdaResponseConfig {
         max_response_size_kb: Some(1),
         response_compression: AnalyticsLambdaResponseCompression::GzipBase64,
         query_only: false,
-        disable_duckdb_interrupt: false,
+        disable_query_deadline: false,
     });
     let large_email = format!("{}@example.com", "compressible".repeat(128));
     handler
@@ -445,12 +437,12 @@ async fn lambda_compresses_query_response_when_raw_json_exceeds_configured_size(
 }
 
 #[tokio::test]
-async fn lambda_query_only_mode_rejects_ingest_operations() {
+async fn given_lambda_query_only_mode_when_requested_then_ingest_operations_rejected() {
     let handler = test_handler_with_response_config(LambdaResponseConfig {
         max_response_size_kb: None,
         response_compression: AnalyticsLambdaResponseCompression::None,
         query_only: true,
-        disable_duckdb_interrupt: false,
+        disable_query_deadline: false,
     });
 
     let error = handler
@@ -475,22 +467,378 @@ async fn lambda_query_only_mode_rejects_ingest_operations() {
 }
 
 #[tokio::test]
-async fn lambda_rejects_events_that_fail_generated_schema() {
+async fn given_query_only_lambda_when_maintenance_submitted_then_rejected_without_persistence() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let handler = test_handler_with_response_config(LambdaResponseConfig {
+        max_response_size_kb: None,
+        response_compression: AnalyticsLambdaResponseCompression::None,
+        query_only: true,
+        disable_query_deadline: false,
+    })
+    .with_operation_store_path(&operation_store_path);
+
+    let error = handler
+        .handle_event(json!({
+            "operation": "maintenance_submit",
+            "actor": "lambda-test",
+            "request": {
+                "kind": "trim",
+                "request": {
+                    "operation_id": "lambda-query-only-trim",
+                    "table_name": "users",
+                    "dry_run": true,
+                    "target": {
+                        "type": "row_keys",
+                        "keys": [[117, 115, 101, 114, 45, 49]]
+                    },
+                    "confirmation_token": null
+                }
+            }
+        }))
+        .await
+        .expect_err("query-only maintenance");
+
+    assert!(
+        error
+            .to_string()
+            .contains("mutation operations are disabled when analytics.query.lambda_query_only")
+    );
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    assert!(store.list_operations().expect("operations").is_empty());
+}
+
+#[tokio::test]
+async fn given_lambda_when_requested_then_tenant_facing_raw_sql_events_rejected() {
     let handler = test_handler();
 
     let err = handler
         .handle_event(json!({
             "operation": "unscoped_sql_query",
-            "statement": "select 1",
+            "sql": "select 1",
         }))
         .await
-        .expect_err("invalid event");
+        .expect_err("raw SQL event");
 
     assert!(err.to_string().contains("schema validation"));
 }
 
 #[tokio::test]
-async fn lambda_ingests_batches() {
+async fn given_canonical_maintenance_request_when_lambda_submitted_twice_then_identity_is_stable() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let handler = test_handler().with_operation_store_path(&operation_store_path);
+    let event = json!({
+        "operation": "maintenance_submit",
+        "actor": "lambda-test",
+        "request": {
+            "kind": "trim",
+            "request": {
+                "operation_id": "lambda-trim-1",
+                "table_name": "users",
+                "dry_run": true,
+                "target": {
+                    "type": "row_keys",
+                    "keys": [[117, 115, 101, 114, 45, 49]]
+                },
+                "confirmation_token": null
+            }
+        }
+    });
+
+    let first = handler
+        .handle_event(event.clone())
+        .await
+        .expect("first maintenance submission");
+    let second = handler
+        .handle_event(event)
+        .await
+        .expect("idempotent maintenance submission");
+
+    assert_eq!(first["operation_id"], "lambda-trim-1");
+    assert_eq!(first["outcome"], "created");
+    assert_eq!(second["operation_id"], "lambda-trim-1");
+    assert_eq!(second["outcome"], "existing");
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    assert_eq!(store.list_operations().expect("operations").len(), 1);
+}
+
+#[tokio::test]
+async fn given_unfenced_maintenance_request_when_submitted_to_lambda_then_nothing_is_persisted() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let handler = test_handler().with_operation_store_path(&operation_store_path);
+    let source = tempdir.path().join("source").to_string_lossy().into_owned();
+    let clean = tempdir.path().join("clean").to_string_lossy().into_owned();
+    let quarantine = tempdir
+        .path()
+        .join("quarantine")
+        .to_string_lossy()
+        .into_owned();
+
+    let raw_backup = json!({
+        "operation": "maintenance_submit",
+        "actor": "lambda-test",
+        "request": {
+            "kind": "raw_backup",
+            "request": {
+                "operation_id": "lambda-raw-backup-unfenced",
+                "object_id": "object-1",
+                "source_identity": "source-users",
+                "privacy_policy_version": null,
+                "policy_dropped_records": 0,
+                "layout": {
+                    "schema_version": 1,
+                    "compression": "none",
+                    "checksum_algorithm": "fnv1a64",
+                    "encryption": {"type": "none"}
+                },
+                "compacted_from_object_ids": [],
+                "records": [{
+                    "table_name": "users",
+                    "record_key": "user-1",
+                    "source_position": null,
+                    "record": {"Keys": {}, "SequenceNumber": "1"}
+                }]
+            }
+        }
+    });
+    let error = handler
+        .handle_event(raw_backup)
+        .await
+        .expect_err("raw-backup submission");
+    assert!(
+        error
+            .to_string()
+            .contains("does not support atomic maintenance fencing")
+    );
+
+    for (operation_id, dry_run) in [
+        ("lambda-privacy-dry-run", true),
+        ("lambda-privacy-apply", false),
+    ] {
+        let privacy_fix = json!({
+            "operation": "maintenance_submit",
+            "actor": "lambda-test",
+            "request": {
+                "kind": "privacy_fix",
+                "request": {
+                    "operation_id": operation_id,
+                    "source_backup_prefix": source.clone(),
+                    "clean_target_prefix": clean.clone(),
+                    "quarantine_target_prefix": quarantine.clone(),
+                    "raw_backup_object_ids": ["object-1"],
+                    "tables": ["users"],
+                    "policy": {"version": "privacy-v1"},
+                    "dry_run": dry_run,
+                    "destructive_action": "none",
+                    "confirmation_token": null
+                }
+            }
+        });
+        let error = handler
+            .handle_event(privacy_fix)
+            .await
+            .expect_err("privacy-fix submission");
+        assert!(
+            error
+                .to_string()
+                .contains("does not support atomic maintenance fencing")
+        );
+    }
+
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    assert!(store.list_operations().expect("operations").is_empty());
+}
+
+#[tokio::test]
+async fn given_lambda_when_requested_then_unknown_maintenance_fields_without_persisting_rejected() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let operation_store_path = tempdir.path().join("operations.duckdb");
+    let handler = test_handler().with_operation_store_path(&operation_store_path);
+    let event = json!({
+        "operation": "maintenance_submit",
+        "actor": "lambda-test",
+        "request": {
+            "kind": "trim",
+            "request": {
+                "operation_id": "lambda-trim-unknown",
+                "table_name": "users",
+                "dry_run": true,
+                "target": {
+                    "type": "row_keys",
+                    "keys": [[117, 115, 101, 114, 45, 49]]
+                },
+                "confirmation_token": null
+            }
+        }
+    });
+
+    let mut top_level = event.clone();
+    top_level["legacy_mode"] = json!(true);
+    let error = handler
+        .handle_event(top_level)
+        .await
+        .expect_err("unknown event field");
+    assert!(error.to_string().contains("schema validation"));
+
+    let mut nested = event.clone();
+    nested["request"]["request"]["target"]["legacy_mode"] = json!(true);
+    let error = handler
+        .handle_event(nested)
+        .await
+        .expect_err("unknown maintenance field");
+    assert!(error.to_string().contains("schema validation"));
+
+    let mut privacy_policy = event.clone();
+    privacy_policy["request"]["request"]["kind"] = json!("privacy_fix");
+    privacy_policy["request"]["request"]["request"] = json!({
+        "operation_id": "lambda-privacy-unknown",
+            "source_backup_prefix": "source",
+            "clean_target_prefix": "clean",
+            "quarantine_target_prefix": "quarantine",
+            "raw_backup_object_ids": ["object-1"],
+        "tables": ["users"],
+        "policy": {
+            "version": "privacy-v1",
+            "legacy_mode": true
+        },
+        "dry_run": true,
+        "destructive_action": "none",
+        "confirmation_token": null
+    });
+    let error = handler
+        .handle_event(privacy_policy)
+        .await
+        .expect_err("unknown privacy policy field");
+    assert!(error.to_string().contains("schema validation"));
+
+    let mut raw_backup_record = event.clone();
+    raw_backup_record["request"]["request"]["kind"] = json!("raw_backup");
+    raw_backup_record["request"]["request"]["request"] = json!({
+        "operation_id": "lambda-record-unknown",
+        "object_id": "object-1",
+        "source_identity": "source-users",
+        "privacy_policy_version": null,
+        "policy_dropped_records": 0,
+        "layout": {
+            "schema_version": 1,
+            "compression": "none",
+            "checksum_algorithm": "fnv1a64",
+            "encryption": {"type": "none"}
+        },
+        "compacted_from_object_ids": [],
+        "records": [{
+            "table_name": "users",
+            "record_key": "user-1",
+            "source_position": null,
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1",
+                "legacy_mode": true
+            }
+        }]
+    });
+    let error = handler
+        .handle_event(raw_backup_record)
+        .await
+        .expect_err("unknown stream record field");
+    assert!(error.to_string().contains("schema validation"));
+
+    let mut raw_backup_position = event;
+    raw_backup_position["request"]["request"]["kind"] = json!("raw_backup");
+    raw_backup_position["request"]["request"]["request"] = json!({
+        "operation_id": "lambda-position-unknown",
+        "object_id": "object-1",
+        "source_identity": "source-users",
+        "privacy_policy_version": null,
+        "policy_dropped_records": 0,
+        "layout": {
+            "schema_version": 1,
+            "compression": "none",
+            "checksum_algorithm": "fnv1a64",
+            "encryption": {"type": "none"}
+        },
+        "compacted_from_object_ids": [],
+        "records": [{
+            "table_name": "users",
+            "record_key": "user-1",
+            "source_position": {
+                "type": "dynamo_db_stream_sequence",
+                "stream_arn": "stream",
+                "shard_id": "shard-1",
+                "sequence_number": "1",
+                "legacy_mode": true
+            },
+            "record": {
+                "Keys": {},
+                "SequenceNumber": "1"
+            }
+        }]
+    });
+    let error = handler
+        .handle_event(raw_backup_position)
+        .await
+        .expect_err("unknown source position field");
+    assert!(error.to_string().contains("schema validation"));
+
+    let store = OperationStore::connect_duckdb(operation_store_path.as_path()).expect("store");
+    assert!(store.list_operations().expect("operations").is_empty());
+}
+
+#[tokio::test]
+async fn given_lambda_when_requested_then_maintenance_submission_without_actor_or_operation_store_rejected()
+ {
+    let handler = test_handler();
+    let event = json!({
+        "operation": "maintenance_submit",
+        "request": {
+            "kind": "trim",
+            "request": {
+                "operation_id": "lambda-trim-missing-actor",
+                "table_name": "users",
+                "dry_run": true,
+                "target": {
+                    "type": "row_keys",
+                    "keys": [[117]]
+                },
+                "confirmation_token": null
+            }
+        }
+    });
+
+    let error = handler
+        .handle_event(event)
+        .await
+        .expect_err("missing actor");
+    assert!(error.to_string().contains("schema validation"));
+
+    let error = handler
+        .handle_event(json!({
+            "operation": "maintenance_submit",
+            "actor": "lambda-test",
+            "request": {
+                "kind": "trim",
+                "request": {
+                    "operation_id": "lambda-trim-no-store",
+                    "table_name": "users",
+                    "dry_run": true,
+                    "target": {"type": "row_keys", "keys": [[117]]},
+                    "confirmation_token": null
+                }
+            }
+        }))
+        .await
+        .expect_err("unconfigured operation store");
+    assert!(
+        error
+            .to_string()
+            .contains("operation store is not configured")
+    );
+}
+
+#[tokio::test]
+async fn given_lambda_record_batch_when_ingested_then_all_outcomes_are_returned() {
     let handler = test_handler();
 
     let response = handler
@@ -528,11 +876,12 @@ async fn lambda_ingests_batches() {
 }
 
 fn test_handler() -> AnalyticsLambdaHandler {
-    AnalyticsLambdaHandler::new(
+    AnalyticsLambdaHandler::try_new(
         users_manifest(),
         &StorageBackend::DuckDb {
             path: ":memory:".to_string(),
         },
+        crate::LambdaHandlerOptions::default(),
     )
     .expect("handler")
 }
@@ -592,12 +941,15 @@ fn expanded_lambda_manifest() -> AnalyticsManifest {
 }
 
 fn test_handler_with_privacy_policy(policy: PrivacyPolicy) -> AnalyticsLambdaHandler {
-    AnalyticsLambdaHandler::new_with_privacy_policy(
+    AnalyticsLambdaHandler::try_new(
         users_manifest(),
         &StorageBackend::DuckDb {
             path: ":memory:".to_string(),
         },
-        Some(Arc::new(policy)),
+        crate::LambdaHandlerOptions {
+            privacy_policy: Some(Arc::new(policy)),
+            ..Default::default()
+        },
     )
     .expect("handler")
 }
@@ -605,14 +957,17 @@ fn test_handler_with_privacy_policy(policy: PrivacyPolicy) -> AnalyticsLambdaHan
 fn test_handler_with_response_config(
     response_config: LambdaResponseConfig,
 ) -> AnalyticsLambdaHandler {
-    AnalyticsLambdaHandler::new_with_privacy_policy_max_read_connections_and_response_config(
+    AnalyticsLambdaHandler::try_new(
         users_manifest(),
         &StorageBackend::DuckDb {
             path: ":memory:".to_string(),
         },
-        None,
-        config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
-        response_config,
+        crate::LambdaHandlerOptions {
+            privacy_policy: None,
+            max_read_connections: config::DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+            response_config,
+            ..Default::default()
+        },
     )
     .expect("handler")
 }
@@ -636,80 +991,121 @@ fn email_query(limit: Option<u32>) -> StructuredQuery {
 }
 
 #[test]
-fn given_lambda_manifest_path_in_env_when_resolved_then_it_overrides_config_path() {
-    let mut root = RootConfig::default();
-    root.analytics.manifest_path = Some("config-manifest.json".to_string());
+fn given_lambda_manifest_env_when_config_file_also_has_manifest_then_env_wins() {
+    let manifest = manifest_file();
+    let environment = lambda_environment([
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        ("AUX_ANALYTICS_DUCKDB", ":memory:".to_string()),
+    ]);
 
-    let path = resolve_manifest_path(Some("env-manifest.json"), &root).expect("manifest path");
+    let resolved = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect("resolved config");
 
-    assert_eq!(path, "env-manifest.json");
+    assert_eq!(
+        resolved.manifest.source,
+        config::ManifestSource::ExplicitArgument
+    );
 }
 
 #[test]
 fn given_lambda_without_manifest_path_when_resolved_then_manifest_requirement_is_reported() {
-    let root = RootConfig::default();
+    let environment = lambda_environment([("AUX_ANALYTICS_DUCKDB", ":memory:".to_string())]);
 
-    let error = resolve_manifest_path(None, &root).unwrap_err();
+    let error = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect_err("missing manifest");
 
-    assert_eq!(
-        error.to_string(),
-        "validation error: analytics manifest path is required: set AUX_ANALYTICS_MANIFEST or \
-         analytics.manifest_path"
-    );
+    assert_eq!(error.kind(), config::ConfigErrorKind::MissingManifestPath);
 }
 
 #[test]
-fn given_aws_lambda_env_when_applied_then_query_and_ducklake_config_are_overridden() {
-    let mut root = RootConfig::default();
-    let env = env_map([
-        (ENV_CATALOG_BACKEND, "ducklake_aux_catalog"),
-        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
-        (ENV_OBJECT_REGION, "us-east-1"),
-        (ENV_CATALOG_DUCKDB_THREADS, "1"),
-        (ENV_QUERY_MAX_READ_CONNECTIONS, "1"),
-        (ENV_QUERY_MAX_RESPONSE_SIZE_KB, "5800"),
-        (ENV_QUERY_LAMBDA_RESPONSE_COMPRESSION, "gzip_base64"),
-        (ENV_QUERY_LAMBDA_QUERY_ONLY, "true"),
-        (ENV_QUERY_DISABLE_DUCKDB_INTERRUPT, "true"),
+fn given_aws_lambda_env_when_resolved_then_query_and_ducklake_config_are_overridden() {
+    let manifest = manifest_file();
+    let environment = lambda_environment([
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "AUX_ANALYTICS_CATALOG_BACKEND",
+            "ducklake_aux_catalog".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG",
+            "/tmp/aux-ducklake/metadata.duckdb".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_DATA_PATH",
+            "s3://analytics-bucket/warehouse".to_string(),
+        ),
+        ("AUX_ANALYTICS_OBJECT_REGION", "us-east-1".to_string()),
+        ("AUX_ANALYTICS_CATALOG_DUCKDB_THREADS", "1".to_string()),
+        ("AUX_ANALYTICS_QUERY_MAX_READ_CONNECTIONS", "1".to_string()),
+        (
+            "AUX_ANALYTICS_QUERY_MAX_RESPONSE_SIZE_KB",
+            "5800".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_QUERY_LAMBDA_RESPONSE_COMPRESSION",
+            "gzip_base64".to_string(),
+        ),
+        ("AUX_ANALYTICS_QUERY_LAMBDA_QUERY_ONLY", "true".to_string()),
+        (
+            "AUX_ANALYTICS_QUERY_DISABLE_QUERY_DEADLINE",
+            "true".to_string(),
+        ),
     ]);
 
-    apply_lambda_env_config(&mut root, |key| env.get(key).cloned()).expect("env config");
+    let resolved = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect("resolved config");
 
     assert_eq!(
-        root.analytics.catalog.backend,
+        resolved.root.analytics.catalog.backend,
         Some(AnalyticsCatalogBackend::DucklakeAuxCatalog)
     );
     assert_eq!(
-        root.analytics.object_storage.bucket.as_deref(),
+        resolved.root.analytics.object_storage.bucket.as_deref(),
         Some("analytics-bucket")
     );
     assert_eq!(
-        root.analytics.object_storage.path.as_deref(),
+        resolved.root.analytics.object_storage.path.as_deref(),
         Some("warehouse")
     );
     assert_eq!(
-        root.analytics.object_storage.region.as_deref(),
+        resolved.root.analytics.object_storage.region.as_deref(),
         Some("us-east-1")
     );
     assert_eq!(
-        root.analytics.object_storage.endpoint_url.as_deref(),
+        resolved
+            .root
+            .analytics
+            .object_storage
+            .endpoint_url
+            .as_deref(),
         Some("s3.us-east-1.amazonaws.com")
     );
-    assert!(root.analytics.object_storage.credentials.is_none());
-    assert_eq!(root.analytics.catalog.duckdb_threads, Some(1));
-    assert_eq!(root.analytics.query.max_read_connections, 1);
-    assert_eq!(root.analytics.query.max_response_size_kb, Some(5800));
+    assert_eq!(resolved.root.analytics.catalog.duckdb_threads, Some(1));
+    assert_eq!(resolved.root.analytics.query.max_read_connections, 1);
     assert_eq!(
-        root.analytics.query.lambda_response_compression,
+        resolved.root.analytics.query.max_response_size_kb,
+        Some(5800)
+    );
+    assert_eq!(
+        resolved.root.analytics.query.lambda_response_compression,
         AnalyticsLambdaResponseCompression::GzipBase64
     );
-    assert!(root.analytics.query.lambda_query_only);
-    assert!(root.analytics.query.disable_duckdb_interrupt);
+    assert!(resolved.root.analytics.query.lambda_query_only);
+    assert!(resolved.root.analytics.query.disable_query_deadline);
+    assert!(!resolved.routes.ingest_enabled);
+    assert!(resolved.routes.query_enabled);
 }
 
 #[test]
 fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config_is_preserved() {
-    let mut root = RootConfig::default();
+    let manifest = manifest_file();
+    let mut root = config::RootConfig::default();
     root.analytics.object_storage.bucket = Some("analytics-bucket".to_string());
     root.analytics.object_storage.path = Some("warehouse".to_string());
     root.analytics.object_storage.region = Some("us-east-1".to_string());
@@ -717,24 +1113,40 @@ fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config
         instance_keys: Some(true),
         ..config::RemoteCredentialsConfig::default()
     });
-    let env = env_map([
+    let config_file = tempfile::NamedTempFile::new().expect("config file");
+    std::fs::write(
+        config_file.path(),
+        serde_json::to_vec(&root).expect("config json"),
+    )
+    .expect("config contents");
+    let environment = lambda_environment([
         (
-            ENV_DUCKLAKE_AUX_CATALOG,
-            "/tmp/aux-ducklake/metadata.duckdb",
+            "AUX_ANALYTICS_CONFIG",
+            config_file.path().to_string_lossy().into_owned(),
         ),
-        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG",
+            "/tmp/aux-ducklake/metadata.duckdb".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_DATA_PATH",
+            "s3://analytics-bucket/warehouse".to_string(),
+        ),
     ]);
 
-    let backend =
-        resolve_storage_backend_from_env_with(&root, |key| env.get(key).cloned()).expect("backend");
-
+    let resolved = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect("resolved config");
     let StorageBackend::DuckLake {
         catalog,
         catalog_path,
         data_path,
         object_storage,
         ..
-    } = backend
+    } = resolved.storage_backend.expect("backend")
     else {
         panic!("expected DuckLake backend");
     };
@@ -751,72 +1163,97 @@ fn given_direct_ducklake_env_when_backend_is_resolved_then_object_storage_config
 }
 
 #[test]
-fn given_aux_catalog_env_when_backend_is_resolved_then_aux_catalog_is_used() {
-    let mut root = RootConfig::default();
-    root.analytics.object_storage.path = Some("warehouse".to_string());
-    let env = env_map([
+fn given_invalid_lambda_query_env_when_resolved_then_validation_error_names_variable() {
+    let manifest = manifest_file();
+    let environment = lambda_environment([
         (
-            ENV_DUCKLAKE_AUX_CATALOG,
-            "/tmp/aux-ducklake/metadata.duckdb",
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
         ),
-        (ENV_DUCKLAKE_DATA_PATH, "s3://analytics-bucket/warehouse"),
+        ("AUX_ANALYTICS_DUCKDB", ":memory:".to_string()),
+        (
+            "AUX_ANALYTICS_QUERY_MAX_RESPONSE_SIZE_KB",
+            "many".to_string(),
+        ),
     ]);
 
-    let backend =
-        resolve_storage_backend_from_env_with(&root, |key| env.get(key).cloned()).expect("backend");
+    let error = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect_err("invalid env");
 
-    let StorageBackend::DuckLake {
-        catalog,
-        catalog_path,
-        data_path,
-        ..
-    } = backend
-    else {
-        panic!("expected DuckLake backend");
-    };
-    assert_eq!(catalog, analytics_engine::CatalogType::AuxCatalog);
-    assert_eq!(catalog_path, "/tmp/aux-ducklake/metadata.duckdb");
-    assert_eq!(data_path, "s3://analytics-bucket/warehouse");
-}
-
-#[test]
-fn given_invalid_lambda_query_env_when_applied_then_validation_error_names_variable() {
-    let mut root = RootConfig::default();
-    let env = env_map([(ENV_QUERY_MAX_RESPONSE_SIZE_KB, "many")]);
-
-    let error = apply_lambda_env_config(&mut root, |key| env.get(key).cloned()).unwrap_err();
-
-    assert!(error.to_string().contains(ENV_QUERY_MAX_RESPONSE_SIZE_KB));
+    assert!(
+        error
+            .to_string()
+            .contains("AUX_ANALYTICS_QUERY_MAX_RESPONSE_SIZE_KB")
+    );
 }
 
 #[test]
 fn given_duckdb_catalog_config_when_lambda_backend_is_resolved_then_embedded_duckdb_is_used() {
-    let mut root = RootConfig::default();
-    root.analytics.catalog.backend = Some(AnalyticsCatalogBackend::Duckdb);
-    root.analytics.catalog.connection_string = Some(":memory:".to_string());
+    let manifest = manifest_file();
+    let environment = lambda_environment([
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        ("AUX_ANALYTICS_DUCKDB", ":memory:".to_string()),
+    ]);
 
-    let backend = resolve_storage_backend_from_config(&root).expect("backend");
+    let resolved = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect("resolved config");
 
-    assert!(matches!(backend, StorageBackend::DuckDb { path } if path == ":memory:"));
+    assert!(matches!(
+        resolved.storage_backend,
+        Some(StorageBackend::DuckDb { path }) if path == ":memory:"
+    ));
 }
 
-fn env_map(
-    values: impl IntoIterator<Item = (&'static str, &'static str)>,
-) -> BTreeMap<String, String> {
-    values
+fn lambda_environment<const N: usize>(values: [(&str, String); N]) -> LambdaEnvironment {
+    let values = values
         .into_iter()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect::<BTreeMap<_, _>>();
+    LambdaEnvironment::from_lookup(|key| values.get(key).cloned())
+}
+
+fn manifest_file() -> tempfile::NamedTempFile {
+    let file = tempfile::NamedTempFile::new().expect("manifest file");
+    let manifest = users_manifest();
+    std::fs::write(
+        file.path(),
+        serde_json::to_vec(&manifest).expect("manifest json"),
+    )
+    .expect("manifest contents");
+    file
 }
 
 #[test]
-fn given_ducklake_object_storage_bucket_when_lambda_data_path_is_resolved_then_uri_is_normalized() {
-    let mut root = RootConfig::default();
-    root.analytics.object_storage.scheme = "s3://".to_string();
-    root.analytics.object_storage.bucket = Some("/analytics-bucket/".to_string());
-    root.analytics.object_storage.path = Some("/warehouse".to_string());
+fn given_ducklake_object_storage_bucket_when_config_is_resolved_then_uri_is_normalized() {
+    let manifest = manifest_file();
+    let environment = lambda_environment([
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "AUX_ANALYTICS_CATALOG_BACKEND",
+            "ducklake_sqlite".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_SQLITE_CATALOG",
+            "/tmp/aux-ducklake/metadata.duckdb".to_string(),
+        ),
+        (
+            "AUX_ANALYTICS_DUCKLAKE_DATA_PATH",
+            "s3://analytics-bucket/warehouse".to_string(),
+        ),
+    ]);
 
-    let data_path = ducklake_data_path(&root).expect("data path");
+    let resolved = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect("resolved config");
+    let StorageBackend::DuckLake { data_path, .. } = resolved.storage_backend.expect("backend")
+    else {
+        panic!("expected DuckLake backend");
+    };
 
     assert_eq!(data_path, "s3://analytics-bucket/warehouse");
 }
@@ -824,15 +1261,37 @@ fn given_ducklake_object_storage_bucket_when_lambda_data_path_is_resolved_then_u
 #[test]
 fn given_ducklake_backend_without_object_storage_path_when_resolved_then_path_requirement_is_reported()
  {
-    let mut root = RootConfig::default();
+    let manifest = manifest_file();
+    let config_file = tempfile::NamedTempFile::new().expect("config file");
+    let mut root = config::RootConfig::default();
     root.analytics.catalog.backend = Some(AnalyticsCatalogBackend::DucklakeSqlite);
-    root.analytics.catalog.connection_string = Some("catalog.sqlite".to_string());
+    root.analytics.catalog.connection_string = Some("metadata.duckdb".to_string());
+    std::fs::write(
+        config_file.path(),
+        serde_json::to_vec(&root).expect("config json"),
+    )
+    .expect("config contents");
+    let environment = lambda_environment([
+        (
+            "AUX_ANALYTICS_CONFIG",
+            config_file.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "AUX_ANALYTICS_MANIFEST",
+            manifest.path().to_string_lossy().into_owned(),
+        ),
+        (
+            "AUX_ANALYTICS_CATALOG_BACKEND",
+            "ducklake_sqlite".to_string(),
+        ),
+    ]);
 
-    let error = resolve_storage_backend_from_config(&root).unwrap_err();
+    let error = config::resolve_config(config::ConfigRequest::lambda(environment))
+        .expect_err("missing object storage path");
 
     assert_eq!(
-        error.to_string(),
-        "validation error: analytics.object_storage.path is required for DuckLake backends"
+        error.kind(),
+        config::ConfigErrorKind::MissingDucklakeObjectStoragePath
     );
 }
 

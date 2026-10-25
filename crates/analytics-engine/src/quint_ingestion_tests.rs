@@ -1,11 +1,13 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, PrimitiveColumnType, ProjectionColumn, RowIdentity,
-    StorageStreamRecord, StorageValue, TableRegistration, TenantSelector,
+    SourcePosition, StorageItem, StorageStreamRecord, StorageValue, TableRegistration,
+    TenantSelector,
 };
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
+use storage_types::VecMap;
 
 use crate::{AnalyticsEngine, AnalyticsEngineError};
 
@@ -213,7 +215,7 @@ impl IngestionDriver {
     max_steps = 12,
     seed = "0x1"
 )]
-fn quint_ingestion_model_matches_engine() -> impl Driver {
+fn given_quint_ingestion_model_when_replayed_then_engine_matches() -> impl Driver {
     IngestionDriver::default()
 }
 
@@ -234,45 +236,91 @@ enum LifecycleRecordKind {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
 struct LifecycleState {
     rows: BTreeMap<String, bool>,
     append_rows: BTreeMap<String, bool>,
+    row_counts: BTreeMap<String, i64>,
+    row_sequences: BTreeMap<String, i64>,
     rejected_missing_table: bool,
-    missing_table_accepted: bool,
-    stale_overwrite: bool,
-    filtered_row_retained: bool,
-    append_delete_removed: bool,
-    duplicate_created_extra_row: bool,
+    last_rows_before: BTreeMap<String, bool>,
+    last_append_rows_before: BTreeMap<String, bool>,
+    last_row_counts_before: BTreeMap<String, i64>,
+    last_row_sequences_before: BTreeMap<String, i64>,
+    last_operation: LifecycleOperation,
+    last_row_id: String,
+    last_table_kind: LifecycleTableKind,
+    last_record_kind: LifecycleRecordKind,
+    last_row_existed_before: bool,
+    last_append_row_existed_before: bool,
+    last_sequence_before: i64,
+    last_incoming_sequence: i64,
+    last_sequence_after: i64,
+    last_update_stale: bool,
+}
+
+#[derive(Debug)]
+struct ProductionSnapshot {
+    rows: BTreeMap<String, bool>,
+    append_rows: BTreeMap<String, bool>,
+    row_counts: BTreeMap<String, i64>,
+    row_sequences: BTreeMap<String, i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+enum LifecycleOperation {
+    NoOperation,
+    Ingest,
+    Duplicate,
+    Update,
+    Delete,
 }
 
 impl State<LifecycleDriver> for LifecycleState {
     fn from_driver(driver: &LifecycleDriver) -> Result<Self> {
+        let snapshot = driver.production_snapshot()?;
         Ok(Self {
-            rows: driver.rows.clone(),
-            append_rows: driver.append_rows.clone(),
+            rows: snapshot.rows,
+            append_rows: snapshot.append_rows,
+            row_counts: snapshot.row_counts,
+            row_sequences: snapshot.row_sequences,
             rejected_missing_table: driver.rejected_missing_table,
-            missing_table_accepted: driver.missing_table_accepted,
-            stale_overwrite: driver.stale_overwrite,
-            filtered_row_retained: driver.filtered_row_retained,
-            append_delete_removed: driver.append_delete_removed,
-            duplicate_created_extra_row: driver.duplicate_created_extra_row,
+            last_rows_before: driver.last_rows_before.clone(),
+            last_append_rows_before: driver.last_append_rows_before.clone(),
+            last_row_counts_before: driver.last_row_counts_before.clone(),
+            last_row_sequences_before: driver.last_row_sequences_before.clone(),
+            last_operation: driver.last_operation,
+            last_row_id: driver.last_row_id.clone(),
+            last_table_kind: driver.last_table_kind,
+            last_record_kind: driver.last_record_kind,
+            last_row_existed_before: driver.last_row_existed_before,
+            last_append_row_existed_before: driver.last_append_row_existed_before,
+            last_sequence_before: driver.last_sequence_before,
+            last_incoming_sequence: driver.last_incoming_sequence,
+            last_sequence_after: driver.last_sequence_after,
+            last_update_stale: driver.last_update_stale,
         })
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
 struct LifecycleDriver {
     engine: AnalyticsEngine,
     manifest: AnalyticsManifest,
-    rows: BTreeMap<String, bool>,
-    append_rows: BTreeMap<String, bool>,
     rejected_missing_table: bool,
-    missing_table_accepted: bool,
-    stale_overwrite: bool,
-    filtered_row_retained: bool,
-    append_delete_removed: bool,
-    duplicate_created_extra_row: bool,
+    last_rows_before: BTreeMap<String, bool>,
+    last_append_rows_before: BTreeMap<String, bool>,
+    last_row_counts_before: BTreeMap<String, i64>,
+    last_row_sequences_before: BTreeMap<String, i64>,
+    last_operation: LifecycleOperation,
+    last_row_id: String,
+    last_table_kind: LifecycleTableKind,
+    last_record_kind: LifecycleRecordKind,
+    last_row_existed_before: bool,
+    last_append_row_existed_before: bool,
+    last_sequence_before: i64,
+    last_incoming_sequence: i64,
+    last_sequence_after: i64,
+    last_update_stale: bool,
 }
 
 impl Default for LifecycleDriver {
@@ -285,14 +333,21 @@ impl Default for LifecycleDriver {
         Self {
             engine,
             manifest,
-            rows: BTreeMap::new(),
-            append_rows: BTreeMap::new(),
             rejected_missing_table: false,
-            missing_table_accepted: false,
-            stale_overwrite: false,
-            filtered_row_retained: false,
-            append_delete_removed: false,
-            duplicate_created_extra_row: false,
+            last_rows_before: BTreeMap::new(),
+            last_append_rows_before: BTreeMap::new(),
+            last_row_counts_before: BTreeMap::new(),
+            last_row_sequences_before: BTreeMap::new(),
+            last_operation: LifecycleOperation::NoOperation,
+            last_row_id: String::new(),
+            last_table_kind: LifecycleTableKind::Missing,
+            last_record_kind: LifecycleRecordKind::FilteredOut,
+            last_row_existed_before: false,
+            last_append_row_existed_before: false,
+            last_sequence_before: 0,
+            last_incoming_sequence: 0,
+            last_sequence_after: 0,
+            last_update_stale: false,
         }
     }
 }
@@ -313,9 +368,9 @@ impl Driver for LifecycleDriver {
                 let row_id: String = row_id;
                 self.duplicate_insert(row_id.as_str())?;
             },
-            UpdateRecord(row_id, old_seq, new_seq, new_kind) => {
+            UpdateRecord(row_id, new_seq, new_kind) => {
                 let row_id: String = row_id;
-                self.update_record(row_id.as_str(), old_seq, new_seq, new_kind)?;
+                self.update_record(row_id.as_str(), new_seq, new_kind)?;
             },
             DeleteRecord(row_id, table_kind) => {
                 let row_id: String = row_id;
@@ -331,156 +386,563 @@ impl Driver for LifecycleDriver {
     max_steps = 12,
     seed = "0x515d"
 )]
-fn quint_ingestion_lifecycle_bughunt_matches_engine() -> impl Driver {
+fn given_quint_ingestion_lifecycle_bughunt_when_replayed_then_engine_matches() -> impl Driver {
     LifecycleDriver::default()
 }
 
+#[test]
+fn given_insert_delete_stale_update_when_replayed_then_production_skips_without_revival() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect lifecycle engine");
+    let manifest = lifecycle_manifest();
+    engine
+        .ensure_manifest(&manifest)
+        .expect("ensure lifecycle manifest");
+
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"row-hostile",
+                lifecycle_record("row-hostile", None, Some(LifecycleRecordKind::Matching),),
+                &lifecycle_position(1),
+            )
+            .expect("insert"),
+        crate::IngestOutcome::Inserted
+    );
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"row-hostile",
+                lifecycle_record("row-hostile", Some(LifecycleRecordKind::Matching), None,),
+                &lifecycle_position(2),
+            )
+            .expect("delete"),
+        crate::IngestOutcome::Deleted
+    );
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"row-hostile",
+                lifecycle_record(
+                    "row-hostile",
+                    Some(LifecycleRecordKind::Matching),
+                    Some(LifecycleRecordKind::Matching),
+                ),
+                &lifecycle_position(1),
+            )
+            .expect("stale update"),
+        crate::IngestOutcome::Skipped
+    );
+
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query visible rows");
+    assert_eq!(rows[0]["row_count"], 0);
+    let metadata = engine
+        .query_unscoped_sql_json(
+            "select row_visible, source_position_json from __analytics_row_source_positions",
+        )
+        .expect("query source-position authority");
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0]["row_visible"], false);
+    assert_eq!(metadata[0]["source_position_json"]["cursor"], "2");
+
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"row-hostile",
+                lifecycle_record(
+                    "row-hostile",
+                    Some(LifecycleRecordKind::FilteredOut),
+                    Some(LifecycleRecordKind::Matching),
+                ),
+                &lifecycle_position(3),
+            )
+            .expect("higher-cursor recovery"),
+        crate::IngestOutcome::Inserted
+    );
+    let rows = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query recovered visible rows");
+    assert_eq!(rows[0]["row_count"], 1);
+    let metadata = engine
+        .query_unscoped_sql_json(
+            "select row_visible, source_position_json from __analytics_row_source_positions",
+        )
+        .expect("query recovered source-position authority");
+    assert_eq!(metadata[0]["row_visible"], true);
+    assert_eq!(metadata[0]["source_position_json"]["cursor"], "3");
+}
+
+#[test]
+fn given_filtered_record_when_boundary_is_called_then_production_skips_and_state_stays_empty() {
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect lifecycle engine");
+    let manifest = lifecycle_manifest();
+    engine
+        .ensure_manifest(&manifest)
+        .expect("ensure lifecycle manifest");
+
+    assert_eq!(
+        engine
+            .ingest_stream_record_at_source_position(
+                &manifest,
+                "users",
+                b"row-filtered",
+                lifecycle_record("row-filtered", None, Some(LifecycleRecordKind::FilteredOut),),
+                &lifecycle_position(1),
+            )
+            .expect("filtered ingest"),
+        crate::IngestOutcome::Skipped
+    );
+    let visible = engine
+        .query_unscoped_sql_json("select count(*) as row_count from users")
+        .expect("query visible rows");
+    let metadata = engine
+        .query_unscoped_sql_json(
+            "select count(*) as row_count from __analytics_row_source_positions",
+        )
+        .expect("query source-position metadata");
+    assert_eq!(visible[0]["row_count"], 0);
+    assert_eq!(metadata[0]["row_count"], 0);
+}
+
+#[test]
+fn given_malformed_source_metadata_when_reconstructed_then_driver_fails() {
+    let mut driver = LifecycleDriver::default();
+    driver
+        .ingest_record(
+            "row-malformed",
+            LifecycleTableKind::Mutable,
+            LifecycleRecordKind::Matching,
+        )
+        .expect("insert source metadata");
+    driver
+        .engine
+        .connection()
+        .execute_batch(
+            "update __analytics_row_source_positions
+             set source_position_json = '{}'
+             where analytics_table_name = 'users'",
+        )
+        .expect("corrupt source metadata for negative proof");
+
+    let error = driver
+        .production_snapshot()
+        .expect_err("malformed durable source metadata must fail reconstruction");
+    assert!(error.to_string().contains("no cursor"), "{error}");
+}
+
 impl LifecycleDriver {
+    fn begin_action(
+        &mut self,
+        row_id: &str,
+        table_kind: LifecycleTableKind,
+        record_kind: LifecycleRecordKind,
+    ) -> Result {
+        let snapshot = self.production_snapshot()?;
+        self.last_rows_before = snapshot.rows.clone();
+        self.last_append_rows_before = snapshot.append_rows.clone();
+        self.last_row_counts_before = snapshot.row_counts.clone();
+        self.last_row_sequences_before = snapshot.row_sequences.clone();
+        self.last_row_id = row_id.to_string();
+        self.last_table_kind = table_kind;
+        self.last_record_kind = record_kind;
+        self.last_row_existed_before = snapshot.rows.get(row_id).copied().unwrap_or(false);
+        self.last_append_row_existed_before =
+            snapshot.append_rows.get(row_id).copied().unwrap_or(false);
+        self.last_sequence_before = snapshot.row_sequences.get(row_id).copied().unwrap_or(0);
+        self.last_incoming_sequence = 0;
+        self.last_update_stale = false;
+        Ok(())
+    }
+
     fn ingest_record(
         &mut self,
         row_id: &str,
         table_kind: LifecycleTableKind,
         record_kind: LifecycleRecordKind,
     ) -> Result {
+        self.begin_action(row_id, table_kind, record_kind)?;
+        self.last_operation = LifecycleOperation::Ingest;
         match table_kind {
             LifecycleTableKind::Mutable => {
-                self.engine.ingest_stream_record(
+                let current_position = self.authority_sequence("users", row_id)?;
+                let sequence = if self.last_row_existed_before {
+                    current_position.max(1)
+                } else {
+                    current_position.saturating_add(1).max(1)
+                };
+                self.last_incoming_sequence = if record_kind == LifecycleRecordKind::Matching {
+                    sequence
+                } else {
+                    0
+                };
+                let outcome = self.engine.ingest_stream_record_at_source_position(
                     &self.manifest,
                     "users",
                     row_id.as_bytes(),
                     lifecycle_record(row_id, None, Some(record_kind)),
+                    &lifecycle_position(sequence),
                 )?;
-                if record_kind == LifecycleRecordKind::Matching {
-                    self.rows
-                        .insert(row_id.to_string(), self.mutable_row_exists(row_id)?);
+                if record_kind == LifecycleRecordKind::FilteredOut
+                    && outcome != crate::IngestOutcome::Skipped
+                {
+                    return Err(anyhow::anyhow!(
+                        "filtered mutable ingest returned {outcome:?}"
+                    ));
                 }
             }
             LifecycleTableKind::AppendOnly => {
-                self.engine.ingest_stream_record(
+                let outcome = self.engine.ingest_stream_record_at_source_position(
                     &self.manifest,
                     "audit_events",
                     row_id.as_bytes(),
                     lifecycle_record(row_id, None, Some(record_kind)),
+                    &lifecycle_position(1),
                 )?;
-                if record_kind == LifecycleRecordKind::Matching {
-                    self.append_rows
-                        .insert(row_id.to_string(), self.append_row_exists(row_id)?);
+                if record_kind == LifecycleRecordKind::FilteredOut
+                    && outcome != crate::IngestOutcome::Skipped
+                {
+                    return Err(anyhow::anyhow!(
+                        "filtered append ingest returned {outcome:?}"
+                    ));
                 }
             }
-            LifecycleTableKind::Missing => {}
+            LifecycleTableKind::Missing => match self.engine.ingest_stream_record(
+                &self.manifest,
+                "missing",
+                row_id.as_bytes(),
+                lifecycle_record(row_id, None, Some(record_kind)),
+            ) {
+                Err(AnalyticsEngineError::TableNotRegistered(_)) => {
+                    self.rejected_missing_table = true;
+                }
+                Err(err) => return Err(err.into()),
+                Ok(_) => {
+                    return Err(anyhow::anyhow!(
+                        "missing-table ingest unexpectedly succeeded"
+                    ));
+                }
+            },
         }
+        self.last_sequence_after = self
+            .production_snapshot()?
+            .row_sequences
+            .get(row_id)
+            .copied()
+            .unwrap_or(0);
         Ok(())
     }
 
     fn duplicate_insert(&mut self, row_id: &str) -> Result {
-        self.engine.ingest_stream_record(
+        self.begin_action(
+            row_id,
+            LifecycleTableKind::Mutable,
+            LifecycleRecordKind::Matching,
+        )?;
+        self.last_append_row_existed_before = false;
+        let position = lifecycle_position(self.authority_sequence("users", row_id)?.max(1));
+        let record = lifecycle_record(row_id, None, Some(LifecycleRecordKind::Matching));
+        let durable_position_known = self.last_row_sequences_before.contains_key(row_id);
+        // Unknown ids are a no-op in the model. Exercise both real ingestion
+        // calls in an isolated in-memory engine without nesting transactions or
+        // mutating the model's live state.
+        let isolated_engine = if durable_position_known {
+            None
+        } else {
+            let engine = AnalyticsEngine::connect_duckdb(":memory:")?;
+            engine.ensure_manifest(&self.manifest)?;
+            Some(engine)
+        };
+        let engine = isolated_engine.as_ref().unwrap_or(&self.engine);
+        let first = engine.ingest_stream_record_at_source_position(
             &self.manifest,
             "users",
             row_id.as_bytes(),
-            lifecycle_record(row_id, None, Some(LifecycleRecordKind::Matching)),
+            record.clone(),
+            &position,
         )?;
-        self.engine.ingest_stream_record(
+        let second = engine.ingest_stream_record_at_source_position(
             &self.manifest,
             "users",
             row_id.as_bytes(),
-            lifecycle_record(row_id, None, Some(LifecycleRecordKind::Matching)),
+            record,
+            &position,
         )?;
-        let row_count = self.mutable_row_count(row_id)?;
-        self.rows.insert(row_id.to_string(), row_count > 0);
-        self.duplicate_created_extra_row = self.duplicate_created_extra_row || row_count > 1;
+        let expected = if durable_position_known {
+            (crate::IngestOutcome::Skipped, crate::IngestOutcome::Skipped)
+        } else {
+            (
+                crate::IngestOutcome::Inserted,
+                crate::IngestOutcome::Skipped,
+            )
+        };
+        if (first, second) != expected {
+            return Err(anyhow::anyhow!(
+                "duplicate production outcomes were {first:?}, {second:?}, expected {expected:?}"
+            ));
+        }
+        self.last_operation = if self.last_row_existed_before {
+            LifecycleOperation::Duplicate
+        } else {
+            LifecycleOperation::NoOperation
+        };
+        self.last_sequence_after = self.last_sequence_before;
         Ok(())
     }
 
     fn update_record(
         &mut self,
         row_id: &str,
-        old_seq: i64,
         new_seq: i64,
         new_kind: LifecycleRecordKind,
     ) -> Result {
-        self.engine.ingest_stream_record(
+        self.begin_action(row_id, LifecycleTableKind::Mutable, new_kind)?;
+        self.last_append_row_existed_before = false;
+        self.last_operation = LifecycleOperation::Update;
+        self.last_incoming_sequence = new_seq;
+        self.last_update_stale = new_seq <= self.last_sequence_before;
+        let outcome = self.engine.ingest_stream_record_at_source_position(
             &self.manifest,
             "users",
             row_id.as_bytes(),
-            lifecycle_record(row_id, Some(LifecycleRecordKind::Matching), Some(new_kind)),
+            lifecycle_record(
+                row_id,
+                Some(if self.last_row_existed_before {
+                    LifecycleRecordKind::Matching
+                } else {
+                    LifecycleRecordKind::FilteredOut
+                }),
+                Some(new_kind),
+            ),
+            &lifecycle_position(new_seq),
         )?;
-        let exists = self.mutable_row_exists(row_id)?;
-        self.rows.insert(row_id.to_string(), exists);
-        let _ = (old_seq, new_seq);
-        self.filtered_row_retained =
-            self.filtered_row_retained || (new_kind == LifecycleRecordKind::FilteredOut && exists);
+        if self.last_update_stale && outcome != crate::IngestOutcome::Skipped {
+            return Err(anyhow::anyhow!(
+                "stale production update returned {outcome:?}"
+            ));
+        }
+        self.last_sequence_after = self
+            .production_snapshot()?
+            .row_sequences
+            .get(row_id)
+            .copied()
+            .unwrap_or(0);
         Ok(())
     }
 
     fn delete_record(&mut self, row_id: &str, table_kind: LifecycleTableKind) -> Result {
+        self.begin_action(row_id, table_kind, LifecycleRecordKind::Matching)?;
+        self.last_operation = LifecycleOperation::Delete;
         match table_kind {
             LifecycleTableKind::Mutable => {
-                self.engine.ingest_stream_record(
+                let delete_position = self
+                    .authority_sequence("users", row_id)?
+                    .saturating_add(1)
+                    .max(1);
+                self.last_incoming_sequence = delete_position;
+                let outcome = self.engine.ingest_stream_record_at_source_position(
                     &self.manifest,
                     "users",
                     row_id.as_bytes(),
                     lifecycle_record(row_id, Some(LifecycleRecordKind::Matching), None),
+                    &lifecycle_position(delete_position),
                 )?;
-                self.rows
-                    .insert(row_id.to_string(), self.mutable_row_exists(row_id)?);
+                if outcome != crate::IngestOutcome::Deleted {
+                    return Err(anyhow::anyhow!(
+                        "mutable delete returned {outcome:?}; expected Deleted"
+                    ));
+                }
             }
             LifecycleTableKind::AppendOnly => {
-                self.engine.ingest_stream_record(
+                let outcome = self.engine.ingest_stream_record(
                     &self.manifest,
                     "audit_events",
                     row_id.as_bytes(),
-                    lifecycle_record(row_id, Some(LifecycleRecordKind::Matching), None),
+                    lifecycle_record(
+                        row_id,
+                        Some(if self.last_append_row_existed_before {
+                            LifecycleRecordKind::Matching
+                        } else {
+                            LifecycleRecordKind::FilteredOut
+                        }),
+                        None,
+                    ),
                 )?;
-                let exists = self.append_row_exists(row_id)?;
-                self.append_delete_removed = self.append_delete_removed
-                    || (self.append_rows.get(row_id).copied().unwrap_or(false) && !exists);
-                if exists {
-                    self.append_rows.insert(row_id.to_string(), true);
+                if outcome != crate::IngestOutcome::Skipped {
+                    return Err(anyhow::anyhow!(
+                        "append-only delete returned unexpected {outcome:?}"
+                    ));
                 }
             }
-            LifecycleTableKind::Missing => {
-                self.apply_missing_table_delete(row_id)?;
-            }
+            LifecycleTableKind::Missing => match self.engine.ingest_stream_record(
+                &self.manifest,
+                "missing",
+                row_id.as_bytes(),
+                lifecycle_record(row_id, Some(LifecycleRecordKind::Matching), None),
+            ) {
+                Err(AnalyticsEngineError::TableNotRegistered(_)) => {
+                    self.rejected_missing_table = true;
+                }
+                Err(err) => return Err(err.into()),
+                Ok(_) => {
+                    return Err(anyhow::anyhow!(
+                        "missing-table delete unexpectedly succeeded"
+                    ));
+                }
+            },
         }
+        self.last_sequence_after = self
+            .production_snapshot()?
+            .row_sequences
+            .get(row_id)
+            .copied()
+            .unwrap_or(0);
         Ok(())
     }
 
-    fn apply_missing_table_delete(&mut self, row_id: &str) -> Result {
-        match self.engine.ingest_stream_record(
-            &self.manifest,
-            "missing",
-            row_id.as_bytes(),
-            lifecycle_record(row_id, Some(LifecycleRecordKind::Matching), None),
-        ) {
-            Err(AnalyticsEngineError::TableNotRegistered(_)) => {
-                self.rejected_missing_table = true;
-                Ok(())
+    fn production_snapshot(&self) -> Result<ProductionSnapshot> {
+        let mut rows = BTreeMap::new();
+        let mut append_rows = BTreeMap::new();
+        let mut row_counts = BTreeMap::new();
+        let mut row_sequences = BTreeMap::new();
+
+        let metadata = self.engine.query_unscoped_sql_json(
+            "select analytics_table_name, source_row_id, source_position_json, row_visible
+             from __analytics_row_source_positions
+             order by analytics_table_name, source_row_id",
+        )?;
+        for entry in metadata {
+            let table = entry
+                .get("analytics_table_name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("production metadata table name was not a string: {entry}")
+                })?;
+            let source_row_id = entry
+                .get("source_row_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("production metadata source row id was not a string: {entry}")
+                })?;
+            if table != "users" {
+                continue;
             }
-            Err(err) => Err(err.into()),
-            Ok(_) => {
-                self.missing_table_accepted = true;
-                Ok(())
+            let row_id = decode_record_key(source_row_id)?;
+            let visible = entry
+                .get("row_visible")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| anyhow::anyhow!("production metadata row_visible was not bool"))?;
+            rows.insert(row_id.clone(), visible);
+            row_counts.insert(row_id.clone(), 0);
+            row_sequences.insert(
+                row_id,
+                source_position_cursor(
+                    entry
+                        .get("source_position_json")
+                        .ok_or_else(|| anyhow::anyhow!("missing production source position"))?,
+                )?,
+            );
+        }
+
+        for entry in self.engine.query_unscoped_sql_json(
+            "select entity_id, count(*) as row_count from users group by entity_id order by \
+             entity_id",
+        )? {
+            let Some(row_id) = entry.get("entity_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let count = entry
+                .get("row_count")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| anyhow::anyhow!("production user count was not integer"))?;
+            rows.insert(row_id.to_string(), true);
+            row_counts.insert(row_id.to_string(), count);
+        }
+
+        for entry in self.engine.query_unscoped_sql_json(
+            "select entity_id, count(*) as row_count from audit_events group by entity_id order \
+             by entity_id",
+        )? {
+            let Some(row_id) = entry.get("entity_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let count = entry
+                .get("row_count")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| anyhow::anyhow!("production audit count was not integer"))?;
+            if count > 0 {
+                append_rows.insert(row_id.to_string(), true);
             }
         }
+        Ok(ProductionSnapshot {
+            rows,
+            append_rows,
+            row_counts,
+            row_sequences,
+        })
     }
 
-    fn mutable_row_exists(&self, row_id: &str) -> Result<bool> {
-        Ok(self.mutable_row_count(row_id)? > 0)
+    fn authority_sequence(&self, table: &str, row_id: &str) -> Result<i64> {
+        let rows = self.engine.query_unscoped_sql_json(&format!(
+            "select source_position_json from __analytics_row_source_positions
+             where analytics_table_name = '{}' and source_row_id = '{}' limit 1",
+            table.replace('\'', "''"),
+            record_key_hex(row_id).replace('\'', "''"),
+        ))?;
+        rows.first()
+            .and_then(|row| row.get("source_position_json"))
+            .map(source_position_cursor)
+            .transpose()
+            .map(|value| value.unwrap_or(0))
     }
+}
 
-    fn mutable_row_count(&self, row_id: &str) -> Result<usize> {
-        let rows = self.engine.query_unscoped_sql_json(
-            format!("select entity_id from users where entity_id = '{row_id}'").as_str(),
-        )?;
-        Ok(rows.len())
-    }
+fn source_position_cursor(value: &serde_json::Value) -> Result<i64> {
+    let cursor = value
+        .get("cursor")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("production source position has no cursor: {value}"))?;
+    cursor
+        .parse::<i64>()
+        .map_err(|error| anyhow::anyhow!("invalid production source cursor {cursor:?}: {error}"))
+}
 
-    fn append_row_exists(&self, row_id: &str) -> Result<bool> {
-        let rows = self.engine.query_unscoped_sql_json(
-            format!("select entity_id from audit_events where entity_id = '{row_id}'").as_str(),
-        )?;
-        Ok(!rows.is_empty())
+fn record_key_hex(row_id: &str) -> String {
+    row_id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn decode_record_key(value: &str) -> Result<String> {
+    if !value.len().is_multiple_of(2) {
+        return Ok(value.to_string());
     }
+    let bytes = value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| {
+            let pair = std::str::from_utf8(chunk).map_err(|error| {
+                anyhow::anyhow!("invalid production record-key encoding {value:?}: {error}")
+            })?;
+            u8::from_str_radix(pair, 16).map_err(|error| {
+                anyhow::anyhow!("invalid production record-key encoding {value:?}: {error}")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    String::from_utf8(bytes)
+        .map_err(|error| anyhow::anyhow!("production record key was not utf-8: {error}"))
 }
 
 fn manifest() -> AnalyticsManifest {
@@ -565,11 +1027,11 @@ fn lifecycle_table(
         skip_delete,
         retention: None,
         condition_expression: Some("#entity_type = :entity_type".to_string()),
-        expression_attribute_names: Some(HashMap::from([(
+        expression_attribute_names: Some(VecMap::from_iter([(
             "#entity_type".to_string(),
             "entity_type".to_string(),
         )])),
-        expression_attribute_values: Some(BTreeMap::from([(
+        expression_attribute_values: Some(VecMap::from_iter([(
             ":entity_type".to_string(),
             StorageValue::S(entity_type.to_string()),
         )])),
@@ -596,12 +1058,19 @@ fn lifecycle_record(
     }
 }
 
-fn lifecycle_item(row_id: &str, kind: LifecycleRecordKind) -> HashMap<String, StorageValue> {
+fn lifecycle_position(sequence: i64) -> SourcePosition {
+    SourcePosition::AuxStorageStreamCursor {
+        stream_name: "lifecycle".to_string(),
+        cursor: sequence.to_string(),
+    }
+}
+
+fn lifecycle_item(row_id: &str, kind: LifecycleRecordKind) -> StorageItem {
     let entity_type = match kind {
         LifecycleRecordKind::Matching => "USER",
         LifecycleRecordKind::FilteredOut => "ORDER",
     };
-    HashMap::from([
+    VecMap::from_iter([
         ("entity_id".to_string(), StorageValue::S(row_id.to_string())),
         (
             "entity_type".to_string(),
@@ -624,19 +1093,19 @@ fn projection_column(column_name: &str, attribute_path: &str) -> ProjectionColum
     }
 }
 
-fn storage_key(entity_name: &str, id: &str) -> HashMap<String, StorageValue> {
-    HashMap::from([(
+fn storage_key(entity_name: &str, id: &str) -> StorageItem {
+    VecMap::from_iter([(
         "pk".to_string(),
         StorageValue::S(format!("{entity_name}#{id}")),
     )])
 }
 
-fn user_item(user_id: &str, email: &str) -> HashMap<String, StorageValue> {
-    HashMap::from([
+fn user_item(user_id: &str, email: &str) -> StorageItem {
+    VecMap::from_iter([
         ("user_id".to_string(), StorageValue::S(user_id.to_string())),
         (
             "profile".to_string(),
-            StorageValue::M(HashMap::from([(
+            StorageValue::M(VecMap::from_iter([(
                 "email".to_string(),
                 StorageValue::S(email.to_string()),
             )])),
@@ -644,8 +1113,8 @@ fn user_item(user_id: &str, email: &str) -> HashMap<String, StorageValue> {
     ])
 }
 
-fn audit_item(audit_id: &str, action_name: &str) -> HashMap<String, StorageValue> {
-    HashMap::from([
+fn audit_item(audit_id: &str, action_name: &str) -> StorageItem {
+    VecMap::from_iter([
         (
             "audit_id".to_string(),
             StorageValue::S(audit_id.to_string()),

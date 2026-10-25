@@ -28,27 +28,24 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.manifest_path` | none | Path to the table manifest JSON. Can be overridden by `--manifest` or `AUX_ANALYTICS_MANIFEST`. |
 | `analytics.http.ingest_endpoint_enabled` | `true` | Enables the direct HTTP `/ingest/{analytics_table_name}` endpoint. Set to `false` for standalone polling deployments that should only ingest from configured source streams. |
 | `analytics.query.max_read_connections` | `64` | Maximum dedicated analytical read connections for file-backed DuckDB and DuckLake backends. In-memory DuckDB uses the shared writer connection because separate in-memory connections do not share data. |
-| `analytics.source.stream_type` | none | Global stream format for source tables. Values: `storage_stream`, `aux_storage`. |
-| `analytics.source.endpoint_url` | none | Source endpoint override. Required for `aux_storage` polling, optional for AWS-compatible standard stream endpoints. |
+| `analytics.source.stream_type` | none | Global stream format for source tables. `storage_stream` and typed `aux_storage`/SystemStream polling are supported pull formats. AuxStorage discovers a database-owned versioned logical scope and uses its opaque resumable frontier. |
+| `analytics.source.endpoint_url` | none | Source endpoint override for supported AWS-compatible standard stream polling. |
 | `analytics.source.region` | AWS SDK default | Region for standard stream polling. |
 | `analytics.source.credentials` | AWS SDK default | Credential chain for source polling. Uses the same shape as aux-storage remote credentials. |
 | `analytics.source.poll_interval_ms` | `100` | Poll loop interval. The poller should keep issuing background requests inside the interval budget. |
+| `analytics.source.poll_request_timeout_ms` | `5000` | Per-request timeout for source polling. |
 | `analytics.source.poll_max_shards` | `16` | Maximum shards or stream partitions polled concurrently. |
 | `analytics.source.poll_max_responses_per_interval` | `160` | Maximum 1 MB stream responses to fetch per interval across all shards. At the default 100 ms interval this budgets up to 1600 responses/s, enough headroom for 100 MB/s when responses are below the 1 MB service maximum. |
+| `analytics.source.poll_max_records_per_response` | `8192` | Maximum records accepted from one source response. |
+| `analytics.job_store.endpoint_url` | none | Public AuxStorage scheduled JobStore endpoint. When set, the bg-jobs runtime uses the unauthenticated bounded-timeout library facade over ordinary DynamoDB API actions. |
+| `analytics.job_store.request_timeout_ms` | `5000` | Per-request timeout for the scheduled JobStore facade. |
 | `analytics.source.tables[].table_name` | required | Source storage table name. |
 | `analytics.source.tables[].stream_type` | inherits global | Per-table stream format override. |
-| `analytics.source.tables[].stream_identifier` | none | Standard stream ARN for `storage_stream`. For `aux_storage`, table polling uses `table_name`; this field is informational/reserved. |
-| `analytics.ingest.processor_enabled` | `true` | Enables the pull-ingest processor on this instance. Set to `false` for query-only instances; they must not write processor heartbeats, acquire leases, or ingest pull-based aux-storage records. |
-| `analytics.ingest.processor_id` | none | Optional stable processor id. When omitted, the runtime generates an instance-local id. |
-| `analytics.ingest.poll_interval_ms` | `5000` | Interval between hashed-range ingest processing ticks. |
-| `analytics.ingest.heartbeat_interval_ms` | `5000` | Interval between processor heartbeat writes. |
-| `analytics.ingest.lease_duration_ms` | `10000` | Slot lease duration. Must be at least two heartbeat intervals. |
-| `analytics.ingest.heartbeat_ttl_ms` | `3600000` | TTL for stale processor heartbeat rows. Assignment ignores stale heartbeats before TTL cleanup runs. |
-| `analytics.ingest.slot_count` | `256` | Number of change-index hash slots used for aux-storage pull ingestion. |
-| `analytics.retention.enabled` | `false` | Enables the periodic retention sweeper for dynamic retention tables. Static manifest retention can compute expiry without dynamic lookup, but the sweeper must be enabled to delete expired rows continuously. |
-| `analytics.retention.sweep_interval_ms` | `60000` | Interval between retention sweeps. |
-| `analytics.retention.delete_batch_size` | `500` | Maximum expired rows deleted per batch. |
-| `analytics.retention.delete_batch_pause_ms` | `250` | Pause between delete batches to avoid overwhelming the DuckLake catalog backend. |
+| `analytics.source.tables[].stream_identifier` | none | Standard stream ARN for `storage_stream`. |
+| `analytics.ingest.processor_enabled` | `true` | Enables the bg-jobs processor on this instance. Set to `false` for query-only instances; they serve reads but do not claim or execute background source and retention jobs. |
+| `analytics.retention.enabled` | `false` | Enables scheduled retention jobs for dynamic retention tables. Static manifest retention can compute expiry without dynamic lookup, but retention jobs must be enabled to delete expired rows continuously. |
+| `analytics.retention.sweep_interval_ms` | `60000` | Schedule interval for retention jobs. |
+| `analytics.retention.delete_batch_size` | `500` | Maximum expired rows deleted by one retention job batch. |
 | `analytics.retention.tables[].analytics_table_name` | required | Analytics table with dynamic tenant retention. |
 | `analytics.retention.tables[].default_period_ms` | required | Fallback retention duration in milliseconds. |
 | `analytics.retention.tables[].strict` | `false` | When true, failed tenant lookup stores `__missing_retention = true` and leaves `__expiry` null instead of using fallback. |
@@ -107,18 +104,25 @@ continuing.
 
 Do not configure static credentials and `instance_keys: true` together.
 
-## Polling Behavior
+## Background Jobs and Polling
 
 Polling belongs in `analytics-storage` or another adapter crate. The
-`analytics-engine` crate only accepts contract stream records. The standalone
-`aux-analytics-api` binary starts polling when `analytics.ingest.processor_enabled`
-is true and source tables are configured. Lambda deployments do not use this runtime because AWS
-event source mappings manage stream polling and invoke the Lambda handler with batches. Query-only
-instances set `analytics.ingest.processor_enabled = false`; they still serve HTTP query/API traffic
-but do not participate in pull-ingest coordination.
+`analytics-engine` crate only accepts contract stream records. The `aux-analytics-api` binary starts
+the bg-jobs processor when `analytics.ingest.processor_enabled` is true and source tables are
+configured. Lambda deployments do not use this runtime because AWS event source mappings manage
+stream polling and invoke the Lambda handler with batches. Query-only instances set
+`analytics.ingest.processor_enabled = false`; they still serve HTTP query/API traffic but do not
+claim or execute background jobs.
 
-For local multi-instance proof, `examples/docker-compose-demo` runs aux-storage, two ingest
-processors, and one query-only API instance against a shared DuckLake catalog.
+bg-jobs owns source and retention scheduling, claims, retries, cancellation, and repair. The
+analytics destination atomically compares and advances the execution fence while committing source
+records, quarantine decisions, checkpoints/frontiers, and its destination-effect receipt together.
+The aux-common `OperationReceipt` is lifecycle authority evidence only, not proof of an external
+analytical effect. AuxStorage/SystemStream polling first discovers its database-owned versioned
+logical scope, then sends that scope with an opaque checkpoint; records carry validated logical
+table and shard/lineage/offset metadata. The scheduled JobStore uses the public unauthenticated
+bounded-timeout library facade over ordinary DynamoDB API actions. Raw cursors, physical topology
+IDs, malformed tokens, and fabricated scopes are rejected before reads or checkpoint advancement.
 
 DuckLake with MotherDuck as the catalog uses MotherDuck BYOB own-compute mode. Create the DuckLake
 database and object-storage bucket out of band, then configure the metadata catalog and object path:
@@ -146,7 +150,7 @@ For R2-backed MotherDuck DuckLake, use an R2 bucket path such as `r2://bucket/pr
 `object_storage.scheme` to `r2`. MotherDuck BYOB currently supports AWS S3 and Cloudflare R2 for
 the DuckLake data path.
 
-The resident poller:
+The resident source feeder:
 
 - poll up to `poll_max_shards` shards concurrently;
 - keep fetching additional pages while work remains, rather than sleeping after
@@ -157,22 +161,27 @@ The resident poller:
   into `analytics-contract` records before ingestion;
 - save durable checkpoints only after the batch has been ingested.
 
-Checkpoints are internal aux-analytics state, stored in the analytics database
-table `__analytics_source_checkpoints`. For `aux_storage` sources, the
-checkpoint is the last stream page position for the table. For `storage_stream`
-sources, the checkpoint is the last successfully ingested sequence number per
-stream shard. On restart the poller resumes standard streams with
-`AFTER_SEQUENCE_NUMBER`.
+Source progress is an analytics-destination transaction executed under bg-jobs authority. The
+destination atomically compares and advances the execution fence while committing records,
+quarantine decisions, the source checkpoint/frontier, and its destination-effect receipt. The
+aux-common `OperationReceipt` is lifecycle authority evidence only, not proof of an external
+analytical effect. For supported `storage_stream` sources, the checkpoint is the last successfully
+ingested sequence number per stream shard; jobs resume with `AFTER_SEQUENCE_NUMBER`. For
+AuxStorage/SystemStream, the client discovers the database-owned versioned scope and resumes with
+the issued opaque checkpoint, validating logical table and shard/lineage/offset metadata.
 
-Application services do not need to run analytics polling, checkpointing, or analytics background
-jobs when aux-analytics is deployed as the standalone product. They only need to export the manifest
-and pass config/deployment values through to the aux-analytics process.
+Application services do not need to run analytics polling, checkpointing, or retention jobs when
+aux-analytics is deployed as the standalone product. They only need to export the manifest and pass
+config/deployment values through to the aux-analytics process.
 
-Checkpoint health is visible in `/health` and `/diagnostics`. Prometheus
-metrics are available at `/metrics` when `features.metrics.enabled` is true,
-including poll counts, poll errors, records per poll, ingested records, ingest
-errors, checkpoint saves, checkpoint errors, current checkpoint count, and query
-request counts.
+Source and retention job health is visible in `/health` and `/diagnostics`. Retention health exposes
+`status` (`disabled`, `starting`, `healthy`, or `degraded`), `sweeper_enabled`, `table_count`,
+`last_sweep_completed_at_ms`, `last_sweep_duration_ms`, `total_rows_deleted`, and
+`total_sweep_errors`. The bg-jobs observer marks retention degraded for retention-queue lifecycle
+errors, while a completed or already-applied fenced effect reports healthy state. Prometheus metrics
+are available at `/metrics` when `features.metrics.enabled` is true, including poll counts, poll
+errors, records per poll, ingested records, ingest errors, checkpoint saves, checkpoint errors,
+current checkpoint count, retention lookup and deletion-job metrics, and query request counts.
 
 Metric names use a dotted subsystem style, and
 Prometheus renders them with underscores:
@@ -193,23 +202,11 @@ Prometheus renders them with underscores:
 | `analytics.http.ingest.latency_ms` | histogram | `outcome` |
 | `analytics.http.ingest.privacy_dropped_fields_total` | counter | `policy_version` |
 | `analytics.source.privacy_dropped_fields_total` | counter | `policy_version` |
-| `analytics.ingest.processor.heartbeats_total` | counter | none |
-| `analytics.ingest.processor.active_processors` | gauge | none |
-| `analytics.ingest.processor.owned_slots` | gauge | none |
-| `analytics.ingest.processor.lease_acquire_total` | counter | none |
-| `analytics.ingest.processor.lease_lost_total` | counter | none |
-| `analytics.ingest.table.records_total` | counter | `table` |
-| `analytics.ingest.table.bytes_total` | counter | `table` |
-| `analytics.ingest.table.lag_ms` | histogram | `table` |
-| `analytics.ingest.table.cursor_age_ms` | histogram | `table` |
 | `analytics.ingest.trim.deleted_markers_total` | counter | none |
 | `analytics.privacy.policy_load_failures_total` | counter | none |
 | `analytics.retention.lookups_total` | counter | `table`, `source`, `outcome` |
 | `analytics.retention.lookup_latency_ms` | histogram | `table`, `source`, `outcome` |
 | `analytics.retention.lookup_failures_total` | counter | `table`, `source`, `tenant_id` |
-| `analytics.retention.missing_rows` | gauge | `table` |
-| `analytics.retention.sweeps_total` | counter | `table`, `outcome` |
-| `analytics.retention.sweep_duration_ms` | histogram | `table`, `outcome` |
 | `analytics.retention.delete_batches_total` | counter | `table`, `outcome` |
 | `analytics.retention.delete_batch_duration_ms` | histogram | `table`, `outcome` |
 | `analytics.retention.rows_deleted_total` | counter | `table` |
@@ -249,14 +246,13 @@ Runnable examples live under `examples/`:
 
 | Example | Purpose |
 | --- | --- |
-| `examples/local-aux-storage-duckdb` | Local aux-storage polling into DuckDB with `/ingest` disabled. |
 | `examples/local-ducklake-file` | DuckLake catalog with local filesystem data files. |
 
-The scripted local demo runs the same no-`/ingest` polling path:
-
-```sh
-bash scripts/demo-local-polling.sh
-```
+For a local catalog smoke, use `examples/local-ducklake-file` with direct contract ingestion or
+queries. AuxStorage/SystemStream polling is a supported remote path: configure
+`stream_type: "aux_storage"` and an endpoint exposing the typed scope/frontier contract. The client
+discovers the scope before reading, sends only issued opaque checkpoints, and rejects raw or
+fabricated source identities.
 
 Local DuckDB:
 
@@ -282,8 +278,10 @@ DuckLake on R2:
       "stream_type": "storage_stream",
       "region": "us-east-1",
       "poll_interval_ms": 100,
+      "poll_request_timeout_ms": 5000,
       "poll_max_shards": 32,
       "poll_max_responses_per_interval": 320,
+      "poll_max_records_per_response": 8192,
       "tables": [
         {
           "table_name": "tenant_entities",
@@ -310,22 +308,8 @@ DuckLake on R2:
 }
 ```
 
-Aux-storage source polling:
-
-```json
-{
-  "analytics": {
-    "source": {
-      "stream_type": "aux_storage",
-      "endpoint_url": "http://127.0.0.1:39124/storage",
-      "poll_interval_ms": 100,
-      "poll_max_shards": 16,
-      "poll_max_responses_per_interval": 160,
-      "tables": [
-        { "table_name": "tenant_entities" },
-        { "table_name": "audit_events" }
-      ]
-    }
-  }
-}
-```
+AuxStorage/SystemStream source polling is omitted from the local runnable examples because it needs
+the configured remote endpoint. Its supported wire path is the typed `DescribeSystemStream` plus
+`GetStreamRecords` contract: a database-owned versioned logical scope, an issued opaque checkpoint,
+and validated per-record logical table and shard/lineage/offset metadata. The analytics destination
+advances that frontier atomically with its rows and receipt under bg-jobs authority.

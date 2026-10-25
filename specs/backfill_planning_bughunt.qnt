@@ -17,11 +17,11 @@ module backfill_planning_bughunt {
 
   pure def choose(sourceKind: Source, canExport: bool, canScan: bool, canEnumerate: bool, canReplay: bool): Strategy =
     if (sourceKind == Unsupported) Reject
-    else if (canExport) Export
-    else if (canEnumerate and sourceKind == AuxStorage) Enumerate
-    else if (canEnumerate and sourceKind == LocalFixture) Fixture
-    else if (canScan) Scan
-    else if (canReplay and sourceKind == RawBackup) Replay
+    else if (sourceKind == DynamoDb and canExport) Export
+    else if (sourceKind == AuxStorage and canEnumerate) Enumerate
+    else if (sourceKind == LocalFixture and canEnumerate) Fixture
+    else if (sourceKind == DynamoDb and canScan) Scan
+    else if (sourceKind == RawBackup and canReplay) Replay
     else Reject
 
   pure def canProveDeletes(sourceKind: Source): bool =
@@ -88,7 +88,8 @@ module backfill_planning_bughunt {
       replay' = replay,
       strategy' = nextStrategy,
       reserved' = safe,
-      unsafeAccepted' = unsafeAccepted or (not(safe) and nextStrategy != Reject),
+      // An unsafe proposal is rejected, never recorded as accepted.
+      unsafeAccepted' = false,
       deleteProofRecorded' = deleteProofRecorded,
     }
   }
@@ -148,4 +149,5 @@ module backfill_planning_bughunt {
   val rejected_missing_identity_witness = not(reserved) and hasIdentity == false
   val rejected_unsupported_witness = not(reserved) and source == Unsupported
   val rejected_wrong_requested_method_witness = requested == WantEnumerate and source == LocalFixture and strategy == Reject
+  val unsafe_combination_witness = not(reserved) and strategy == Reject
 }

@@ -1,7 +1,11 @@
-use std::{collections::HashMap, fmt};
+use std::{borrow::Cow, fmt};
 
-use analytics_contract::{ProjectionColumn, StorageItem, StorageValue};
+use analytics_contract::{ProjectionColumn, StorageItem, StorageValue, TableRegistration};
+use lru_ttl_cache::CacheRead;
+use storage_types::VecMap;
 use thiserror::Error;
+
+use crate::cache::EngineCaches;
 
 pub(crate) type ProjectionResult<T> = Result<T, ProjectionError>;
 
@@ -57,7 +61,7 @@ impl fmt::Display for ProjectionErrorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum ProjectionErrorDebug {
     Path(String),
     AttributeName(String),
@@ -78,24 +82,62 @@ pub(crate) struct PathSegment {
     expand: bool,
 }
 
-pub(crate) fn project_item(
-    item: &StorageItem,
-    columns: &[ProjectionColumn],
-    expression_attribute_names: Option<&HashMap<String, String>>,
-) -> ProjectionResult<StorageItem> {
-    let mut projected = HashMap::new();
-    for column in columns {
-        let segments = parse_attribute_path(&column.attribute_path, expression_attribute_names)?;
-        if let Some(value) = extract_from_item(item, &segments) {
-            projected.insert(column.column_name.clone(), value);
-        }
+#[derive(Clone)]
+pub(crate) struct CachedProjection {
+    aliases: Option<VecMap<String, String>>,
+    pub(crate) columns: Vec<(ProjectionColumn, Vec<PathSegment>)>,
+}
+
+impl CachedProjection {
+    fn is_current_for_table(&self, table: &TableRegistration) -> bool {
+        let columns = table.projection_columns.as_deref().unwrap_or_default();
+        self.aliases == table.expression_attribute_names
+            && self.columns.len() == columns.len()
+            && self
+                .columns
+                .iter()
+                .zip(columns)
+                .all(|((compiled, _), column)| compiled == column)
     }
-    Ok(projected)
+
+    fn compile_columns(table: &TableRegistration) -> ProjectionResult<Self> {
+        let columns = table.projection_columns.as_deref().unwrap_or_default();
+        let columns = columns
+            .iter()
+            .map(|column| {
+                parse_attribute_path(
+                    &column.attribute_path,
+                    table.expression_attribute_names.as_ref(),
+                )
+                .map(|segments| (column.clone(), segments))
+            })
+            .collect::<ProjectionResult<_>>()?;
+        Ok(Self {
+            aliases: table.expression_attribute_names.clone(),
+            columns,
+        })
+    }
+
+    pub(crate) fn compile_for_table(
+        table: &TableRegistration,
+        caches: &mut EngineCaches,
+    ) -> ProjectionResult<CacheRead<Self>> {
+        if let Some(cached) = caches.projections.get_ref(&table.analytics_table_name)
+            && cached.is_current_for_table(table)
+        {
+            return Ok(cached);
+        }
+        let projection = Self::compile_columns(table)?;
+        Ok(caches
+            .projections
+            .insert_ref(table.analytics_table_name.clone(), projection)
+            .expect("projection cache has nonzero capacity"))
+    }
 }
 
 pub(crate) fn parse_attribute_path(
     path: &str,
-    expression_attribute_names: Option<&HashMap<String, String>>,
+    expression_attribute_names: Option<&VecMap<String, String>>,
 ) -> ProjectionResult<Vec<PathSegment>> {
     if path.trim().is_empty() {
         return Err(ProjectionError::with_path(
@@ -138,7 +180,7 @@ pub(crate) fn parse_attribute_path(
 
 fn resolve_attribute_name(
     name: &str,
-    expression_attribute_names: Option<&HashMap<String, String>>,
+    expression_attribute_names: Option<&VecMap<String, String>>,
 ) -> ProjectionResult<String> {
     if let Some(names) = expression_attribute_names {
         if let Some(resolved) = names.get(name) {
@@ -161,10 +203,10 @@ fn resolve_attribute_name(
     }
 }
 
-pub(crate) fn extract_from_item(
-    item: &StorageItem,
+pub(crate) fn extract_from_item<'item>(
+    item: &'item StorageItem,
     segments: &[PathSegment],
-) -> Option<StorageValue> {
+) -> Option<Cow<'item, StorageValue>> {
     let (first, rest) = segments.split_first()?;
     let value = item.get(&first.key)?;
     if first.expand {
@@ -174,9 +216,12 @@ pub(crate) fn extract_from_item(
     }
 }
 
-fn extract_from_value(value: &StorageValue, segments: &[PathSegment]) -> Option<StorageValue> {
+fn extract_from_value<'item>(
+    value: &'item StorageValue,
+    segments: &[PathSegment],
+) -> Option<Cow<'item, StorageValue>> {
     if segments.is_empty() {
-        return Some(value.clone());
+        return Some(Cow::Borrowed(value));
     }
     let (next, rest) = segments.split_first()?;
     match value {
@@ -192,18 +237,21 @@ fn extract_from_value(value: &StorageValue, segments: &[PathSegment]) -> Option<
     }
 }
 
-fn extract_from_list(value: &StorageValue, segments: &[PathSegment]) -> Option<StorageValue> {
+fn extract_from_list<'item>(
+    value: &'item StorageValue,
+    segments: &[PathSegment],
+) -> Option<Cow<'item, StorageValue>> {
     let StorageValue::L(list) = value else {
         return None;
     };
     if segments.is_empty() {
-        return Some(StorageValue::L(list.clone()));
+        return Some(Cow::Borrowed(value));
     }
     let mut results = Vec::new();
     for element in list {
         if let Some(value) = extract_from_value(element, segments) {
-            results.push(value);
+            results.push(value.into_owned());
         }
     }
-    Some(StorageValue::L(results))
+    Some(Cow::Owned(StorageValue::L(results)))
 }

@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 name = "analytics-api"
@@ -15,6 +16,7 @@ path = "src/main.rs"
 [features]
 default = ["bundled"]
 bundled = ["analytics-engine/bundled"]
+bdd-test-support = ["bg-jobs/test-support", "bg-jobs-tokio/test-support"]
 
 [dependencies]
 analytics-contract = { workspace = true }
@@ -22,19 +24,26 @@ analytics-engine = { workspace = true, default-features = false }
 analytics-operations = { workspace = true }
 analytics-storage = { workspace = true }
 axum = { workspace = true }
+bg-jobs = { workspace = true }
+bg-jobs-tokio = { workspace = true }
+bytes = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
 http-body-util = { workspace = true }
 jsonschema = { workspace = true }
+lambda-web-runtime = { workspace = true }
+lz4_flex = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
-regex = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+storage = { workspace = true }
+storage-types = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tower-http = { workspace = true }
+tower-http = { workspace = true, features = ["set-header"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }
@@ -44,7 +53,10 @@ alloc-counter = { workspace = true }
 analytics-fixtures = { workspace = true }
 analytics-quint-test-support = { workspace = true }
 anyhow = { workspace = true }
-http-body-util = { workspace = true }
+bg-jobs = { workspace = true, features = ["test-support"] }
+bg-jobs-tokio = { workspace = true, features = ["test-support"] }
+duckdb = { workspace = true }
+http-body-util = { workspace = true, features = ["channel"] }
 quint-connect = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }

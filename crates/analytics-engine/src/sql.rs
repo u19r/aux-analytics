@@ -1,20 +1,26 @@
-use std::env;
+use std::{borrow::Cow, env};
 
 use analytics_contract::{
     AnalyticsColumn, ClusteringKey, INTERNAL_EXPIRY_COLUMN, INTERNAL_INGESTED_AT_COLUMN,
     INTERNAL_MISSING_RETENTION_COLUMN, PartitionKey, SortOrder,
 };
-use config::{AnalyticsObjectStorageConfig, CatalogType, RemoteCredentialsConfig, StorageBackend};
+use aws_credentials::AwsStaticCredentials;
+use config::{
+    AnalyticsObjectStorageConfig, CatalogType, RemoteStaticCredentialsConfig, StorageBackend,
+};
 use duckdb::Connection;
 
-use crate::AnalyticsEngineResult;
-
-pub(crate) const SOURCE_POSITION_COLUMN: &str = "__source_position";
+use crate::{
+    AnalyticsEngineResult,
+    constants::{QUOTED_SOURCE_POSITION_COLUMN, SOURCE_POSITION_COLUMN},
+};
 
 pub(crate) fn configure_connection(
     conn: &Connection,
     backend: &StorageBackend,
+    resolved_credentials: Option<&AwsStaticCredentials>,
 ) -> AnalyticsEngineResult<()> {
+    disable_automatic_extensions(conn)?;
     configure_extension_directory(conn)?;
     if let StorageBackend::DuckLake {
         catalog,
@@ -31,28 +37,35 @@ pub(crate) fn configure_connection(
             CatalogType::AuxCatalog => {}
             CatalogType::MotherDuck => load_extension(conn, "motherduck")?,
         };
-        if let Some(object_storage) = object_storage {
-            configure_object_storage(conn, object_storage)?;
+        if let Some(object_storage) = object_storage
+            && let Some(secret) = ObjectStorageSecret::from_config(object_storage)
+        {
+            secret.create_or_replace_secret(conn, resolved_credentials)?;
         }
-        attach_ducklake_with_retry(conn, *catalog, catalog_path, data_path)?;
+        attach_ducklake_catalog(conn, *catalog, catalog_path, data_path)?;
         conn.execute("USE dlake;", [])?;
     }
     Ok(())
 }
 
-fn attach_ducklake_with_retry(
+fn disable_automatic_extensions(conn: &Connection) -> AnalyticsEngineResult<()> {
+    conn.execute_batch(
+        "SET autoinstall_known_extensions=false; SET autoload_known_extensions=false;",
+    )?;
+    Ok(())
+}
+
+fn attach_ducklake_catalog(
     conn: &Connection,
     catalog: CatalogType,
     catalog_path: &str,
     data_path: &str,
 ) -> AnalyticsEngineResult<()> {
-    match conn.execute(
+    conn.execute(
         attach_ducklake(catalog, catalog_path, data_path).as_str(),
         [],
-    ) {
-        Ok(_) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    )?;
+    Ok(())
 }
 
 fn configure_extension_directory(conn: &Connection) -> AnalyticsEngineResult<()> {
@@ -85,57 +98,99 @@ fn load_extension(conn: &Connection, extension: &str) -> AnalyticsEngineResult<(
         )?;
         return Ok(());
     }
-    match conn.execute(format!("LOAD {extension};").as_str(), []) {
-        Ok(_) => Ok(()),
-        Err(error) if duckdb_extension_missing(&error) => {
-            conn.execute(format!("INSTALL {extension};").as_str(), [])?;
-            conn.execute(format!("LOAD {extension};").as_str(), [])?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn duckdb_extension_missing(error: &duckdb::Error) -> bool {
-    let message = error.to_string();
-    message.contains("Extension")
-        && message.contains("not found")
-        && message.contains("Install it first")
-}
-
-pub(crate) fn configure_object_storage(
-    conn: &Connection,
-    object_storage: &AnalyticsObjectStorageConfig,
-) -> AnalyticsEngineResult<()> {
-    let Some(sql) = object_storage_secret_sql(object_storage) else {
-        return Ok(());
-    };
-    conn.execute(sql.as_str(), [])?;
+    conn.execute(format!("LOAD {extension};").as_str(), [])?;
     Ok(())
 }
 
-pub(crate) fn object_storage_secret_sql(
-    object_storage: &AnalyticsObjectStorageConfig,
-) -> Option<String> {
-    object_storage.bucket.as_ref()?;
-    let mut options = Vec::new();
-    if let Some(region) = object_storage.region.as_deref() {
-        options.push(format!("REGION '{}'", escape_sql_string(region)));
+#[cfg(test)]
+pub(crate) fn load_extension_for_test(
+    conn: &Connection,
+    extension: &str,
+) -> AnalyticsEngineResult<()> {
+    disable_automatic_extensions(conn)?;
+    load_extension(conn, extension)
+}
+
+/// Secret settings borrow during setup and own only native secret inputs for
+/// refresh.
+#[derive(Debug)]
+pub(crate) struct ObjectStorageSecret<'a> {
+    region: Option<Cow<'a, str>>,
+    endpoint_url: Option<Cow<'a, str>>,
+    credentials: Option<Cow<'a, RemoteStaticCredentialsConfig>>,
+}
+
+impl<'a> ObjectStorageSecret<'a> {
+    pub(crate) fn from_config(config: &'a AnalyticsObjectStorageConfig) -> Option<Self> {
+        config.bucket.as_ref()?;
+        Some(Self {
+            region: config.region.as_deref().map(Cow::Borrowed),
+            endpoint_url: config.endpoint_url.as_deref().map(Cow::Borrowed),
+            credentials: config
+                .credentials
+                .as_ref()
+                .and_then(|credentials| credentials.r#static.as_ref())
+                .map(Cow::Borrowed),
+        })
     }
-    if let Some(endpoint) = object_storage.endpoint_url.as_deref() {
-        append_endpoint_options(&mut options, endpoint);
-        options.push("URL_STYLE 'path'".to_string());
+
+    pub(crate) fn into_owned(self) -> ObjectStorageSecret<'static> {
+        ObjectStorageSecret {
+            region: self.region.map(|value| Cow::Owned(value.into_owned())),
+            endpoint_url: self
+                .endpoint_url
+                .map(|value| Cow::Owned(value.into_owned())),
+            credentials: self.credentials.map(|value| Cow::Owned(value.into_owned())),
+        }
     }
-    if let Some(credentials) = object_storage.credentials.as_ref() {
-        append_credential_options(&mut options, credentials);
+
+    pub(crate) fn create_or_replace_secret(
+        &self,
+        conn: &Connection,
+        resolved_credentials: Option<&AwsStaticCredentials>,
+    ) -> AnalyticsEngineResult<()> {
+        let Some(sql) = self.build_statement(resolved_credentials) else {
+            return Ok(());
+        };
+        conn.execute(sql.as_str(), [])?;
+        Ok(())
     }
-    if options.is_empty() {
-        return None;
+
+    pub(crate) fn build_statement(
+        &self,
+        resolved_credentials: Option<&AwsStaticCredentials>,
+    ) -> Option<String> {
+        let mut options = Vec::new();
+        if let Some(region) = self.region.as_deref() {
+            options.push(format!("REGION '{}'", escape_sql_string(region)));
+        }
+        if let Some(endpoint) = self.endpoint_url.as_deref() {
+            append_endpoint_options(&mut options, endpoint);
+            options.push("URL_STYLE 'path'".to_string());
+        }
+        if let Some(credentials) = resolved_credentials {
+            append_static_credential_options(
+                &mut options,
+                &credentials.access_key_id,
+                &credentials.secret_access_key,
+                credentials.session_token.as_deref(),
+            );
+        } else if let Some(credentials) = self.credentials.as_deref() {
+            append_static_credential_options(
+                &mut options,
+                &credentials.access_key,
+                &credentials.secret_key,
+                credentials.session_token.as_deref(),
+            );
+        }
+        if options.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "CREATE OR REPLACE SECRET aux_analytics_object_store (TYPE S3, {});",
+            options.join(", ")
+        ))
     }
-    Some(format!(
-        "CREATE OR REPLACE SECRET aux_analytics_object_store (TYPE S3, {});",
-        options.join(", ")
-    ))
 }
 
 fn append_endpoint_options(options: &mut Vec<String>, endpoint: &str) {
@@ -154,19 +209,16 @@ fn append_endpoint_options(options: &mut Vec<String>, endpoint: &str) {
     }
 }
 
-fn append_credential_options(options: &mut Vec<String>, credentials: &RemoteCredentialsConfig) {
-    if let Some(static_credentials) = credentials.r#static.as_ref() {
-        options.push(format!(
-            "KEY_ID '{}'",
-            escape_sql_string(static_credentials.access_key.as_str())
-        ));
-        options.push(format!(
-            "SECRET '{}'",
-            escape_sql_string(static_credentials.secret_key.as_str())
-        ));
-        if let Some(token) = static_credentials.session_token.as_deref() {
-            options.push(format!("SESSION_TOKEN '{}'", escape_sql_string(token)));
-        }
+fn append_static_credential_options(
+    options: &mut Vec<String>,
+    access_key: &str,
+    secret_key: &str,
+    session_token: Option<&str>,
+) {
+    options.push(format!("KEY_ID '{}'", escape_sql_string(access_key)));
+    options.push(format!("SECRET '{}'", escape_sql_string(secret_key)));
+    if let Some(token) = session_token {
+        options.push(format!("SESSION_TOKEN '{}'", escape_sql_string(token)));
     }
 }
 
@@ -219,22 +271,25 @@ pub(crate) fn manifest_column_statements(
     let table = quote_identifier(table_name);
     let mut sorted_columns = columns.iter().collect::<Vec<_>>();
     sorted_columns.sort_by(|left, right| left.column_name.cmp(&right.column_name));
-    sorted_columns
-        .into_iter()
-        .filter(|column| {
-            !matches!(
-                column.column_name.as_str(),
-                "tenant_id" | "__id" | "table_name" | SOURCE_POSITION_COLUMN
-            )
-        })
-        .map(|column| {
-            format!(
-                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {} {};",
-                quote_identifier(column.column_name.as_str()),
-                column.column_type.duckdb_type()
-            )
-        })
-        .collect()
+    let mut statements = Vec::with_capacity(sorted_columns.len());
+    statements.extend(
+        sorted_columns
+            .into_iter()
+            .filter(|column| {
+                !matches!(
+                    column.column_name.as_str(),
+                    "tenant_id" | "__id" | "table_name" | SOURCE_POSITION_COLUMN
+                )
+            })
+            .map(|column| {
+                format!(
+                    "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {} {};",
+                    quote_identifier(column.column_name.as_str()),
+                    column.column_type.duckdb_type()
+                )
+            }),
+    );
+    statements
 }
 
 pub(crate) fn retention_column_statements(table_name: &str) -> Vec<String> {
@@ -259,20 +314,19 @@ pub(crate) fn source_position_column_statement(table_name: &str) -> String {
     format!(
         "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} JSON;",
         quote_identifier(table_name),
-        quote_identifier(SOURCE_POSITION_COLUMN)
+        QUOTED_SOURCE_POSITION_COLUMN
     )
 }
 
-pub(crate) fn delete_expired_rows(table_name: &str) -> String {
+pub(crate) fn expired_retention_count(table_name: &str) -> String {
     format!(
-        "DELETE FROM {table}
-         WHERE rowid IN (
-            SELECT rowid FROM {table}
-            WHERE {expiry} IS NOT NULL AND {expiry} <= ?
-            LIMIT ?
-         )",
+        "SELECT count(*) FROM {table}
+         WHERE {expiry} IS NOT NULL
+           AND {expiry} <= ?
+           AND {missing} = false",
         table = quote_identifier(table_name),
-        expiry = quote_identifier(INTERNAL_EXPIRY_COLUMN)
+        expiry = quote_identifier(INTERNAL_EXPIRY_COLUMN),
+        missing = quote_identifier(INTERNAL_MISSING_RETENTION_COLUMN)
     )
 }
 
@@ -348,10 +402,10 @@ pub(crate) fn alter_table_sorted_by(
 
 pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_path: &str) -> String {
     let catalog_reference = ducklake_catalog_reference(catalog, catalog_path);
-    let meta_type = ducklake_meta_type(catalog);
+    let metadata_options = ducklake_metadata_options(catalog);
     let data_inlining_row_limit = ducklake_data_inlining_row_limit(catalog);
     format!(
-        "ATTACH 'ducklake:{}' AS dlake (DATA_PATH '{}'{meta_type}, ENCRYPTED, \
+        "ATTACH 'ducklake:{}' AS dlake (DATA_PATH '{}'{metadata_options}, ENCRYPTED, \
          DATA_INLINING_ROW_LIMIT {data_inlining_row_limit}, AUTOMATIC_MIGRATION true);",
         escape_sql_string(catalog_reference.as_str()),
         escape_sql_string(data_path),
@@ -360,8 +414,8 @@ pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_pat
 
 const fn ducklake_data_inlining_row_limit(catalog: CatalogType) -> usize {
     match catalog {
-        CatalogType::AuxCatalog => 100,
-        CatalogType::Sqlite | CatalogType::MotherDuck => 0,
+        CatalogType::AuxCatalog | CatalogType::Sqlite => 100,
+        CatalogType::MotherDuck => 0,
     }
 }
 
@@ -376,10 +430,13 @@ fn ducklake_catalog_reference(catalog: CatalogType, catalog_path: &str) -> Strin
     }
 }
 
-fn ducklake_meta_type(catalog: CatalogType) -> &'static str {
+fn ducklake_metadata_options(catalog: CatalogType) -> &'static str {
     match catalog {
         CatalogType::AuxCatalog => ", META_TYPE 'aux_catalog'",
-        CatalogType::Sqlite | CatalogType::MotherDuck => "",
+        // Metadata reads must not block schema/ingestion commits in another
+        // session.
+        CatalogType::Sqlite => ", META_JOURNAL_MODE 'WAL'",
+        CatalogType::MotherDuck => "",
     }
 }
 

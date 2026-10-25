@@ -112,8 +112,8 @@ Use aux-analytics ingestion time:
 }
 ```
 
-Aux Analytics stores `__expiry` and the periodic retention sweeper deletes rows
-where `__expiry` is in the past.
+Aux Analytics stores `__expiry`, and scheduled retention jobs delete rows where
+`__expiry` is in the past.
 
 ## Dynamic Tenant Retention
 
@@ -131,7 +131,6 @@ Aux-storage `GetItem` example:
       "enabled": true,
       "sweep_interval_ms": 60000,
       "delete_batch_size": 500,
-      "delete_batch_pause_ms": 250,
       "tables": [
         {
           "analytics_table_name": "audit_events",
@@ -354,9 +353,9 @@ set `tenant_id` directly.
   "version": 1,
   "tables": [
     {
-      "source_table_name": "customer_42_items",
-      "analytics_table_name": "customer_items",
-      "tenant_id": "customer_42",
+      "source_table_name": "workspace_42_items",
+      "analytics_table_name": "workspace_items",
+      "tenant_id": "workspace_42",
       "row_identity": { "kind": "stream_keys" },
       "document_column": "item"
     }
@@ -682,9 +681,9 @@ can refer to projected columns or built-in columns such as `tenant_id`.
 }
 ```
 
-## Complex Aux-Fn Style Manifest
+## Complex Application-Owned Manifest
 
-Aux-fn exports a manifest from product-owned table registrations. A typical
+An application exports a manifest from its table registrations. A typical
 table keeps the full item, projects analytics-friendly columns, uses a fixed
 tenant id supplied by registration, and adds DuckLake layout hints:
 

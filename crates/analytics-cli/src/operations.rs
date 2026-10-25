@@ -1,4 +1,10 @@
-use analytics_operations::{OperationEvent, OperationId, OperationStore, StoredOperation};
+use std::{fs, path::Path};
+
+use analytics_operations::{
+    MaintenanceOperations, MaintenanceRequest, OperationActor, OperationEvent, OperationId,
+    OperationStore, StoredOperation,
+};
+use serde::Serialize;
 
 use crate::{
     error::CliResult,
@@ -7,6 +13,23 @@ use crate::{
 
 pub(crate) fn run_operations_command(command: OperationsCommand) -> CliResult<String> {
     match command {
+        OperationsCommand::Submit {
+            request,
+            duckdb,
+            output,
+        } => {
+            let request = read_maintenance_request(request.as_path())?;
+            let store = OperationStore::connect_duckdb(duckdb)?;
+            let actor = OperationActor::try_new("cli")?;
+            let submission = MaintenanceOperations::new(&store).submit(&request, &actor)?;
+            match output {
+                OperationsOutputArg::Json => pretty_json(&submission),
+                OperationsOutputArg::Text => Ok(format!(
+                    "maintenance operation {} {:?}",
+                    submission.operation_id, submission.outcome
+                )),
+            }
+        }
         OperationsCommand::List { duckdb, output } => {
             let store = OperationStore::connect_duckdb(duckdb)?;
             let operations = store.list_operations()?;
@@ -18,7 +41,7 @@ pub(crate) fn run_operations_command(command: OperationsCommand) -> CliResult<St
             output,
         } => {
             let store = OperationStore::connect_duckdb(duckdb)?;
-            let operation_id = OperationId::new(operation_id)?;
+            let operation_id = OperationId::try_new(operation_id)?;
             let operation = store.show_operation(&operation_id)?;
             render_operation_status(&operation, output)
         }
@@ -28,7 +51,7 @@ pub(crate) fn run_operations_command(command: OperationsCommand) -> CliResult<St
             output,
         } => {
             let store = OperationStore::connect_duckdb(duckdb)?;
-            let operation_id = OperationId::new(operation_id)?;
+            let operation_id = OperationId::try_new(operation_id)?;
             let events = store.audit_events(&operation_id)?;
             render_audit_events(&events, output)
         }
@@ -38,10 +61,11 @@ pub(crate) fn run_operations_command(command: OperationsCommand) -> CliResult<St
             output,
         } => {
             let store = OperationStore::connect_duckdb(duckdb)?;
-            let operation_id = OperationId::new(operation_id)?;
-            store.request_cancellation(&operation_id)?;
+            let operation_id = OperationId::try_new(operation_id)?;
+            let actor = OperationActor::try_new("cli")?;
+            MaintenanceOperations::new(&store).request_cancellation(&operation_id, &actor)?;
             match output {
-                OperationsOutputArg::Json => pretty_json_value(&serde_json::json!({
+                OperationsOutputArg::Json => pretty_json(&serde_json::json!({
                     "operation_id": operation_id.as_str(),
                     "cancellation_requested": true
                 })),
@@ -54,12 +78,16 @@ pub(crate) fn run_operations_command(command: OperationsCommand) -> CliResult<St
     }
 }
 
+fn read_maintenance_request(path: &Path) -> CliResult<MaintenanceRequest> {
+    Ok(serde_json::from_str(fs::read_to_string(path)?.as_str())?)
+}
+
 fn render_operations_list(
     operations: &[StoredOperation],
     output: OperationsOutputArg,
 ) -> CliResult<String> {
     match output {
-        OperationsOutputArg::Json => pretty_json_value(&serde_json::to_value(operations)?),
+        OperationsOutputArg::Json => pretty_json(operations),
         OperationsOutputArg::Text => {
             if operations.is_empty() {
                 return Ok("no operations".to_string());
@@ -87,7 +115,7 @@ fn render_operation_status(
     output: OperationsOutputArg,
 ) -> CliResult<String> {
     match output {
-        OperationsOutputArg::Json => pretty_json_value(&serde_json::to_value(operation)?),
+        OperationsOutputArg::Json => pretty_json(operation),
         OperationsOutputArg::Text => {
             let cursor = operation.cursor.as_ref().map_or_else(
                 || "none".to_string(),
@@ -113,7 +141,7 @@ fn render_audit_events(
     output: OperationsOutputArg,
 ) -> CliResult<String> {
     match output {
-        OperationsOutputArg::Json => pretty_json_value(&serde_json::to_value(events)?),
+        OperationsOutputArg::Json => pretty_json(events),
         OperationsOutputArg::Text => {
             if events.is_empty() {
                 return Ok("no audit events".to_string());
@@ -133,6 +161,6 @@ fn render_audit_events(
     }
 }
 
-fn pretty_json_value(value: &serde_json::Value) -> CliResult<String> {
+fn pretty_json<T: Serialize + ?Sized>(value: &T) -> CliResult<String> {
     Ok(serde_json::to_string_pretty(value)?)
 }

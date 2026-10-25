@@ -1,42 +1,51 @@
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, HashMap},
-};
-
-use analytics_contract::{PrivacyPolicy, StorageStreamRecord, StorageValue};
+use analytics_contract::{PrivacyPolicy, StorageItem, StorageStreamRecord, StorageValue};
 
 use crate::{
-    FilesystemRawBackupStore, OperationId, RawBackupCompression, RawBackupEncryption,
-    RawBackupError, RawBackupObjectId, RawBackupObjectLayout, RawBackupObjectStore,
-    RawBackupRecord, RawBackupWriteRequest, S3CompatibleObjectClient, S3CompatibleRawBackupStore,
+    FilesystemRawBackupStore, OperationId, RAW_BACKUP_SCHEMA_VERSION, RawBackupCompression,
+    RawBackupEncryption, RawBackupError, RawBackupObjectId, RawBackupObjectLayout,
+    RawBackupObjectStore, RawBackupRecord, RawBackupWriteRequest,
 };
 
 #[test]
 fn given_path_traversal_object_id_when_created_then_it_is_rejected() {
     for object_id in ["../outside", "nested/object", r"C:\\outside", ".", ".."] {
         assert!(matches!(
-            RawBackupObjectId::new(object_id),
+            RawBackupObjectId::try_new(object_id),
             Err(RawBackupError::UnsafeObjectId)
         ));
     }
 }
 
 #[test]
+fn given_relative_filesystem_root_when_writing_then_the_store_boundary_rejects_it() {
+    let store = FilesystemRawBackupStore::new("relative-raw-backup-root");
+    let error = store
+        .write_fixture_object(&write_request(
+            "relative_root_operation",
+            "relative_root_object",
+            "user-1",
+        ))
+        .unwrap_err();
+
+    assert!(matches!(error, RawBackupError::RelativeStoreRoot));
+}
+
+#[test]
 fn given_records_when_filesystem_backup_writes_then_index_tracks_checksum_and_replay_records() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_1").unwrap(),
-        RawBackupObjectId::new("users_0001").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_1").unwrap(),
+        RawBackupObjectId::try_new("users_0001").unwrap(),
         "source_users",
         Some("policy-v1".to_string()),
         vec![backup_record("users", "user-1", "ada@example.test")],
     )
     .unwrap();
 
-    let index = store.write_object(&request).unwrap();
+    let index = store.write_fixture_object(&request).unwrap();
     let persisted_index = store
-        .read_index(&RawBackupObjectId::new("users_0001").unwrap())
+        .read_index(&RawBackupObjectId::try_new("users_0001").unwrap())
         .unwrap();
     let replayed = store.replay_object(&index).unwrap();
 
@@ -55,13 +64,13 @@ fn given_write_report_requested_when_backup_writes_then_metrics_are_emitted() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
     let object_id = RawBackupObjectId::for_operation(
-        &OperationId::new("backup/metrics").unwrap(),
+        &OperationId::try_new("backup/metrics").unwrap(),
         "source users",
         7,
     )
     .unwrap();
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_metrics").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_metrics").unwrap(),
         object_id.clone(),
         "source_users",
         Some("policy-v1".to_string()),
@@ -70,7 +79,7 @@ fn given_write_report_requested_when_backup_writes_then_metrics_are_emitted() {
     .unwrap()
     .with_policy_dropped_records(2);
 
-    let report = store.write_object_report(&request).unwrap();
+    let report = store.write_fixture_object_report(&request).unwrap();
     let replay = store.replay_object_report(&report.index).unwrap();
 
     assert_eq!(
@@ -86,12 +95,27 @@ fn given_write_report_requested_when_backup_writes_then_metrics_are_emitted() {
 }
 
 #[test]
+fn given_unsafe_operation_and_source_parts_when_object_id_is_built_then_parts_are_sanitized() {
+    let object_id = RawBackupObjectId::for_operation(
+        &OperationId::try_new("backup/with spaces").unwrap(),
+        r"source/users\archive",
+        u64::MAX,
+    )
+    .unwrap();
+
+    assert_eq!(
+        object_id.as_str(),
+        "backup_with_spaces_source_users_archive_18446744073709551615"
+    );
+}
+
+#[test]
 fn given_run_length_compression_when_backup_replays_then_records_are_restored() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_compressed").unwrap(),
-        RawBackupObjectId::new("users_compressed").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_compressed").unwrap(),
+        RawBackupObjectId::try_new("users_compressed").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "aaaaaaaaaaaaaaaa")],
@@ -102,7 +126,7 @@ fn given_run_length_compression_when_backup_replays_then_records_are_restored() 
         ..RawBackupObjectLayout::default()
     });
 
-    let report = store.write_object_report(&request).unwrap();
+    let report = store.write_fixture_object_report(&request).unwrap();
     let replay = store.replay_object_report(&report.index).unwrap();
 
     assert_eq!(
@@ -114,9 +138,9 @@ fn given_run_length_compression_when_backup_replays_then_records_are_restored() 
 
 #[test]
 fn given_empty_external_encryption_key_when_request_built_then_it_is_rejected() {
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_encrypted").unwrap(),
-        RawBackupObjectId::new("users_encrypted").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_encrypted").unwrap(),
+        RawBackupObjectId::try_new("users_encrypted").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "ada@example.test")],
@@ -130,7 +154,7 @@ fn given_empty_external_encryption_key_when_request_built_then_it_is_rejected() 
     });
 
     let error = FilesystemRawBackupStore::new(tempfile::tempdir().unwrap().path())
-        .write_object(&request)
+        .write_fixture_object(&request)
         .unwrap_err();
 
     assert!(matches!(error, RawBackupError::EmptyEncryptionKeyId));
@@ -141,16 +165,16 @@ fn given_small_backup_objects_when_compacted_then_source_object_ids_are_preserve
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
     let first = store
-        .write_object(&write_request("backup_compact", "users_1", "user-1"))
+        .write_fixture_object(&write_request("backup_compact", "users_1", "user-1"))
         .unwrap();
     let second = store
-        .write_object(&write_request("backup_compact", "users_2", "user-2"))
+        .write_fixture_object(&write_request("backup_compact", "users_2", "user-2"))
         .unwrap();
 
     let compacted = store
         .compact_objects(
-            OperationId::new("backup_compact").unwrap(),
-            RawBackupObjectId::new("users_compacted").unwrap(),
+            OperationId::try_new("backup_compact").unwrap(),
+            RawBackupObjectId::try_new("users_compacted").unwrap(),
             "source_users",
             None,
             &[first.clone(), second.clone()],
@@ -171,8 +195,8 @@ fn given_filesystem_store_when_used_as_object_store_trait_then_backup_round_trip
     let store = FilesystemRawBackupStore::new(tempdir.path());
     let object_store: &dyn RawBackupObjectStore = &store;
 
-    let report = object_store
-        .write_object_report(&write_request("backup_trait", "users_trait", "user-1"))
+    let report = store
+        .write_fixture_object_report(&write_request("backup_trait", "users_trait", "user-1"))
         .unwrap();
     let replay = object_store.replay_object_report(&report.index).unwrap();
 
@@ -180,110 +204,251 @@ fn given_filesystem_store_when_used_as_object_store_trait_then_backup_round_trip
 }
 
 #[test]
-fn given_s3_compatible_store_when_backup_writes_then_object_and_index_round_trip() {
-    let client = InMemoryS3Client::default();
-    let store = S3CompatibleRawBackupStore::new("analytics-backups", "raw/prefix", client).unwrap();
-    let request = write_request("backup_s3", "users_s3", "user-1");
-
-    let report = store.write_object_report(&request).unwrap();
-    let index = store
-        .read_index(&RawBackupObjectId::new("users_s3").unwrap())
-        .unwrap();
-    let replay = store.replay_object_report(&report.index).unwrap();
-
-    assert_eq!(index, report.index);
-    assert_eq!(
-        report.index.object_path,
-        "s3://analytics-backups/raw/prefix/users_s3.jsonl"
-    );
-    assert_eq!(
-        report.index.index_path,
-        "s3://analytics-backups/raw/prefix/users_s3.index.json"
-    );
-    assert_eq!(replay.records.len(), 1);
-}
-
-#[test]
-fn given_s3_compatible_store_when_object_exists_then_collision_is_rejected() {
-    let client = InMemoryS3Client::default();
-    let store = S3CompatibleRawBackupStore::new("analytics-backups", "raw", client).unwrap();
-    let request = write_request("backup_s3_collision", "users_s3_collision", "user-1");
-
-    store.write_object_report(&request).unwrap();
-    let error = store.write_object_report(&request).unwrap_err();
-
-    assert!(
-        matches!(error, RawBackupError::ObjectAlreadyExists(key) if key == "raw/users_s3_collision.jsonl")
-    );
-}
-
-#[test]
-fn given_empty_s3_bucket_when_store_created_then_it_is_rejected() {
-    let error =
-        S3CompatibleRawBackupStore::new(" ", "raw", InMemoryS3Client::default()).unwrap_err();
-
-    assert!(matches!(error, RawBackupError::ObjectStore(message) if message.contains("bucket")));
-}
-
-#[test]
-fn given_existing_object_when_backup_writes_again_then_collision_is_rejected() {
+fn given_existing_object_when_backup_writes_again_then_publication_is_idempotent() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_4").unwrap(),
-        RawBackupObjectId::new("users_0004").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_4").unwrap(),
+        RawBackupObjectId::try_new("users_0004").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "ada@example.test")],
     )
     .unwrap();
 
-    store.write_object(&request).unwrap();
-    let error = store.write_object(&request).unwrap_err();
+    let first = store.write_fixture_object_report(&request).unwrap();
+    let second = store.write_fixture_object_report(&request).unwrap();
 
-    assert!(matches!(
-        error,
-        RawBackupError::Io(error) if error.kind() == std::io::ErrorKind::AlreadyExists
-    ));
+    assert_eq!(second, first);
 }
 
-#[derive(Debug, Default, Clone)]
-struct InMemoryS3Client {
-    objects: std::rc::Rc<RefCell<BTreeMap<String, Vec<u8>>>>,
+#[test]
+fn given_index_failure_after_object_write_when_retried_then_publication_reconciles() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let request = write_request("backup_index_failure", "users_index_failure", "user-1");
+    let index_path = tempdir.path().join("users_index_failure.index.json");
+
+    std::fs::create_dir(index_path.as_path()).unwrap();
+    assert!(store.write_fixture_object_report(&request).is_err());
+    assert!(tempdir.path().join("users_index_failure.jsonl").is_file());
+    assert!(
+        tempdir
+            .path()
+            .join(".users_index_failure.publish.json")
+            .is_file()
+    );
+
+    std::fs::remove_dir(index_path.as_path()).unwrap();
+    let report = store.write_fixture_object_report(&request).unwrap();
+
+    assert_eq!(store.read_index(&request.object_id).unwrap(), report.index);
+    assert!(
+        !tempdir
+            .path()
+            .join(".users_index_failure.publish.json")
+            .exists()
+    );
 }
 
-impl S3CompatibleObjectClient for InMemoryS3Client {
-    fn put_object_if_absent(&self, key: &str, bytes: &[u8]) -> crate::RawBackupResult<()> {
-        let mut objects = self.objects.borrow_mut();
-        if objects.contains_key(key) {
-            return Err(RawBackupError::ObjectAlreadyExists(key.to_string()));
-        }
-        objects.insert(key.to_string(), bytes.to_vec());
-        Ok(())
-    }
+#[test]
+fn given_cleanup_failure_midway_when_progress_is_reopened_then_completed_objects_are_skipped() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let first = store
+        .write_fixture_object_report(&write_request("cleanup_resume", "cleanup-first", "user-1"))
+        .unwrap()
+        .index;
+    let second = store
+        .write_fixture_object_report(&write_request("cleanup_resume", "cleanup-second", "user-2"))
+        .unwrap()
+        .index;
+    let operation_id = OperationId::try_new("cleanup_resume").unwrap();
+    let mut progress = store
+        .begin_cleanup_progress(
+            &operation_id,
+            &[first.object_id.clone(), second.object_id.clone()],
+        )
+        .unwrap();
 
-    fn get_object(&self, key: &str) -> crate::RawBackupResult<Vec<u8>> {
-        self.objects
-            .borrow()
-            .get(key)
-            .cloned()
-            .ok_or_else(|| RawBackupError::ObjectStore(format!("missing object {key}")))
-    }
+    store.delete_object_if_present(&first).unwrap();
+    progress.completed_object_ids.push(first.object_id.clone());
+    store.save_cleanup_progress(&progress).unwrap();
+
+    std::fs::remove_file(tempdir.path().join("cleanup-second.jsonl")).unwrap();
+    std::fs::remove_file(tempdir.path().join("cleanup-second.index.json")).unwrap();
+    std::fs::create_dir(tempdir.path().join("cleanup-second.index.json")).unwrap();
+    assert!(store.delete_object_if_present(&second).is_err());
+
+    let reopened = store.load_cleanup_progress(&operation_id).unwrap().unwrap();
+    assert_eq!(reopened.completed_object_ids, vec![first.object_id.clone()]);
+    assert!(reopened.completed_object_ids.contains(&first.object_id));
+    assert!(!reopened.completed_object_ids.contains(&second.object_id));
+
+    std::fs::remove_dir(tempdir.path().join("cleanup-second.index.json")).unwrap();
+    store.delete_object_if_present(&second).unwrap();
+    progress.completed_object_ids.push(second.object_id.clone());
+    store.save_cleanup_progress(&progress).unwrap();
+    store.clear_cleanup_progress(&operation_id).unwrap();
+    assert!(
+        store
+            .load_cleanup_progress(&operation_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn given_cleanup_progress_is_modified_on_disk_when_loading_cleanup_progress_then_integrity_check_rejects_it()
+ {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let operation_id = OperationId::try_new("cleanup_integrity").unwrap();
+    let object_id = RawBackupObjectId::try_new("cleanup-integrity-object").unwrap();
+    store
+        .begin_cleanup_progress(&operation_id, std::slice::from_ref(&object_id))
+        .unwrap();
+    let progress_path = std::fs::read_dir(tempdir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".privacy-cleanup-"))
+        })
+        .expect("cleanup progress path");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(progress_path.as_path()).unwrap()).unwrap();
+    document["checksum"] = serde_json::Value::String("fnv1a64:0000000000000000".to_string());
+    std::fs::write(
+        progress_path.as_path(),
+        serde_json::to_vec_pretty(&document).unwrap(),
+    )
+    .unwrap();
+
+    let error = store.load_cleanup_progress(&operation_id).unwrap_err();
+
+    assert!(matches!(error, RawBackupError::CleanupProgressIntegrity));
+}
+
+#[test]
+fn given_corrupt_existing_quarantine_when_retried_then_source_is_not_deleted() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let quarantine_dir = tempfile::tempdir().unwrap();
+    let source = FilesystemRawBackupStore::new(source_dir.path());
+    let quarantine = FilesystemRawBackupStore::new(quarantine_dir.path());
+    let index = source
+        .write_fixture_object(&write_request(
+            "quarantine_integrity",
+            "tainted-source",
+            "user-1",
+        ))
+        .unwrap();
+
+    let quarantine_index = source.quarantine_object(&index, &quarantine).unwrap();
+    std::fs::write(quarantine_index.object_path.as_str(), b"corrupt\n").unwrap();
+
+    let error = source.quarantine_object(&index, &quarantine).unwrap_err();
+
+    assert!(matches!(error, RawBackupError::ChecksumMismatch { .. }));
+    assert!(std::path::Path::new(index.object_path.as_str()).is_file());
+    assert!(std::path::Path::new(index.index_path.as_str()).is_file());
+}
+
+#[test]
+fn given_source_object_changes_before_quarantine_when_quarantining_backup_then_copy_is_rejected() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let quarantine_dir = tempfile::tempdir().unwrap();
+    let source = FilesystemRawBackupStore::new(source_dir.path());
+    let quarantine = FilesystemRawBackupStore::new(quarantine_dir.path());
+    let index = source
+        .write_fixture_object(&write_request(
+            "quarantine_source_integrity",
+            "tainted-source",
+            "user-1",
+        ))
+        .unwrap();
+    std::fs::write(index.object_path.as_str(), b"corrupt\n").unwrap();
+
+    let error = source.quarantine_object(&index, &quarantine).unwrap_err();
+
+    assert!(matches!(error, RawBackupError::ChecksumMismatch { .. }));
+    assert!(std::path::Path::new(index.object_path.as_str()).is_file());
+    assert!(
+        !quarantine_dir
+            .path()
+            .join("quarantine_tainted-source.index.json")
+            .is_file()
+    );
+}
+
+#[test]
+fn given_quarantine_index_failure_after_object_write_when_retried_then_publication_reconciles() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let quarantine_dir = tempfile::tempdir().unwrap();
+    let source = FilesystemRawBackupStore::new(source_dir.path());
+    let quarantine = FilesystemRawBackupStore::new(quarantine_dir.path());
+    let index = source
+        .write_fixture_object(&write_request(
+            "quarantine_index_failure",
+            "tainted-source",
+            "user-1",
+        ))
+        .unwrap();
+    let quarantine_object_id = RawBackupObjectId::try_new("quarantine_tainted-source").unwrap();
+    std::fs::create_dir(
+        quarantine_dir
+            .path()
+            .join(format!("{}.index.json", quarantine_object_id.as_str())),
+    )
+    .unwrap();
+
+    assert!(source.quarantine_object(&index, &quarantine).is_err());
+    assert!(
+        quarantine_dir
+            .path()
+            .join(format!("{}.jsonl", quarantine_object_id.as_str()))
+            .is_file()
+    );
+    assert!(
+        quarantine_dir
+            .path()
+            .join(format!(".{}.publish.json", quarantine_object_id.as_str()))
+            .is_file()
+    );
+
+    std::fs::remove_dir(
+        quarantine_dir
+            .path()
+            .join(format!("{}.index.json", quarantine_object_id.as_str())),
+    )
+    .unwrap();
+    let quarantined = source.quarantine_object(&index, &quarantine).unwrap();
+
+    assert!(std::path::Path::new(quarantined.index_path.as_str()).is_file());
+    assert!(
+        !quarantine_dir
+            .path()
+            .join(format!(".{}.publish.json", quarantine_object_id.as_str()))
+            .exists()
+    );
+    assert!(std::path::Path::new(index.object_path.as_str()).is_file());
+    assert!(std::path::Path::new(index.index_path.as_str()).is_file());
 }
 
 #[test]
 fn given_corrupt_backup_object_when_replayed_then_checksum_failure_is_reported() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_2").unwrap(),
-        RawBackupObjectId::new("users_0002").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_2").unwrap(),
+        RawBackupObjectId::try_new("users_0002").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "ada@example.test")],
     )
     .unwrap();
-    let index = store.write_object(&request).unwrap();
+    let index = store.write_fixture_object(&request).unwrap();
     std::fs::write(index.object_path.as_str(), b"corrupt\n").unwrap();
 
     let error = store.replay_object(&index).unwrap_err();
@@ -299,7 +464,7 @@ fn given_tampered_filesystem_index_paths_when_replayed_then_it_is_rejected() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
     let index = store
-        .write_object(&write_request("backup_path", "users_path", "user-1"))
+        .write_fixture_object(&write_request("backup_path", "users_path", "user-1"))
         .unwrap();
     let mut tampered = index.clone();
     tampered.object_path = tempdir
@@ -317,15 +482,15 @@ fn given_tampered_filesystem_index_paths_when_replayed_then_it_is_rejected() {
 fn given_corrupt_backup_object_when_verified_then_checksum_failure_metrics_are_reported() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_verify").unwrap(),
-        RawBackupObjectId::new("users_verify").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_verify").unwrap(),
+        RawBackupObjectId::try_new("users_verify").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "ada@example.test")],
     )
     .unwrap();
-    let index = store.write_object(&request).unwrap();
+    let index = store.write_fixture_object(&request).unwrap();
     std::fs::write(index.object_path.as_str(), b"corrupt\n").unwrap();
 
     let report = store.verify_object_report(&index).unwrap();
@@ -340,9 +505,9 @@ fn given_corrupt_backup_object_when_verified_then_checksum_failure_metrics_are_r
 
 #[test]
 fn given_empty_records_when_write_request_built_then_it_is_rejected() {
-    let error = RawBackupWriteRequest::new(
-        OperationId::new("backup_3").unwrap(),
-        RawBackupObjectId::new("users_0003").unwrap(),
+    let error = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_3").unwrap(),
+        RawBackupObjectId::try_new("users_0003").unwrap(),
         "source_users",
         None,
         Vec::new(),
@@ -353,13 +518,88 @@ fn given_empty_records_when_write_request_built_then_it_is_rejected() {
 }
 
 #[test]
+fn given_unsupported_schema_version_when_write_request_is_validated_then_it_is_rejected() {
+    let request = write_request("backup_schema", "users_schema", "user-1").with_layout(
+        RawBackupObjectLayout {
+            schema_version: RAW_BACKUP_SCHEMA_VERSION + 1,
+            ..RawBackupObjectLayout::default()
+        },
+    );
+
+    match request.validate() {
+        Err(RawBackupError::UnsupportedSchemaVersion { expected, actual }) => {
+            assert_eq!(expected, RAW_BACKUP_SCHEMA_VERSION);
+            assert_eq!(actual, RAW_BACKUP_SCHEMA_VERSION + 1);
+        }
+        other => panic!("expected unsupported schema version, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_unsupported_schema_version_when_index_is_read_then_it_is_rejected() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let object_id = RawBackupObjectId::try_new("users_schema_read").unwrap();
+    let index = store
+        .write_fixture_object(&write_request(
+            "backup_schema_read",
+            object_id.as_str(),
+            "user-1",
+        ))
+        .unwrap();
+    let mut persisted = serde_json::to_value(&index).unwrap();
+    persisted["layout"]["schema_version"] = serde_json::json!(RAW_BACKUP_SCHEMA_VERSION + 1);
+    std::fs::write(
+        index.index_path.as_str(),
+        serde_json::to_vec(&persisted).unwrap(),
+    )
+    .unwrap();
+
+    match store.read_index(&object_id) {
+        Err(RawBackupError::UnsupportedSchemaVersion { expected, actual }) => {
+            assert_eq!(expected, RAW_BACKUP_SCHEMA_VERSION);
+            assert_eq!(actual, RAW_BACKUP_SCHEMA_VERSION + 1);
+        }
+        other => panic!("expected unsupported schema version, got {other:?}"),
+    }
+}
+
+#[test]
+fn given_index_with_a_different_embedded_object_id_when_read_then_it_is_rejected() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let requested = store
+        .write_fixture_object(&write_request("backup_id_mismatch_a", "object_a", "user-a"))
+        .unwrap();
+    let other = store
+        .write_fixture_object(&write_request("backup_id_mismatch_b", "object_b", "user-b"))
+        .unwrap();
+    let mut tampered = serde_json::to_value(&requested).unwrap();
+    tampered["object_id"] = serde_json::json!(other.object_id.as_str());
+    std::fs::write(
+        requested.index_path.as_str(),
+        serde_json::to_vec(&tampered).unwrap(),
+    )
+    .unwrap();
+
+    let error = store.read_index(&requested.object_id).unwrap_err();
+
+    assert!(matches!(
+        error,
+        RawBackupError::ObjectIdMismatch { requested: actual_requested, actual }
+            if actual_requested == requested.object_id && actual == other.object_id
+    ));
+    assert_eq!(store.read_index(&other.object_id).unwrap(), other);
+}
+
+#[test]
 fn given_privacy_policy_when_backup_request_filtered_then_denied_fields_are_removed() {
-    let policy = PrivacyPolicy::new("privacy-v2")
+    let policy = PrivacyPolicy::try_new("privacy-v2")
         .unwrap()
         .with_denied_key_name("email");
-    let request = RawBackupWriteRequest::new(
-        OperationId::new("backup_privacy").unwrap(),
-        RawBackupObjectId::new("users_privacy").unwrap(),
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_privacy").unwrap(),
+        RawBackupObjectId::try_new("users_privacy").unwrap(),
         "source_users",
         None,
         vec![backup_record("users", "user-1", "ada@example.test")],
@@ -378,14 +618,70 @@ fn given_privacy_policy_when_backup_request_filtered_then_denied_fields_are_remo
 }
 
 #[test]
+fn given_privacy_policy_denies_record_identity_when_backup_request_filtered_then_it_fails_closed() {
+    let policy = PrivacyPolicy::try_new("privacy-identity")
+        .unwrap()
+        .with_denied_key_name("user-1");
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_privacy_identity").unwrap(),
+        RawBackupObjectId::try_new("users_privacy_identity").unwrap(),
+        "source_users",
+        None,
+        vec![backup_record("users", "user-1", "ada@example.test")],
+    )
+    .unwrap();
+
+    let error = request.with_privacy_policy(&policy).unwrap_err();
+
+    assert!(matches!(error, RawBackupError::PrivacyIdentityDenied));
+}
+
+#[test]
+fn given_value_regex_when_backup_request_filtered_then_old_and_new_images_are_filtered() {
+    let policy = PrivacyPolicy::try_new("privacy-v3")
+        .unwrap()
+        .with_denied_value_regex("private");
+    let mut record = backup_record("users", "user-1", "private@example.test");
+    record.record.old_image = record.record.new_image.clone();
+    let request = RawBackupWriteRequest::try_new(
+        OperationId::try_new("backup_privacy_regex").unwrap(),
+        RawBackupObjectId::try_new("users_privacy_regex").unwrap(),
+        "source_users",
+        None,
+        vec![record],
+    )
+    .unwrap()
+    .with_privacy_policy(&policy)
+    .unwrap();
+
+    assert_eq!(request.policy_dropped_records, 2);
+    assert!(
+        !request.records[0]
+            .record
+            .old_image
+            .as_ref()
+            .unwrap()
+            .contains_key("email")
+    );
+    assert!(
+        !request.records[0]
+            .record
+            .new_image
+            .as_ref()
+            .unwrap()
+            .contains_key("email")
+    );
+}
+
+#[test]
 fn given_privacy_policy_when_backup_replayed_then_denied_fields_are_removed_from_replay() {
     let tempdir = tempfile::tempdir().unwrap();
     let store = FilesystemRawBackupStore::new(tempdir.path());
     let write = store
-        .write_object_report(
-            &RawBackupWriteRequest::new(
-                OperationId::new("backup_replay_privacy").unwrap(),
-                RawBackupObjectId::new("users_replay_privacy").unwrap(),
+        .write_fixture_object_report(
+            &RawBackupWriteRequest::try_new(
+                OperationId::try_new("backup_replay_privacy").unwrap(),
+                RawBackupObjectId::try_new("users_replay_privacy").unwrap(),
                 "source_users",
                 None,
                 vec![backup_record("users", "user-1", "private@example.test")],
@@ -393,7 +689,7 @@ fn given_privacy_policy_when_backup_replayed_then_denied_fields_are_removed_from
             .unwrap(),
         )
         .unwrap();
-    let policy = PrivacyPolicy::new("privacy-v2")
+    let policy = PrivacyPolicy::try_new("privacy-v2")
         .unwrap()
         .with_denied_key_name("email");
 
@@ -407,8 +703,36 @@ fn given_privacy_policy_when_backup_replayed_then_denied_fields_are_removed_from
     assert!(!new_image.contains_key("email"));
 }
 
+#[test]
+fn given_privacy_policy_denies_replayed_record_identity_when_replaying_backup_then_replay_fails_closed()
+ {
+    let tempdir = tempfile::tempdir().unwrap();
+    let store = FilesystemRawBackupStore::new(tempdir.path());
+    let write = store
+        .write_fixture_object_report(
+            &RawBackupWriteRequest::try_new(
+                OperationId::try_new("backup_replay_identity").unwrap(),
+                RawBackupObjectId::try_new("users_replay_identity").unwrap(),
+                "source_users",
+                None,
+                vec![backup_record("users", "user-1", "private@example.test")],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let policy = PrivacyPolicy::try_new("privacy-identity")
+        .unwrap()
+        .with_denied_key_name("user-1");
+
+    let error = store
+        .replay_object_report_with_privacy_policy(&write.index, &policy)
+        .unwrap_err();
+
+    assert!(matches!(error, RawBackupError::PrivacyIdentityDenied));
+}
+
 fn backup_record(table_name: &str, record_key: &str, email: &str) -> RawBackupRecord {
-    RawBackupRecord::new(
+    RawBackupRecord::try_new(
         table_name,
         record_key,
         None,
@@ -426,9 +750,9 @@ fn backup_record(table_name: &str, record_key: &str, email: &str) -> RawBackupRe
 }
 
 fn write_request(operation_id: &str, object_id: &str, record_key: &str) -> RawBackupWriteRequest {
-    RawBackupWriteRequest::new(
-        OperationId::new(operation_id).unwrap(),
-        RawBackupObjectId::new(object_id).unwrap(),
+    RawBackupWriteRequest::try_new(
+        OperationId::try_new(operation_id).unwrap(),
+        RawBackupObjectId::try_new(object_id).unwrap(),
         "source_users",
         None,
         vec![backup_record("users", record_key, "ada@example.test")],
@@ -436,9 +760,7 @@ fn write_request(operation_id: &str, object_id: &str, record_key: &str) -> RawBa
     .unwrap()
 }
 
-fn storage_item<const N: usize>(
-    values: [(&str, StorageValue); N],
-) -> HashMap<String, StorageValue> {
+fn storage_item<const N: usize>(values: [(&str, StorageValue); N]) -> StorageItem {
     values
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))

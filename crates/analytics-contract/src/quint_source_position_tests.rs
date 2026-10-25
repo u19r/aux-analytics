@@ -45,6 +45,13 @@ enum MergeResult {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct SourcePositionMbtState {
+    #[serde(rename = "existingPosition")]
+    existing_position: ExistingPosition,
+    #[serde(rename = "incomingPosition")]
+    incoming_position: IncomingPosition,
+    mutation: ModelMutation,
+    #[serde(rename = "appendOnly")]
+    append_only: bool,
     #[serde(rename = "lastResult")]
     last_result: MergeResult,
 }
@@ -52,18 +59,30 @@ struct SourcePositionMbtState {
 impl State<SourcePositionDriver> for SourcePositionMbtState {
     fn from_driver(driver: &SourcePositionDriver) -> Result<Self> {
         Ok(Self {
+            existing_position: driver.existing_position,
+            incoming_position: driver.incoming_position,
+            mutation: driver.mutation,
+            append_only: driver.append_only,
             last_result: driver.last_result,
         })
     }
 }
 
 struct SourcePositionDriver {
+    existing_position: ExistingPosition,
+    incoming_position: IncomingPosition,
+    mutation: ModelMutation,
+    append_only: bool,
     last_result: MergeResult,
 }
 
 impl Default for SourcePositionDriver {
     fn default() -> Self {
         Self {
+            existing_position: ExistingPosition::NoExisting,
+            incoming_position: IncomingPosition::StreamOld,
+            mutation: ModelMutation::Upsert,
+            append_only: false,
             last_result: MergeResult::NotChecked,
         }
     }
@@ -75,13 +94,17 @@ impl Driver for SourcePositionDriver {
     #[allow(non_snake_case)]
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
-            init => self.last_result = MergeResult::NotChecked,
+            init => *self = Self::default(),
             CheckMerge(
                 existing: ExistingPosition,
                 incoming: IncomingPosition,
                 change: ModelMutation,
                 isAppendOnly: bool,
             ) => {
+                self.existing_position = existing;
+                self.incoming_position = incoming;
+                self.mutation = change;
+                self.append_only = isAppendOnly;
                 self.last_result = check_merge(existing, incoming, change, isAppendOnly)?;
             },
             step(
@@ -93,6 +116,10 @@ impl Driver for SourcePositionDriver {
                 if let (Some(existing), Some(incoming), Some(change), Some(is_append_only)) =
                     (existing, incoming, change, isAppendOnly)
                 {
+                    self.existing_position = existing;
+                    self.incoming_position = incoming;
+                    self.mutation = change;
+                    self.append_only = is_append_only;
                     self.last_result = check_merge(existing, incoming, change, is_append_only)?;
                 }
             },
@@ -106,7 +133,7 @@ impl Driver for SourcePositionDriver {
     max_steps = 6,
     seed = "0x5164"
 )]
-fn quint_source_position_mbt_compares_merge_decisions() -> impl Driver {
+fn given_quint_source_position_model_when_replayed_then_merge_decisions_matches() -> impl Driver {
     SourcePositionDriver::default()
 }
 

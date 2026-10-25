@@ -1,3 +1,10 @@
+// Projection contract for nested paths, aliases, lists, and typed failures.
+// Actors are the ingestion/projection boundary and a registered table
+// configuration; the environment supplies the item, path, and alias map.
+// Durable output is the projected result; lastCase is transient input
+// evidence. Missing paths are skipped, malformed paths and missing aliases
+// are rejected, and list expansion preserves order. Storage and SQL are
+// abstracted from this decision model.
 module projection {
   type ProjectionResult =
     | NotChecked
@@ -17,8 +24,10 @@ module projection {
     | InvalidAttributePathProjection
     | AliasWithoutNameMapProjection
     | MissingAliasProjection
+    | NotCheckedProjection
 
   var lastResult: ProjectionResult
+  var lastCase: ProjectionCase
 
   pure val projectionResults: Set[ProjectionResult] = Set(
     NotChecked,
@@ -40,31 +49,56 @@ module projection {
       | InvalidAttributePathProjection => InvalidAttributePath
       | AliasWithoutNameMapProjection => MissingExpressionAttributeNames
       | MissingAliasProjection => MissingExpressionAttributeName
+      | NotCheckedProjection => NotChecked
     }
 
   action init =
-    lastResult' = NotChecked
+    all {
+      lastResult' = NotChecked,
+      lastCase' = NotCheckedProjection,
+    }
 
   action ProjectAliasPath =
-    lastResult' = projectCase(AliasPathProjection)
+    all {
+      lastResult' = projectCase(AliasPathProjection),
+      lastCase' = AliasPathProjection,
+    }
 
   action ProjectListExpansion =
-    lastResult' = projectCase(ListExpansionProjection)
+    all {
+      lastResult' = projectCase(ListExpansionProjection),
+      lastCase' = ListExpansionProjection,
+    }
 
   action ProjectMissingPath =
-    lastResult' = projectCase(MissingPathProjection)
+    all {
+      lastResult' = projectCase(MissingPathProjection),
+      lastCase' = MissingPathProjection,
+    }
 
   action RejectEmptyAttributePath =
-    lastResult' = projectCase(EmptyAttributePathProjection)
+    all {
+      lastResult' = projectCase(EmptyAttributePathProjection),
+      lastCase' = EmptyAttributePathProjection,
+    }
 
   action RejectInvalidAttributePath =
-    lastResult' = projectCase(InvalidAttributePathProjection)
+    all {
+      lastResult' = projectCase(InvalidAttributePathProjection),
+      lastCase' = InvalidAttributePathProjection,
+    }
 
   action RejectAliasWithoutNameMap =
-    lastResult' = projectCase(AliasWithoutNameMapProjection)
+    all {
+      lastResult' = projectCase(AliasWithoutNameMapProjection),
+      lastCase' = AliasWithoutNameMapProjection,
+    }
 
   action RejectMissingAlias =
-    lastResult' = projectCase(MissingAliasProjection)
+    all {
+      lastResult' = projectCase(MissingAliasProjection),
+      lastCase' = MissingAliasProjection,
+    }
 
   action step = any {
     ProjectAliasPath,
@@ -78,8 +112,31 @@ module projection {
 
   /* Properties */
 
-  val resultIsKnown = projectionResults.contains(lastResult)
-  val inv = resultIsKnown
+  pure def isSuccessfulCase(projection: ProjectionCase): bool = or {
+    projection == AliasPathProjection,
+    projection == ListExpansionProjection,
+    projection == MissingPathProjection,
+  }
+
+  pure def isErrorCase(projection: ProjectionCase): bool = and {
+    projection != NotCheckedProjection,
+    not(isSuccessfulCase(projection)),
+  }
+
+  val successfulResultsRequireSuccessfulCases =
+    (lastResult == EmailProjected or lastResult == OrderTotalsProjected or lastResult == MissingPathSkipped)
+      implies isSuccessfulCase(lastCase)
+  val errorCasesNeverProduceSuccess =
+    isErrorCase(lastCase) implies not(
+      lastResult == EmailProjected or lastResult == OrderTotalsProjected or lastResult == MissingPathSkipped
+    )
+  val resultMatchesCanonicalCaseReducer =
+    lastResult == projectCase(lastCase)
+  val inv = and {
+    resultMatchesCanonicalCaseReducer,
+    successfulResultsRequireSuccessfulCases,
+    errorCasesNeverProduceSuccess,
+  }
 
   /* Example Runs */
 

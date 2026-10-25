@@ -3,13 +3,14 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
+rust-version = "1.99.1"
 edition = "2024"
 license = "BUSL-1.1"
 repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "d3080d30961e4ed773d52caef8c05eadcc2c9eee" }
+alloc-counter = { git = "https://github.com/u19r/aux-common", package = "alloc-counter", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-canary = { path = "crates/analytics-canary" }
 analytics-cli = { path = "crates/analytics-cli" }
@@ -20,55 +21,61 @@ analytics-operations = { path = "crates/analytics-operations" }
 analytics-quint-test-support = { path = "crates/analytics-quint-test-support" }
 analytics-storage = { path = "crates/analytics-storage" }
 anyhow = "1.0.104"
-aws-config = "1.10.1"
-aws-credential-types = "1.3.0"
-aws-credentials = { git = "https://github.com/u19r/aux-common", package = "aws-credentials", rev = "d3080d30961e4ed773d52caef8c05eadcc2c9eee" }
-aws-sdk-dynamodb = "1.121.0"
-aws-sdk-dynamodbstreams = "1.108.0"
-aws-sdk-ssm = "1.119.0"
+aws-config = "1.13.0"
+aws-credential-types = "1.3.1"
+aws-credentials = { git = "https://github.com/u19r/aux-common", package = "aws-credentials", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+aws-sdk-dynamodb = { version = "1.134.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodbstreams = { version = "1.120.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-ssm = { version = "1.131.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-smithy-http-client = { version = "1.5.1", default-features = false, features = ["default-client"] }
 axum = "0.8.9"
 base64 = "0.23.1"
-clap = { version = "4.6.6", features = ["derive"] }
-clap_complete = "4.6.9"
+bg-jobs = { git = "https://github.com/u19r/aux-common", package = "bg-jobs", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+bg-jobs-tokio = { git = "https://github.com/u19r/aux-common", package = "bg-jobs-tokio", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+bytes = "1.12.1"
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
 config = { package = "analytics-config", path = "crates/analytics-config" }
+cpu-time = "1.0.0"
 cucumber = "0.23.0"
-duckdb = { version = "1.10505.0", default-features = false, features = ["r2d2"] }
-flate2 = "1.1.9"
+duckdb = { version = "1.20000.0", default-features = false, features = ["r2d2"] }
+flate2 = "1.1.10"
+hex = "0.4.3"
+hmac = "0.13.0"
 http-body-util = "0.1.5"
-jsonschema = { version = "0.49.9", default-features = false, features = ["resolve-file"] }
-lambda_runtime = "1.3.0"
+http-request = { git = "https://github.com/u19r/aux-common", package = "http-request", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+jsonschema = { version = "0.60.1", default-features = false, features = ["resolve-file"] }
+lambda-web-runtime = { git = "https://github.com/u19r/aux-common", package = "lambda-web-runtime", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+lambda_runtime = "1.5.0"
+lru-ttl-cache = { git = "https://github.com/u19r/aux-common", package = "lru-ttl-cache", rev = "af8fa7864eff802a1c1beb404b1ff1f1271f6c0a" }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-decode", "safe-encode", "std"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
 quint-connect = "0.1.2"
 regex = "1.13.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
-rust_decimal = "1.42.1"
-schemars = { version = "1.2.2", features = ["derive"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+rust_decimal = "1.43.0"
+schemars = { version = "1.2.3", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-sha2 = "0.11.0"
-storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "84d317d61076fce40f6a374d482bdecc365bf205", default-features = false }
-storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "84d317d61076fce40f6a374d482bdecc365bf205" }
-storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "84d317d61076fce40f6a374d482bdecc365bf205", default-features = false }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "0b471fb57c5db30c3c9ae95832ebd8bfda375d64", default-features = false, features = ["remote"] }
+storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "0b471fb57c5db30c3c9ae95832ebd8bfda375d64" }
+storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "0b471fb57c5db30c3c9ae95832ebd8bfda375d64", default-features = false }
 tempfile = "3.27.0"
-thiserror = "2.0.20"
-tokio = { version = "1.53.1", features = ["full", "tracing"] }
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full", "tracing"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.0", features = ["catch-panic", "cors"] }
+tower-http = { version = "0.7.1", features = ["catch-panic", "cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 url = "2.5.8"
-utoipa = { version = "5.5.0", features = ["axum_extras"] }
+utoipa = { version = "6.0.0", features = ["axum_extras"] }
+uuid = { version = "1.29.0", features = ["v4"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-module_name_repetitions = "allow"
 string_slice = "deny"
-missing_panics_doc = "allow"
-missing_errors_doc = "allow"
-implicit_hasher = "allow"
-match_same_arms = "allow"
-cargo_common_metadata = "allow"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }

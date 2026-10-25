@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use analytics_lambda::AnalyticsLambdaHandler;
 use lambda_runtime::{Error, LambdaEvent, service_fn};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 
 pub(crate) async fn run() -> Result<(), Error> {
     tracing_subscriber::fmt::init();
@@ -24,9 +24,9 @@ pub(crate) async fn run() -> Result<(), Error> {
 async fn handle_lambda_event(
     event: LambdaEvent<Value>,
     handler: Arc<AnalyticsLambdaHandler>,
-) -> Result<Value, Error> {
+) -> Result<Box<RawValue>, Error> {
     handler
-        .handle_event(event.payload)
+        .handle_serialized_event(event.payload)
         .await
         .map_err(sanitized_lambda_error)
 }
@@ -35,7 +35,7 @@ fn sanitized_lambda_error(error: impl std::error::Error) -> Error {
     Error::from(sanitize_error_message(error.to_string().as_str()))
 }
 
-fn sanitize_error_message(message: &str) -> String {
+pub(super) fn sanitize_error_message(message: &str) -> String {
     message
         .split_whitespace()
         .map(redact_token)
@@ -51,24 +51,4 @@ fn redact_token(token: &str) -> &str {
         return "<redacted-password>";
     }
     token
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sanitize_error_message;
-
-    #[test]
-    fn sanitizes_database_urls_and_password_tokens() {
-        let message = "failed to connect to db://user:secret_token@example.test:1234/catalog with \
-                       secret_token";
-
-        let sanitized = sanitize_error_message(message);
-
-        assert!(!sanitized.contains("db://"));
-        assert!(!sanitized.contains("secret_token"));
-        assert_eq!(
-            sanitized,
-            "failed to connect to <redacted-url> with <redacted-password>"
-        );
-    }
 }

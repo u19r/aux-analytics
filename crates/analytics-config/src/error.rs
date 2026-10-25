@@ -36,6 +36,14 @@ impl ConfigError {
         )
     }
 
+    pub(crate) fn manifest(source: analytics_contract::ManifestLoadError) -> Self {
+        Self::with_source(
+            ConfigErrorKind::Manifest,
+            ConfigErrorDebug::Message(source.to_string()),
+            source,
+        )
+    }
+
     pub(crate) fn invalid_override_path(path: impl Into<String>) -> Self {
         Self::with_debug(
             ConfigErrorKind::InvalidOverridePath,
@@ -78,6 +86,8 @@ pub enum ConfigErrorKind {
     Io,
     Json,
     InvalidOverridePath,
+    InvalidManifestPath,
+    Manifest,
     MissingBackend,
     MissingDucklakeDataPath,
     MissingCatalogBackend,
@@ -96,6 +106,8 @@ impl fmt::Display for ConfigErrorKind {
             Self::Io => formatter.write_str("failed to read config"),
             Self::Json => formatter.write_str("invalid config JSON"),
             Self::InvalidOverridePath => formatter.write_str("invalid override path"),
+            Self::InvalidManifestPath => formatter.write_str("invalid analytics manifest path"),
+            Self::Manifest => formatter.write_str("invalid analytics manifest"),
             Self::MissingBackend => formatter.write_str(
                 "one backend is required: --duckdb, --ducklake-sqlite-catalog, or \
                  --ducklake-aux-catalog",

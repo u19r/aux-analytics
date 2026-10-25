@@ -4,7 +4,7 @@ use crate::{
     BackfillRequestInput, BackfillSourceCapabilities, BackfillSourceKind,
     ConservativeBackfillPlanner, DestinationBackend, DynamoDbBackfillMetadata,
     DynamoDbBackfillMetadataAdapter, RateLimitPolicy, SnapshotMethod,
-    StaticBackfillCapabilityDiscovery, ValidationMode, build_backfill_request,
+    StaticBackfillCapabilityDiscovery, ValidationMode,
 };
 
 fn request(source: BackfillSourceCapabilities) -> BackfillRequest {
@@ -76,6 +76,27 @@ fn given_stream_only_dynamodb_request_when_planned_then_it_is_rejected() {
 }
 
 #[test]
+fn given_dynamodb_without_historical_capability_when_planned_then_stream_only_is_rejected() {
+    let planner = ConservativeBackfillPlanner;
+    let request = request(BackfillSourceCapabilities {
+        source_kind: BackfillSourceKind::DynamoDb,
+        stream_retention_hours: None,
+        supports_pitr_export: false,
+        supports_parallel_scan: false,
+        supports_full_enumeration: false,
+        supports_raw_replay: false,
+        can_prove_deletes: false,
+    });
+
+    let error = planner.plan(&request).unwrap_err();
+
+    assert!(matches!(
+        error,
+        BackfillPlanError::UnsafeStreamOnlyBackfill { .. }
+    ));
+}
+
+#[test]
 fn given_local_fixture_when_aux_storage_enumeration_requested_then_plan_is_rejected() {
     let planner = ConservativeBackfillPlanner;
     let mut request = request(BackfillSourceCapabilities::local_fixture());
@@ -124,7 +145,7 @@ fn given_backfill_input_when_request_built_then_capabilities_are_attached() {
         rate_limit: RateLimitPolicy::default(),
     };
 
-    let request = build_backfill_request(input, &StaticBackfillCapabilityDiscovery).unwrap();
+    let request = BackfillRequest::try_new(input, &StaticBackfillCapabilityDiscovery).unwrap();
 
     assert_eq!(request.source.source_kind, BackfillSourceKind::LocalFixture);
     assert_eq!(request.target_tables, vec!["users"]);
@@ -207,7 +228,8 @@ fn given_adapter_backed_dynamodb_discovery_when_metadata_unreachable_then_reject
 }
 
 #[test]
-fn given_adapter_backed_dynamodb_discovery_without_export_or_scan_then_rejected() {
+fn given_reachable_dynamodb_without_export_or_scan_when_capabilities_are_discovered_then_partial_support_is_rejected()
+ {
     let discovery = BackfillDiscoveryAdapters::new(
         FakeDynamoDbMetadataAdapter {
             metadata: DynamoDbBackfillMetadata {

@@ -1,11 +1,15 @@
+use std::fmt::Write;
+
 use regex::Regex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use utoipa::ToSchema;
 
-use crate::{StorageItem, StorageValue};
-
-const MAX_REGEX_RULES: usize = 32;
-const MAX_REGEX_LENGTH: usize = 512;
+use crate::{
+    StorageItem, StorageValue,
+    constants::{MAX_REGEX_LENGTH, MAX_REGEX_RULES},
+};
 
 #[derive(Debug, Error)]
 pub enum PrivacyPolicyError {
@@ -21,7 +25,9 @@ pub enum PrivacyPolicyError {
 
 pub type PrivacyPolicyResult<T> = Result<T, PrivacyPolicyError>;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
 pub struct PrivacyPolicy {
     pub version: String,
     #[serde(default)]
@@ -46,7 +52,7 @@ pub struct PrivacyFilterReport {
 }
 
 impl PrivacyPolicy {
-    pub fn new(version: impl Into<String>) -> PrivacyPolicyResult<Self> {
+    pub fn try_new(version: impl Into<String>) -> PrivacyPolicyResult<Self> {
         let policy = Self {
             version: version.into(),
             ..Self::default()
@@ -68,210 +74,159 @@ impl PrivacyPolicy {
     }
 
     pub fn validate(&self) -> PrivacyPolicyResult<()> {
+        self.validated().map(|_| ())
+    }
+
+    /// Compiles and validates one immutable policy use.
+    pub fn validated(&self) -> PrivacyPolicyResult<PrivacyPolicyMatcher<'_>> {
         if self.version.trim().is_empty() {
             return Err(PrivacyPolicyError::EmptyVersion);
         }
-        let regex_count = self.denied_path_regexes.len() + self.denied_value_regexes.len();
-        if regex_count > MAX_REGEX_RULES {
+        if self.denied_path_regexes.len() + self.denied_value_regexes.len() > MAX_REGEX_RULES {
             return Err(PrivacyPolicyError::TooManyRegexRules);
         }
-        for pattern in self
-            .denied_path_regexes
-            .iter()
-            .chain(self.denied_value_regexes.iter())
-        {
-            if pattern.len() > MAX_REGEX_LENGTH {
-                return Err(PrivacyPolicyError::RegexTooLong);
-            }
-            Regex::new(pattern)?;
-        }
-        Ok(())
-    }
-
-    pub fn denies_key(&self, key: &str) -> PrivacyPolicyResult<bool> {
-        self.validate()?;
-        Ok(self.denied_key_names.iter().any(|rule| rule == key)
-            || self
-                .denied_key_prefixes
-                .iter()
-                .any(|rule| key.starts_with(rule))
-            || self
-                .denied_key_suffixes
-                .iter()
-                .any(|rule| key.ends_with(rule)))
-    }
-
-    pub fn denies_path(&self, path: &str) -> PrivacyPolicyResult<bool> {
-        self.validate()?;
-        if self.denied_exact_paths.iter().any(|rule| rule == path) {
-            return Ok(true);
-        }
-        for pattern in &self.denied_path_regexes {
-            if Regex::new(pattern)?.is_match(path) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    pub fn denies_value(&self, value: &str) -> PrivacyPolicyResult<bool> {
-        self.validate()?;
-        for pattern in &self.denied_value_regexes {
-            if Regex::new(pattern)?.is_match(value) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    pub fn filter_item(&self, item: &StorageItem) -> PrivacyPolicyResult<PrivacyFilterReport> {
-        self.validate()?;
-        let mut dropped_fields = 0_u64;
-        let item = self.filter_map(item, "", &mut dropped_fields)?;
-        Ok(PrivacyFilterReport {
-            item,
-            dropped_fields,
-            policy_version: self.version.clone(),
+        Ok(PrivacyPolicyMatcher {
+            policy: self,
+            denied_path_regexes: compile_patterns(&self.denied_path_regexes)?,
+            denied_value_regexes: compile_patterns(&self.denied_value_regexes)?,
         })
     }
 
-    fn filter_map(
-        &self,
-        item: &StorageItem,
-        parent_path: &str,
-        dropped_fields: &mut u64,
-    ) -> PrivacyPolicyResult<StorageItem> {
-        let mut filtered = StorageItem::new();
-        for (key, value) in item {
-            let path = join_path(parent_path, key);
-            if self.denies_key(key)? || self.denies_path(path.as_str())? {
-                *dropped_fields += 1;
-                continue;
-            }
-            if let Some(value) = self.filter_value(value, path.as_str(), dropped_fields)? {
-                filtered.insert(key.clone(), value);
-            }
+    pub fn filter_item(&self, item: StorageItem) -> PrivacyPolicyResult<PrivacyFilterReport> {
+        Ok(self.validated()?.filter_item(item))
+    }
+}
+
+/// An immutable, per-use privacy-policy matcher with regexes compiled once.
+#[derive(Debug)]
+pub struct PrivacyPolicyMatcher<'a> {
+    policy: &'a PrivacyPolicy,
+    denied_path_regexes: Vec<Regex>,
+    denied_value_regexes: Vec<Regex>,
+}
+
+impl PrivacyPolicyMatcher<'_> {
+    #[must_use]
+    pub fn filter_item(&self, item: StorageItem) -> PrivacyFilterReport {
+        let mut dropped_fields = 0;
+        let item = self.filter_map(item, &mut String::new(), &mut dropped_fields);
+        PrivacyFilterReport {
+            item,
+            dropped_fields,
+            policy_version: self.policy.version.clone(),
         }
-        Ok(filtered)
+    }
+
+    fn filter_map(&self, item: StorageItem, path: &mut String, dropped: &mut u64) -> StorageItem {
+        let mut filtered = StorageItem::with_capacity(item.len());
+        for (key, value) in item {
+            let parent_length = path.len();
+            if parent_length > 0 {
+                path.push('.');
+            }
+            path.push_str(&key);
+            if self.denies_key(&key) {
+                *dropped += 1;
+            } else if let Some(value) = self.filter_value(value, path, dropped) {
+                filtered.insert(key, value);
+            }
+            path.truncate(parent_length);
+        }
+        filtered
     }
 
     fn filter_value(
         &self,
-        value: &StorageValue,
-        path: &str,
-        dropped_fields: &mut u64,
-    ) -> PrivacyPolicyResult<Option<StorageValue>> {
-        match value {
-            StorageValue::S(value) => {
-                if self.denies_value(value)? {
-                    *dropped_fields += 1;
-                    Ok(None)
-                } else {
-                    Ok(Some(StorageValue::S(value.clone())))
-                }
-            }
-            StorageValue::N(value) => {
-                if self.denies_value(value)? {
-                    *dropped_fields += 1;
-                    Ok(None)
-                } else {
-                    Ok(Some(StorageValue::N(value.clone())))
-                }
-            }
-            StorageValue::B(value) => {
-                if self.denies_value(value)? {
-                    *dropped_fields += 1;
-                    Ok(None)
-                } else {
-                    Ok(Some(StorageValue::B(value.clone())))
-                }
-            }
-            StorageValue::SS(values) => {
-                filter_string_list(values, dropped_fields, |value| self.denies_value(value))
-            }
-            StorageValue::NS(values) => {
-                filter_number_list(values, dropped_fields, |value| self.denies_value(value))
-            }
-            StorageValue::BS(values) => {
-                filter_binary_list(values, dropped_fields, |value| self.denies_value(value))
-            }
-            StorageValue::BOOL(value) => Ok(Some(StorageValue::BOOL(*value))),
-            StorageValue::NULL(value) => Ok(Some(StorageValue::NULL(*value))),
-            StorageValue::L(values) => {
-                let mut filtered = Vec::new();
-                for (index, value) in values.iter().enumerate() {
-                    let path = format!("{path}[{index}]");
-                    if let Some(value) = self.filter_value(value, path.as_str(), dropped_fields)? {
-                        filtered.push(value);
-                    }
-                }
-                Ok(Some(StorageValue::L(filtered)))
-            }
-            StorageValue::M(values) => Ok(Some(StorageValue::M(self.filter_map(
-                values,
-                path,
-                dropped_fields,
-            )?))),
+        value: StorageValue,
+        path: &mut String,
+        dropped: &mut u64,
+    ) -> Option<StorageValue> {
+        if self.denies_path(path) {
+            *dropped += 1;
+            return None;
         }
-    }
-}
-
-fn join_path(parent: &str, key: &str) -> String {
-    if parent.is_empty() {
-        key.to_string()
-    } else {
-        format!("{parent}.{key}")
-    }
-}
-
-fn filter_string_list(
-    values: &[String],
-    dropped_fields: &mut u64,
-    denies: impl Fn(&str) -> PrivacyPolicyResult<bool>,
-) -> PrivacyPolicyResult<Option<StorageValue>> {
-    Ok(Some(StorageValue::SS(filter_values(
-        values,
-        dropped_fields,
-        denies,
-    )?)))
-}
-
-fn filter_number_list(
-    values: &[String],
-    dropped_fields: &mut u64,
-    denies: impl Fn(&str) -> PrivacyPolicyResult<bool>,
-) -> PrivacyPolicyResult<Option<StorageValue>> {
-    Ok(Some(StorageValue::NS(filter_values(
-        values,
-        dropped_fields,
-        denies,
-    )?)))
-}
-
-fn filter_binary_list(
-    values: &[String],
-    dropped_fields: &mut u64,
-    denies: impl Fn(&str) -> PrivacyPolicyResult<bool>,
-) -> PrivacyPolicyResult<Option<StorageValue>> {
-    Ok(Some(StorageValue::BS(filter_values(
-        values,
-        dropped_fields,
-        denies,
-    )?)))
-}
-
-fn filter_values(
-    values: &[String],
-    dropped_fields: &mut u64,
-    denies: impl Fn(&str) -> PrivacyPolicyResult<bool>,
-) -> PrivacyPolicyResult<Vec<String>> {
-    let mut filtered = Vec::new();
-    for value in values {
-        if denies(value)? {
-            *dropped_fields += 1;
-        } else {
-            filtered.push(value.clone());
+        if let StorageValue::S(text) | StorageValue::N(text) | StorageValue::B(text) = &value
+            && self.denies_value(text)
+        {
+            *dropped += 1;
+            return None;
         }
+        Some(match value {
+            StorageValue::SS(values) => StorageValue::SS(self.filter_values(values, dropped)),
+            StorageValue::NS(values) => StorageValue::NS(self.filter_values(values, dropped)),
+            StorageValue::BS(values) => StorageValue::BS(self.filter_values(values, dropped)),
+            StorageValue::L(values) => StorageValue::L(
+                values
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, value)| {
+                        let parent_length = path.len();
+                        write!(path, "[{index}]").expect("writing a path to a String cannot fail");
+                        let filtered = self.filter_value(value, path, dropped);
+                        path.truncate(parent_length);
+                        filtered
+                    })
+                    .collect(),
+            ),
+            StorageValue::M(values) => StorageValue::M(self.filter_map(values, path, dropped)),
+            value => value,
+        })
     }
-    Ok(filtered)
+
+    fn filter_values(&self, mut values: Vec<String>, dropped: &mut u64) -> Vec<String> {
+        values.retain(|value| {
+            if self.denies_value(value) {
+                *dropped += 1;
+                return false;
+            }
+            true
+        });
+        values
+    }
+
+    #[must_use]
+    pub fn denies_key(&self, key: &str) -> bool {
+        self.policy.denied_key_names.iter().any(|rule| rule == key)
+            || self
+                .policy
+                .denied_key_prefixes
+                .iter()
+                .any(|rule| key.starts_with(rule))
+            || self
+                .policy
+                .denied_key_suffixes
+                .iter()
+                .any(|rule| key.ends_with(rule))
+    }
+
+    #[must_use]
+    pub fn denies_path(&self, path: &str) -> bool {
+        self.policy
+            .denied_exact_paths
+            .iter()
+            .any(|rule| rule == path)
+            || self
+                .denied_path_regexes
+                .iter()
+                .any(|pattern| pattern.is_match(path))
+    }
+
+    #[must_use]
+    pub fn denies_value(&self, value: &str) -> bool {
+        self.denied_value_regexes
+            .iter()
+            .any(|pattern| pattern.is_match(value))
+    }
+}
+
+fn compile_patterns(patterns: &[String]) -> PrivacyPolicyResult<Vec<Regex>> {
+    patterns
+        .iter()
+        .map(|pattern| {
+            if pattern.len() > MAX_REGEX_LENGTH {
+                return Err(PrivacyPolicyError::RegexTooLong);
+            }
+            Ok(Regex::new(pattern)?)
+        })
+        .collect()
 }

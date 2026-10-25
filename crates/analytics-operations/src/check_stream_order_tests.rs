@@ -9,8 +9,8 @@ use crate::{
 
 fn request(id: &str) -> CheckRequest {
     CheckRequest {
-        operation_id: OperationId::new(id).unwrap(),
-        actor: OperationActor::new("operator").unwrap(),
+        operation_id: OperationId::try_new(id).unwrap(),
+        actor: OperationActor::try_new("operator").unwrap(),
         target_tables: vec!["users".to_string()],
         strategy: CheckComparisonStrategy::FullRows,
         sample_limit: 3,
@@ -21,7 +21,7 @@ fn request(id: &str) -> CheckRequest {
 }
 
 fn projection() -> CheckRowProjection {
-    CheckRowProjection::new(
+    CheckRowProjection::try_new(
         "users",
         "__id",
         vec!["email".to_string(), "org_id".to_string()],
@@ -38,7 +38,7 @@ fn row(key: &str, email: &str, org_id: &str, source_position: u64) -> ProjectedC
         ]
         .into_iter()
         .collect(),
-        source_position,
+        crate::check_test_support::backup_position(source_position),
     )
 }
 

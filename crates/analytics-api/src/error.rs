@@ -30,7 +30,6 @@ impl ApiError {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_debug(kind: ApiErrorKind, debug: ApiErrorDebug) -> Self {
         Self {
             kind,
@@ -178,5 +177,11 @@ impl From<analytics_storage::AnalyticsStorageError> for ApiError {
             debug: ApiErrorDebug::Message(message),
             source: Some(Box::new(source)),
         }
+    }
+}
+
+impl From<lambda_web_runtime::LambdaWebRuntimeError> for ApiError {
+    fn from(source: lambda_web_runtime::LambdaWebRuntimeError) -> Self {
+        Self::with_source(ApiErrorKind::Io, source)
     }
 }

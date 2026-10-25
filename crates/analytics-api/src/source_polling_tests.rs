@@ -1,62 +1,14 @@
 use analytics_storage::SourceCheckpoint;
-use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamType};
 
 use crate::{
     CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase,
     source_polling::{
-        SourcePollingStartup, apply_source_job_phase, apply_source_poll_error_health,
-        apply_source_success_health, is_iterator_checkpoint, job_lease_client,
-        parse_linux_resident_memory_bytes, persistable_checkpoints, source_batch_outcome,
-        source_batch_outcome_with_ownership_loss, source_plans_are_aux_storage_only,
-        source_polling_lease_renew_interval, source_polling_lease_until_ms, source_polling_startup,
-        source_retry_delay, source_write_is_slow, upsert_checkpoint_health,
+        SourceBatchOutcome, SourcePollingStartup, apply_source_durable_checkpoints,
+        apply_source_job_phase, apply_source_poll_error_health, is_iterator_checkpoint,
+        persistable_checkpoints, record_checkpoints, source_polling_startup,
+        upsert_checkpoint_health,
     },
 };
-
-#[test]
-fn absent_remote_source_endpoint_keeps_job_leases_optional_for_local_operation() {
-    assert!(
-        job_lease_client(&AnalyticsSourceConfig::default())
-            .expect("optional lease client")
-            .is_none()
-    );
-}
-
-#[test]
-fn invalid_remote_source_endpoint_fails_job_lease_client_construction() {
-    let source = AnalyticsSourceConfig {
-        endpoint_url: Some("://invalid".to_string()),
-        ..AnalyticsSourceConfig::default()
-    };
-
-    assert!(job_lease_client(&source).is_err());
-}
-
-#[test]
-fn given_source_write_duration_when_classified_then_five_seconds_is_slow() {
-    assert!(!source_write_is_slow(std::time::Duration::from_millis(
-        4_999
-    )));
-    assert!(source_write_is_slow(std::time::Duration::from_secs(5)));
-}
-
-#[test]
-fn given_linux_process_status_when_resident_memory_is_parsed_then_bytes_are_returned() {
-    let status = "Name:\taux-analytics\nVmSize:\t100 kB\nVmRSS:\t65536 kB\n";
-
-    assert_eq!(
-        parse_linux_resident_memory_bytes(status),
-        Some(64 * 1_024 * 1_024)
-    );
-}
-
-#[test]
-fn given_process_status_without_resident_memory_when_parsed_then_measurement_is_absent() {
-    assert_eq!(
-        parse_linux_resident_memory_bytes("Name:\taux-analytics\n"),
-        None
-    );
-}
 
 #[test]
 fn given_new_checkpoint_when_health_is_updated_then_checkpoint_is_appended() {
@@ -105,13 +57,14 @@ fn given_successful_source_poll_when_health_is_updated_then_previous_error_is_cl
     let mut health = SourceHealth::starting(1);
     health.last_error = Some("previous failure".to_string());
 
-    apply_source_success_health(
-        &mut health,
-        true,
-        2,
-        0,
-        1,
-        0,
+    health.apply_source_batch_health(
+        SourceBatchOutcome {
+            is_committed: true,
+            records_ingested: 2,
+            ingest_errors: 0,
+            checkpoints_saved: 1,
+            checkpoint_errors: 0,
+        },
         &[SourceCheckpoint {
             source_table_name: "source_users".to_string(),
             shard_id: "shard-0001".to_string(),
@@ -123,7 +76,6 @@ fn given_successful_source_poll_when_health_is_updated_then_previous_error_is_cl
     assert!(matches!(health.status, SourceHealthStatus::Healthy));
     assert_eq!(health.phase, SourcePollingPhase::Healthy);
     assert_eq!(health.phase_started_at_ms, Some(500));
-    assert_eq!(health.lease_until_ms, None);
     assert_eq!(health.last_success_at_ms, Some(500));
     assert_eq!(health.last_error, None);
     assert_eq!(health.total_records_ingested, 2);
@@ -137,13 +89,14 @@ fn given_partial_source_poll_failure_when_health_is_updated_then_error_context_i
     let mut health = SourceHealth::starting(1);
     health.last_error = Some("ingest failed".to_string());
 
-    apply_source_success_health(
-        &mut health,
-        false,
-        1,
-        1,
-        0,
-        1,
+    health.apply_source_batch_health(
+        SourceBatchOutcome {
+            is_committed: false,
+            records_ingested: 1,
+            ingest_errors: 1,
+            checkpoints_saved: 0,
+            checkpoint_errors: 1,
+        },
         &[
             SourceCheckpoint {
                 source_table_name: "source_users".to_string(),
@@ -162,86 +115,58 @@ fn given_partial_source_poll_failure_when_health_is_updated_then_error_context_i
     assert!(matches!(health.status, SourceHealthStatus::Degraded));
     assert_eq!(health.phase, SourcePollingPhase::Degraded);
     assert_eq!(health.phase_started_at_ms, Some(600));
-    assert_eq!(health.last_success_at_ms, Some(600));
+    assert_eq!(health.last_success_at_ms, None);
     assert_eq!(health.last_error.as_deref(), Some("ingest failed"));
+    assert_eq!(health.total_poll_errors, 1);
     assert_eq!(health.total_records_ingested, 1);
     assert_eq!(health.total_ingest_errors, 1);
     assert_eq!(health.total_checkpoint_errors, 1);
-    assert_eq!(health.checkpoints.len(), 1);
-    assert_eq!(health.checkpoints[0].shard_id, "shard-0001");
+    assert!(health.checkpoints.is_empty());
 }
 
 #[test]
-fn given_source_batch_records_and_checkpoints_succeed_then_batch_is_committed() {
-    let outcome = source_batch_outcome(&[true, true], &[true, true]);
-
-    assert!(outcome.all_records_ingested);
-    assert!(outcome.should_commit);
-    assert_eq!(outcome.records_ingested, 2);
-    assert_eq!(outcome.ingest_errors, 0);
-    assert_eq!(outcome.checkpoints_saved, 2);
-    assert_eq!(outcome.checkpoint_errors, 0);
-}
-
-#[test]
-fn given_source_batch_record_ingest_fails_then_checkpoints_are_not_committed() {
-    let outcome = source_batch_outcome(&[true, false], &[]);
-
-    assert!(!outcome.all_records_ingested);
-    assert!(!outcome.should_commit);
-    assert_eq!(outcome.records_ingested, 1);
-    assert_eq!(outcome.ingest_errors, 1);
-    assert_eq!(outcome.checkpoints_saved, 0);
-}
-
-#[test]
-fn given_source_batch_checkpoint_save_fails_then_iterator_commit_is_blocked() {
-    let outcome = source_batch_outcome(&[true], &[true, false]);
-
-    assert!(!outcome.all_records_ingested);
-    assert!(!outcome.should_commit);
-    assert!(!outcome.ownership_lost);
-    assert_eq!(outcome.records_ingested, 1);
-    assert_eq!(outcome.checkpoints_saved, 1);
-    assert_eq!(outcome.checkpoint_errors, 1);
-}
-
-#[test]
-fn given_source_batch_ownership_is_lost_then_checkpoint_commit_is_blocked() {
-    let outcome = source_batch_outcome_with_ownership_loss(&[true, true], &[]);
-
-    assert!(!outcome.all_records_ingested);
-    assert!(!outcome.should_commit);
-    assert!(outcome.ownership_lost);
-    assert_eq!(outcome.records_ingested, 2);
-    assert_eq!(outcome.ingest_errors, 0);
-    assert_eq!(outcome.checkpoints_saved, 0);
-    assert_eq!(outcome.checkpoint_errors, 0);
-}
-
-#[test]
-fn given_source_polling_lease_is_created_then_timeout_is_ten_seconds() {
-    assert_eq!(source_polling_lease_until_ms(1_000), 11_000);
-}
-
-#[test]
-fn given_source_polling_lease_is_held_then_renewal_interval_is_five_seconds() {
-    assert_eq!(
-        source_polling_lease_renew_interval(),
-        std::time::Duration::from_secs(5)
+fn given_loaded_checkpoints_when_health_starts_then_only_durable_records_are_reported() {
+    let mut health = SourceHealth::starting(1);
+    apply_source_durable_checkpoints(
+        &mut health,
+        &[
+            SourceCheckpoint {
+                source_table_name: "source_users".to_string(),
+                shard_id: "shard-0001".to_string(),
+                position: "42".to_string(),
+            },
+            SourceCheckpoint {
+                source_table_name: "source_users".to_string(),
+                shard_id: "__iterator:shard-0001".to_string(),
+                position: "iterator-token".to_string(),
+            },
+        ],
     );
+
+    assert_eq!(health.checkpoints.len(), 1);
+    assert_eq!(health.checkpoints[0].position, "42");
+    assert_eq!(health.checkpoints[0].updated_at_ms, None);
 }
 
 #[test]
-fn given_repeated_source_failures_when_retrying_then_backoff_is_bounded() {
-    assert_eq!(source_retry_delay(0), std::time::Duration::ZERO);
-    assert_eq!(source_retry_delay(1), std::time::Duration::from_millis(100));
-    assert_eq!(source_retry_delay(4), std::time::Duration::from_millis(800));
-    assert_eq!(source_retry_delay(20), std::time::Duration::from_secs(5));
+fn given_durable_checkpoint_refresh_loads_no_checkpoints_when_refreshing_checkpoints_then_stale_boundary_clears()
+ {
+    let mut health = SourceHealth::starting(1);
+    health.checkpoints.push(CheckpointHealth {
+        source_table_name: "source_users".to_string(),
+        shard_id: "shard-0001".to_string(),
+        position: "stale".to_string(),
+        updated_at_ms: Some(100),
+    });
+
+    apply_source_durable_checkpoints(&mut health, &[]);
+
+    assert!(health.checkpoints.is_empty());
 }
 
 #[test]
-fn given_source_checkpoints_include_iterator_tokens_then_only_persistable_positions_are_saved() {
+fn given_source_checkpoints_include_iterator_tokens_when_refreshing_checkpoints_then_only_persistable_positions_are_saved()
+ {
     let checkpoints = vec![
         SourceCheckpoint {
             source_table_name: "source_users".to_string(),
@@ -261,6 +186,46 @@ fn given_source_checkpoints_include_iterator_tokens_then_only_persistable_positi
     assert_eq!(persistable[0].shard_id, "shard-0001");
     assert!(!is_iterator_checkpoint(persistable[0]));
     assert!(is_iterator_checkpoint(&checkpoints[1]));
+}
+
+#[test]
+fn given_mixed_source_checkpoints_when_record_checkpoints_are_built_then_only_durable_records_are_collected()
+ {
+    let checkpoints = vec![
+        SourceCheckpoint {
+            source_table_name: "source_users".to_string(),
+            shard_id: "shard-0001".to_string(),
+            position: "42".to_string(),
+        },
+        SourceCheckpoint {
+            source_table_name: "source_users".to_string(),
+            shard_id: "__iterator:shard-0001".to_string(),
+            position: "iterator-token".to_string(),
+        },
+        SourceCheckpoint {
+            source_table_name: "source_events".to_string(),
+            shard_id: "shard-0002".to_string(),
+            position: "84".to_string(),
+        },
+    ];
+
+    let durable = record_checkpoints(&checkpoints);
+
+    assert_eq!(durable.len(), 2);
+    assert_eq!(durable[0].source_table_name(), "source_users");
+    assert_eq!(durable[0].shard_id(), "shard-0001");
+    assert_eq!(durable[0].position(), "42");
+    assert_eq!(durable[1].source_table_name(), "source_events");
+    assert_eq!(durable[1].shard_id(), "shard-0002");
+    assert_eq!(durable[1].position(), "84");
+    assert!(
+        analytics_engine::RecordCheckpoint::try_new(
+            "source_users",
+            "__iterator:shard-0001",
+            "iterator-token"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -298,40 +263,6 @@ fn given_source_tables_have_pollable_registrations_when_polling_starts_then_sour
 }
 
 #[test]
-fn given_only_aux_storage_plans_when_runtime_is_selected_then_global_polling_is_used() {
-    let plans = analytics_storage::table_plans(
-        &AnalyticsSourceConfig {
-            stream_type: Some(AnalyticsStreamType::AuxStorage),
-            ..AnalyticsSourceConfig::default()
-        },
-        &analytics_fixtures::users_manifest(),
-    )
-    .expect("plans");
-
-    assert!(source_plans_are_aux_storage_only(&plans));
-}
-
-#[test]
-fn given_storage_stream_plan_when_runtime_is_selected_then_global_aux_polling_is_not_used() {
-    let plans = analytics_storage::table_plans(
-        &AnalyticsSourceConfig {
-            tables: vec![AnalyticsSourceTableConfig {
-                table_name: "tenant_01".to_string(),
-                stream_type: Some(AnalyticsStreamType::StorageStream),
-                stream_identifier: Some(
-                    "arn:aws:dynamodb:us-east-1:123:table/users/stream/1".to_string(),
-                ),
-            }],
-            ..AnalyticsSourceConfig::default()
-        },
-        &analytics_fixtures::users_manifest(),
-    )
-    .expect("plans");
-
-    assert!(!source_plans_are_aux_storage_only(&plans));
-}
-
-#[test]
 fn given_source_poll_error_when_health_is_updated_then_poller_is_degraded_and_error_count_increments()
  {
     let mut health = SourceHealth::starting(1);
@@ -342,52 +273,21 @@ fn given_source_poll_error_when_health_is_updated_then_poller_is_degraded_and_er
     assert!(matches!(health.status, SourceHealthStatus::Degraded));
     assert_eq!(health.phase, SourcePollingPhase::Degraded);
     assert_eq!(health.phase_started_at_ms, Some(700));
-    assert_eq!(health.lease_until_ms, None);
     assert_eq!(health.last_error_at_ms, Some(700));
     assert_eq!(health.last_error.as_deref(), Some("poll failed"));
     assert_eq!(health.total_poll_errors, 4);
 }
 
 #[test]
-fn given_source_job_phase_when_health_is_updated_then_ownership_and_phase_are_visible() {
+fn given_background_job_phase_when_health_is_updated_then_worker_and_phase_are_visible() {
     let mut health = SourceHealth::starting(2);
 
-    apply_source_job_phase(
-        &mut health,
-        SourcePollingPhase::RefreshingPlan,
-        "worker-a",
-        Some("token-a"),
-        Some(10_000),
-        900,
-    );
+    apply_source_job_phase(&mut health, SourcePollingPhase::Polling, "worker-a", 900);
 
     assert!(matches!(health.status, SourceHealthStatus::Starting));
-    assert_eq!(health.phase, SourcePollingPhase::RefreshingPlan);
+    assert_eq!(health.phase, SourcePollingPhase::Polling);
     assert_eq!(health.job_id.as_deref(), Some("analytics_source_polling"));
     assert_eq!(health.worker_id.as_deref(), Some("worker-a"));
-    assert_eq!(health.lease_token.as_deref(), Some("token-a"));
-    assert_eq!(health.lease_until_ms, Some(10_000));
     assert_eq!(health.phase_started_at_ms, Some(900));
     assert_eq!(health.table_count, 2);
-}
-
-#[test]
-fn given_standby_phase_when_health_is_updated_then_no_lease_is_reported() {
-    let mut health = SourceHealth::starting(2);
-
-    apply_source_job_phase(
-        &mut health,
-        SourcePollingPhase::Standby,
-        "worker-b",
-        None,
-        None,
-        950,
-    );
-
-    assert!(matches!(health.status, SourceHealthStatus::Starting));
-    assert_eq!(health.phase, SourcePollingPhase::Standby);
-    assert_eq!(health.worker_id.as_deref(), Some("worker-b"));
-    assert_eq!(health.lease_token, None);
-    assert_eq!(health.lease_until_ms, None);
-    assert_eq!(health.phase_started_at_ms, Some(950));
 }

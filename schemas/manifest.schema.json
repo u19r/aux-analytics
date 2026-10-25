@@ -1,95 +1,120 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnalyticsManifest",
+  "description": "Top-level analytics manifest that registers source stream tables as\nanalytical tables.",
+  "type": "object",
+  "properties": {
+    "tables": {
+      "description": "Table registrations to create and maintain in the analytical catalog.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TableRegistration"
+      }
+    },
+    "version": {
+      "description": "Manifest format version supported by this crate.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "version",
+    "tables"
+  ],
   "$defs": {
     "AnalyticsColumn": {
       "description": "Analytical column definition.",
+      "type": "object",
       "properties": {
         "column_name": {
           "description": "Output analytical column name. Must not be one of the built-in output\ncolumns: `tenant_id`, `table_name`, or `__id`.",
           "type": "string"
         },
         "column_type": {
-          "$ref": "#/$defs/AnalyticsColumnType",
-          "description": "DuckDB-compatible column type."
+          "description": "DuckDB-compatible column type.",
+          "$ref": "#/$defs/AnalyticsColumnType"
         }
       },
       "required": [
         "column_name",
         "column_type"
-      ],
-      "type": "object"
+      ]
     },
     "AnalyticsColumnType": {
       "description": "Logical analytics column type.",
       "oneOf": [
         {
           "description": "Scalar primitive value.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "primitive",
-              "type": "string"
+              "type": "string",
+              "const": "primitive"
             },
             "primitive": {
-              "$ref": "#/$defs/PrimitiveColumnType",
-              "description": "Primitive scalar type."
+              "description": "Primitive scalar type.",
+              "$ref": "#/$defs/PrimitiveColumnType"
             }
           },
           "required": [
             "kind",
             "primitive"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "List of primitive values.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "list",
-              "type": "string"
+              "type": "string",
+              "const": "list"
             },
             "primitive": {
-              "$ref": "#/$defs/PrimitiveColumnType",
-              "description": "Primitive list item type."
+              "description": "Primitive list item type.",
+              "$ref": "#/$defs/PrimitiveColumnType"
             }
           },
           "required": [
             "kind",
             "primitive"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Map value stored as JSON in `DuckDB`.",
+          "type": "object",
           "properties": {
             "key_type": {
-              "description": "Logical key type. Currently documented for callers and stored as\nJSON.",
+              "description": "Logical key type documented for callers and stored as JSON.",
               "type": "string"
             },
             "kind": {
-              "const": "map",
-              "type": "string"
+              "type": "string",
+              "const": "map"
             },
             "value_type": {
-              "$ref": "#/$defs/AnalyticsColumnType",
-              "description": "Logical value type."
+              "description": "Logical value type.",
+              "$ref": "#/$defs/AnalyticsColumnType"
             }
           },
           "required": [
             "kind",
             "key_type",
             "value_type"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "ClusteringKey": {
       "description": "`DuckLake` clustering or sorting key definition.",
+      "type": "object",
       "properties": {
         "column_name": {
           "description": "Output column used for clustering.",
           "type": "string"
         },
         "order": {
+          "description": "Sort direction. Defaults to ascending when omitted.",
           "anyOf": [
             {
               "$ref": "#/$defs/SortOrder"
@@ -97,69 +122,68 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Sort direction. Defaults to ascending when omitted."
+          ]
         }
       },
       "required": [
         "column_name"
-      ],
-      "type": "object"
+      ]
     },
     "JoinPolicy": {
+      "type": "object",
       "properties": {
         "allowed_as_join": {
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "allowed_as_primary": {
-          "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "max_join_rows_hint": {
-          "format": "uint64",
-          "minimum": 0,
           "type": [
             "integer",
             "null"
-          ]
+          ],
+          "format": "uint64",
+          "minimum": 0
         }
-      },
-      "type": "object"
+      }
     },
     "PartitionBucket": {
       "description": "Partition bucketing transform.",
       "oneOf": [
         {
           "description": "Hash bucket a column into a fixed number of buckets.",
+          "type": "object",
           "properties": {
             "buckets": {
+              "type": "integer",
               "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
+              "minimum": 0
             },
             "kind": {
-              "const": "hash",
-              "type": "string"
+              "type": "string",
+              "const": "hash"
             }
           },
           "required": [
             "kind",
             "buckets"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Time bucket a timestamp column.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "time",
-              "type": "string"
+              "type": "string",
+              "const": "time"
             },
             "size": {
+              "type": "integer",
               "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
+              "minimum": 0
             },
             "unit": {
               "$ref": "#/$defs/TimeBucketUnit"
@@ -169,15 +193,16 @@
             "kind",
             "unit",
             "size"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "PartitionKey": {
       "description": "`DuckLake` partition key definition.",
+      "type": "object",
       "properties": {
         "bucket": {
+          "description": "Optional partition bucketing transform.",
           "anyOf": [
             {
               "$ref": "#/$defs/PartitionBucket"
@@ -185,8 +210,7 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Optional partition bucketing transform."
+          ]
         },
         "column_name": {
           "description": "Output column used for partitioning.",
@@ -195,25 +219,34 @@
       },
       "required": [
         "column_name"
-      ],
-      "type": "object"
+      ]
     },
     "PrimitiveColumnType": {
       "description": "Primitive `DuckDB` column type supported by the manifest contract.",
-      "enum": [
-        "boolean",
-        "var_char",
-        "json",
-        "big_int",
-        "unsigned_big_int",
-        "decimal",
-        "double",
-        "timestamp"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "var_char",
+            "json",
+            "big_int",
+            "unsigned_big_int",
+            "decimal",
+            "double",
+            "timestamp"
+          ]
+        },
+        {
+          "description": "Reversible tagged StorageValue JSON; numeric lexemes remain strings.",
+          "type": "string",
+          "const": "storage_json"
+        }
+      ]
     },
     "ProjectionColumn": {
       "description": "Typed projected column sourced from a nested source attribute path.",
+      "type": "object",
       "properties": {
         "attribute_path": {
           "description": "Dot-separated source attribute path.",
@@ -224,6 +257,7 @@
           "type": "string"
         },
         "column_type": {
+          "description": "Optional output column type. Omitted values use the VARCHAR type.",
           "anyOf": [
             {
               "$ref": "#/$defs/AnalyticsColumnType"
@@ -231,88 +265,87 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Optional output column type. Defaults to VARCHAR when omitted."
+          ]
         }
       },
       "required": [
         "column_name",
         "attribute_path"
-      ],
-      "type": "object"
+      ]
     },
     "RetentionPolicy": {
       "description": "Static retention policy for one analytical table.",
+      "type": "object",
       "properties": {
         "period_ms": {
           "description": "Retention duration in milliseconds.",
+          "type": "integer",
           "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
+          "minimum": 0
         },
         "timestamp": {
-          "$ref": "#/$defs/RetentionTimestamp",
-          "description": "Timestamp used as the start time for retention."
+          "description": "Timestamp used as the start time for retention.",
+          "$ref": "#/$defs/RetentionTimestamp"
         }
       },
       "required": [
         "period_ms",
         "timestamp"
-      ],
-      "type": "object"
+      ]
     },
     "RetentionTimestamp": {
       "description": "Timestamp basis used to compute row expiry.",
       "oneOf": [
         {
           "description": "Read a unix epoch millisecond value from a source item attribute path.",
+          "type": "object",
           "properties": {
             "attribute_path": {
               "description": "Dot-separated source attribute path.",
               "type": "string"
             },
             "kind": {
-              "const": "attribute",
-              "type": "string"
+              "type": "string",
+              "const": "attribute"
             }
           },
           "required": [
             "kind",
             "attribute_path"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Use the aux-analytics ingestion time.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "ingested_at",
-              "type": "string"
+              "type": "string",
+              "const": "ingested_at"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "RowExpansion": {
       "description": "Manifest-controlled projection from a source list to analytical rows.",
+      "type": "object",
       "properties": {
         "element_fields": {
           "description": "Fields copied from each list element into its expanded row.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/RowProjectionField"
-          },
-          "type": "array"
+          }
         },
         "list_path": {
           "description": "Path from the source item to the list of row elements.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/RowPathSegment"
-          },
-          "type": "array"
+          }
         },
         "ordinal_attribute_name": {
           "description": "Optional output attribute populated with the zero-based list ordinal.",
@@ -323,88 +356,88 @@
         },
         "source_fields": {
           "description": "Fields copied from the source item into every expanded row.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/RowProjectionField"
-          },
-          "type": "array"
+          }
         }
       },
       "required": [
         "list_path",
         "element_fields"
-      ],
-      "type": "object"
+      ]
     },
     "RowIdentity": {
       "description": "Stable row identity extraction rule.",
       "oneOf": [
         {
           "description": "Use the record key supplied to the ingest endpoint.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "record_key",
-              "type": "string"
+              "type": "string",
+              "const": "record_key"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Hash the source stream key map.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "stream_keys",
-              "type": "string"
+              "type": "string",
+              "const": "stream_keys"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Hash a string attribute value from the source item.",
+          "type": "object",
           "properties": {
             "attribute_name": {
               "description": "Source string attribute containing row identity.",
               "type": "string"
             },
             "kind": {
-              "const": "attribute",
-              "type": "string"
+              "type": "string",
+              "const": "attribute"
             }
           },
           "required": [
             "kind",
             "attribute_name"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Hash an ordered tuple of source attributes into one stable row id.\nThis is useful for expanded rows whose identity is a parent id plus\nlist ordinal.",
+          "type": "object",
           "properties": {
             "attribute_names": {
               "description": "Ordered source attributes that together identify the row.",
+              "type": "array",
               "items": {
                 "type": "string"
-              },
-              "type": "array"
+              }
             },
             "kind": {
-              "const": "attributes",
-              "type": "string"
+              "type": "string",
+              "const": "attributes"
             }
           },
           "required": [
             "kind",
             "attribute_names"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Extract row identity from a named regex capture group on a string\nattribute.",
+          "type": "object",
           "properties": {
             "attribute_name": {
               "description": "Source string attribute to match.",
@@ -415,8 +448,8 @@
               "type": "string"
             },
             "kind": {
-              "const": "attribute_regex",
-              "type": "string"
+              "type": "string",
+              "const": "attribute_regex"
             },
             "regex": {
               "description": "Regular expression with the configured capture group.",
@@ -428,8 +461,7 @@
             "attribute_name",
             "regex",
             "capture"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
@@ -437,10 +469,11 @@
       "description": "One typed segment in a source-item row-expansion path.",
       "oneOf": [
         {
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "attribute",
-              "type": "string"
+              "type": "string",
+              "const": "attribute"
             },
             "name": {
               "type": "string"
@@ -449,210 +482,210 @@
           "required": [
             "kind",
             "name"
-          ],
-          "type": "object"
+          ]
         },
         {
+          "type": "object",
           "properties": {
             "index": {
+              "type": "integer",
               "format": "uint",
-              "minimum": 0,
-              "type": "integer"
+              "minimum": 0
             },
             "kind": {
-              "const": "index",
-              "type": "string"
+              "type": "string",
+              "const": "index"
             }
           },
           "required": [
             "kind",
             "index"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "RowProjectionField": {
       "description": "One field copied into an expanded source row.",
+      "type": "object",
       "properties": {
         "output_attribute_name": {
           "description": "Attribute name presented to tenant, identity, retention, and column\nprojections after expansion.",
           "type": "string"
         },
         "path": {
-          "description": "Path relative to the source item or current list element.",
+          "description": "Path relative to the source item or current list element. An empty\nelement path copies the whole element; source paths must name an\nattribute.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/RowPathSegment"
-          },
-          "type": "array"
+          }
         }
       },
       "required": [
         "output_attribute_name",
         "path"
-      ],
-      "type": "object"
+      ]
     },
     "SortOrder": {
       "description": "Sort direction for clustering and structured order clauses.",
+      "type": "string",
       "enum": [
         "asc",
         "desc"
-      ],
-      "type": "string"
+      ]
     },
     "StorageValue": {
       "description": "DynamoDB-compatible attribute value wire shape.",
       "oneOf": [
         {
-          "additionalProperties": false,
           "description": "String scalar.",
+          "type": "object",
           "properties": {
             "S": {
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "S"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Number encoded as a string to preserve exact source representation.",
+          "type": "object",
           "properties": {
             "N": {
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "N"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Base64-encoded binary scalar.",
+          "type": "object",
           "properties": {
             "B": {
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "B"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "String set.",
+          "type": "object",
           "properties": {
             "SS": {
+              "type": "array",
               "items": {
                 "type": "string"
-              },
-              "type": "array"
+              }
             }
           },
+          "additionalProperties": false,
           "required": [
             "SS"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Number set encoded as strings.",
+          "type": "object",
           "properties": {
             "NS": {
+              "type": "array",
               "items": {
                 "type": "string"
-              },
-              "type": "array"
+              }
             }
           },
+          "additionalProperties": false,
           "required": [
             "NS"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Binary set encoded as base64 strings.",
+          "type": "object",
           "properties": {
             "BS": {
+              "type": "array",
               "items": {
                 "type": "string"
-              },
-              "type": "array"
+              }
             }
           },
+          "additionalProperties": false,
           "required": [
             "BS"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Boolean scalar.",
+          "type": "object",
           "properties": {
             "BOOL": {
               "type": "boolean"
             }
           },
+          "additionalProperties": false,
           "required": [
             "BOOL"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Null marker. Only true represents JSON null.",
+          "type": "object",
           "properties": {
             "NULL": {
               "type": "boolean"
             }
           },
+          "additionalProperties": false,
           "required": [
             "NULL"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "List attribute.",
+          "type": "object",
           "properties": {
             "L": {
+              "type": "array",
               "items": {
                 "$ref": "#/$defs/StorageValue"
-              },
-              "type": "array"
+              }
             }
           },
+          "additionalProperties": false,
           "required": [
             "L"
-          ],
-          "type": "object"
+          ]
         },
         {
-          "additionalProperties": false,
           "description": "Map attribute.",
+          "type": "object",
           "properties": {
             "M": {
+              "type": "object",
               "additionalProperties": {
                 "$ref": "#/$defs/StorageValue"
-              },
-              "type": "object"
+              }
             }
           },
+          "additionalProperties": false,
           "required": [
             "M"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "TableRegistration": {
       "description": "Registration for one analytical table populated from one source table or\nsource table family.",
+      "type": "object",
       "properties": {
         "analytics_table_name": {
           "description": "DuckDB-compatible analytical table name to create and query.",
@@ -660,17 +693,17 @@
         },
         "clustering_keys": {
           "description": "`DuckLake` clustering or sorting layout columns.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/ClusteringKey"
-          },
-          "type": "array"
+          }
         },
         "columns": {
           "description": "Explicit analytical columns. When present, these define table shape\ndirectly. Custom column names must not use the built-in output\ncolumn names `tenant_id`, `table_name`, or `__id`.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/AnalyticsColumn"
-          },
-          "type": "array"
+          }
         },
         "condition_expression": {
           "description": "Optional DynamoDB-compatible condition expression that filters source\nitems before ingestion.",
@@ -680,69 +713,70 @@
           ]
         },
         "document_column": {
-          "default": "item",
           "description": "JSON document column containing the full source item. Set null for a\ndirect-ingestion table that source polling must not consume. Must not\nuse the built-in output column names `tenant_id`, `table_name`, or\n`__id`.",
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": "item"
         },
         "expression_attribute_names": {
-          "additionalProperties": {
-            "type": "string"
-          },
           "description": "Expression attribute name aliases referenced by condition or projection\nexpressions.",
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "expression_attribute_values": {
-          "additionalProperties": {
-            "$ref": "#/$defs/StorageValue"
-          },
           "description": "Expression attribute values referenced by condition or projection\nexpressions.",
           "type": [
             "object",
             "null"
-          ]
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/StorageValue"
+          }
         },
         "join_policy": {
+          "description": "Join participation policy for bounded structured queries.",
           "$ref": "#/$defs/JoinPolicy",
           "default": {
             "allowed_as_join": false,
             "allowed_as_primary": true
-          },
-          "description": "Join participation policy for bounded structured queries."
+          }
         },
         "partition_keys": {
           "description": "`DuckLake` partition layout columns.",
+          "type": "array",
           "items": {
             "$ref": "#/$defs/PartitionKey"
-          },
-          "type": "array"
+          }
         },
         "projection_attribute_names": {
           "description": "Simple top-level source attribute names to project as VARCHAR columns.\nValues must not use the built-in output column names `tenant_id`,\n`table_name`, or `__id`.",
-          "items": {
-            "type": "string"
-          },
           "type": [
             "array",
             "null"
-          ]
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "projection_columns": {
           "description": "Typed projection columns from nested source attributes.\nProjection output names must not use the built-in output column names\n`tenant_id`, `table_name`, or `__id`.",
-          "items": {
-            "$ref": "#/$defs/ProjectionColumn"
-          },
           "type": [
             "array",
             "null"
-          ]
+          ],
+          "items": {
+            "$ref": "#/$defs/ProjectionColumn"
+          }
         },
         "retention": {
+          "description": "Optional static retention policy for rows in this analytical table.",
           "anyOf": [
             {
               "$ref": "#/$defs/RetentionPolicy"
@@ -750,10 +784,10 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Optional static retention policy for rows in this analytical table."
+          ]
         },
         "row_expansion": {
+          "description": "Optional expansion that turns one source item containing a list into\none analytical source row per list element. Conditions are evaluated\nagainst the source item before expansion.",
           "anyOf": [
             {
               "$ref": "#/$defs/RowExpansion"
@@ -761,20 +795,19 @@
             {
               "type": "null"
             }
-          ],
-          "description": "Optional expansion that turns one source item containing a list into\none analytical source row per list element. Conditions are evaluated\nagainst the source item before expansion."
+          ]
         },
         "row_identity": {
+          "description": "Rule used to derive the stable row id for upserts and deletes.",
           "$ref": "#/$defs/RowIdentity",
           "default": {
             "kind": "record_key"
-          },
-          "description": "Rule used to derive the stable row id for upserts and deletes."
+          }
         },
         "skip_delete": {
-          "default": false,
           "description": "Whether delete events should be ignored instead of removing analytical\nrows.",
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "source_table_name": {
           "description": "Source storage table name to read from.",
@@ -788,11 +821,11 @@
           ]
         },
         "table_scope": {
+          "description": "Tenant/reference scope used by safe structured query planning.",
           "$ref": "#/$defs/TableScope",
           "default": {
             "kind": "tenant_scoped"
-          },
-          "description": "Tenant/reference scope used by safe structured query planning."
+          }
         },
         "tenant_id": {
           "description": "Static tenant id to write into ingested rows when the source does not\ncarry tenant identity.",
@@ -802,38 +835,38 @@
           ]
         },
         "tenant_selector": {
+          "description": "Rule used to derive tenant id from records when `tenant_id` is not\nstatic.",
           "$ref": "#/$defs/TenantSelector",
           "default": {
             "kind": "table_name"
-          },
-          "description": "Rule used to derive tenant id from records when `tenant_id` is not\nstatic."
+          }
         }
       },
       "required": [
         "source_table_name",
         "analytics_table_name"
-      ],
-      "type": "object"
+      ]
     },
     "TableScope": {
       "oneOf": [
         {
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "tenant_scoped",
-              "type": "string"
+              "type": "string",
+              "const": "tenant_scoped"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "global_reference",
-              "type": "string"
+              "type": "string",
+              "const": "global_reference"
             },
             "reference_class": {
               "type": "string"
@@ -842,8 +875,7 @@
           "required": [
             "kind",
             "reference_class"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
@@ -852,50 +884,51 @@
       "oneOf": [
         {
           "description": "Do not write tenant ids.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "none",
-              "type": "string"
+              "type": "string",
+              "const": "none"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Use the source table name as tenant context.",
+          "type": "object",
           "properties": {
             "kind": {
-              "const": "table_name",
-              "type": "string"
+              "type": "string",
+              "const": "table_name"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Read tenant id from a string attribute.",
+          "type": "object",
           "properties": {
             "attribute_name": {
               "description": "Source string attribute containing tenant id.",
               "type": "string"
             },
             "kind": {
-              "const": "attribute",
-              "type": "string"
+              "type": "string",
+              "const": "attribute"
             }
           },
           "required": [
             "kind",
             "attribute_name"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Extract tenant id from a named regex capture group on a string\nattribute.",
+          "type": "object",
           "properties": {
             "attribute_name": {
               "description": "Source string attribute to match.",
@@ -906,8 +939,8 @@
               "type": "string"
             },
             "kind": {
-              "const": "attribute_regex",
-              "type": "string"
+              "type": "string",
+              "const": "attribute_regex"
             },
             "regex": {
               "description": "Regular expression with the configured capture group.",
@@ -919,79 +952,55 @@
             "attribute_name",
             "regex",
             "capture"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Prefer table name when available, otherwise parse a partition-key\nprefix.",
+          "type": "object",
           "properties": {
             "attribute_name": {
-              "default": "pk",
               "description": "Source partition key attribute.",
-              "type": "string"
+              "type": "string",
+              "default": "pk"
             },
             "kind": {
-              "const": "table_name_or_partition_key_prefix",
-              "type": "string"
+              "type": "string",
+              "const": "table_name_or_partition_key_prefix"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         },
         {
           "description": "Parse tenant id from the prefix of a partition key attribute.",
+          "type": "object",
           "properties": {
             "attribute_name": {
-              "default": "pk",
               "description": "Source partition key attribute.",
-              "type": "string"
+              "type": "string",
+              "default": "pk"
             },
             "kind": {
-              "const": "partition_key_prefix",
-              "type": "string"
+              "type": "string",
+              "const": "partition_key_prefix"
             }
           },
           "required": [
             "kind"
-          ],
-          "type": "object"
+          ]
         }
       ]
     },
     "TimeBucketUnit": {
       "description": "Time bucket unit for partitioning.",
+      "type": "string",
       "enum": [
         "minute",
         "hour",
         "day",
         "month"
-      ],
-      "type": "string"
+      ]
     }
-  },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Top-level analytics manifest that registers source stream tables as\nanalytical tables.",
-  "properties": {
-    "tables": {
-      "description": "Table registrations to create and maintain in the analytical catalog.",
-      "items": {
-        "$ref": "#/$defs/TableRegistration"
-      },
-      "type": "array"
-    },
-    "version": {
-      "description": "Manifest format version supported by this crate.",
-      "format": "uint32",
-      "minimum": 0,
-      "type": "integer"
-    }
-  },
-  "required": [
-    "version",
-    "tables"
-  ],
-  "title": "AnalyticsManifest",
-  "type": "object"
+  }
 }

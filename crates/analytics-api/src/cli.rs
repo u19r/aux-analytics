@@ -2,10 +2,14 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser};
 
+use super::server::ProcessDuty;
+
 #[derive(Debug, Parser)]
 #[command(name = "aux-analytics-api")]
 #[command(about = "Run the Aux Analytics HTTP API")]
 pub(crate) struct ApiCli {
+    #[arg(long, value_enum, default_value = "combined")]
+    pub(crate) process_duty: ProcessDuty,
     #[arg(long)]
     pub(crate) manifest: Option<String>,
     #[command(flatten)]

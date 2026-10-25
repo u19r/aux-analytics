@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 name = "analytics-config"
@@ -9,10 +10,18 @@ version.workspace = true
 name = "config"
 
 [dependencies]
+analytics-contract = { workspace = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+storage-types = { workspace = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+analytics-quint-test-support = { workspace = true }
+anyhow = { workspace = true }
+quint-connect = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

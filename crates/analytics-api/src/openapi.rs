@@ -1,6 +1,5 @@
 use utoipa::OpenApi;
 
-#[allow(clippy::missing_panics_doc)]
 #[must_use]
 pub fn build() -> utoipa::openapi::OpenApi {
     #[derive(OpenApi)]
@@ -11,6 +10,9 @@ pub fn build() -> utoipa::openapi::OpenApi {
             crate::router::health_status,
             crate::router::diagnostics,
             crate::router::list_operations,
+            crate::router::submit_operation,
+            crate::router::apply_tenant_range_purge,
+            crate::router::register_range_purge_claim,
             crate::router::operation_status,
             crate::router::operation_audit,
             crate::router::cancel_operation,
@@ -21,7 +23,6 @@ pub fn build() -> utoipa::openapi::OpenApi {
             crate::router::unscoped_structured_query,
             crate::router::tenant_query,
             crate::router::tenant_query_batch,
-            crate::router::tenant_range_purge,
             crate::router::ingest_stream_record,
             crate::router::ingest_stream_record_batch,
             crate::router::openapi_json,
@@ -29,6 +30,10 @@ pub fn build() -> utoipa::openapi::OpenApi {
         components(schemas(
             analytics_contract::AnalyticsColumn,
             analytics_contract::AnalyticsManifest,
+            analytics_contract::TenantRangePurgeEffectHttpRequest,
+            analytics_contract::RangePurgeClaimHttpRequest,
+            analytics_contract::TenantRangePurgeRequest,
+            analytics_contract::TenantRangePurgeResponse,
             analytics_contract::ClusteringKey,
             analytics_contract::PartitionBucket,
             analytics_contract::PartitionKey,
@@ -50,39 +55,41 @@ pub fn build() -> utoipa::openapi::OpenApi {
             analytics_contract::StructuredQuery,
             analytics_contract::TableRegistration,
             analytics_contract::TenantSelector,
-            crate::types::QueryBatchResponse,
-            crate::types::QueryBatchResult,
-            crate::types::QueryPlanShape,
-            crate::types::QueryResponse,
-            crate::types::TenantQueryBatchItem,
-            crate::types::TenantQueryBatchRequest,
-            crate::types::TenantQueryRequest,
-            analytics_contract::TenantRangePurgeRequest,
-            analytics_contract::TenantRangePurgeResponse,
-            crate::types::UnscopedSqlQueryRequest,
-            crate::types::UnscopedStructuredQueryRequest,
-            crate::types::IngestResponse,
-            crate::types::IngestBatchResponse,
-            crate::types::IngestStreamRecordBatchRequest,
-            crate::types::IngestStreamRecordRequest,
-            crate::types::IngestStreamRecordPayload,
-            crate::types::OperationAuditEventResponse,
-            crate::types::OperationAuditResponse,
-            crate::types::OperationCancelResponse,
-            crate::types::OperationCursorResponse,
-            crate::types::OperationListResponse,
-            crate::types::OperationStatusResponse,
-            crate::types::StandardStreamEventRecord,
-            crate::types::StandardStreamStorageRecord,
-            crate::types::DiagnosticsResponse,
-            crate::types::SourceHealth,
-            crate::types::SourceHealthStatus,
-            crate::types::RetentionHealth,
-            crate::types::RetentionHealthStatus,
-            crate::types::CheckpointHealth,
-            crate::types::HealthResponse,
-            crate::types::ReadyResponse,
-            crate::types::ErrorResponse,
+            crate::http_contract::QueryBatchResponse,
+            crate::http_contract::QueryBatchResult,
+            crate::http_contract::QueryPlanShape,
+            crate::http_contract::QueryResponse,
+            crate::http_contract::TenantQueryBatchItem,
+            crate::http_contract::TenantQueryBatchRequest,
+            crate::http_contract::TenantQueryRequest,
+            crate::http_contract::UnscopedSqlQueryRequest,
+            crate::http_contract::UnscopedStructuredQueryRequest,
+            crate::http_contract::IngestResponse,
+            crate::http_contract::IngestBatchResponse,
+            crate::http_contract::IngestStreamRecordBatchRequest,
+            crate::http_contract::IngestStreamRecordRequest,
+            crate::http_contract::IngestStreamRecordPayload,
+            crate::http_contract::OperationAuditEventResponse,
+            crate::http_contract::OperationAuditResponse,
+            crate::http_contract::OperationCancelResponse,
+            crate::http_contract::OperationCursorResponse,
+            crate::http_contract::OperationListResponse,
+            crate::http_contract::OperationStatusResponse,
+            analytics_operations::MaintenanceSubmission,
+            analytics_operations::MaintenanceSubmissionOutcome,
+            analytics_operations::RateLimitPolicy,
+            crate::http_contract::HttpMaintenanceRequest,
+            crate::http_contract::StandardStreamEventRecord,
+            crate::http_contract::StandardStreamStorageRecord,
+            crate::http_contract::DiagnosticsResponse,
+            crate::http_contract::SourceHealth,
+            crate::http_contract::SourceHealthStatus,
+            crate::http_contract::RetentionHealth,
+            crate::http_contract::RetentionHealthStatus,
+            crate::http_contract::CheckpointHealth,
+            crate::http_contract::HealthResponse,
+            crate::http_contract::ReadyResponse,
+            crate::http_contract::ErrorResponse,
         )),
         tags(
             (name = "Health", description = "Service health and readiness"),
@@ -98,135 +105,5 @@ pub fn build() -> utoipa::openapi::OpenApi {
 
 #[must_use]
 pub fn build_json() -> serde_json::Value {
-    let mut value = serde_json::to_value(build()).unwrap_or_else(|_| serde_json::json!({}));
-    enrich_erased_object_fields(&mut value);
-    value
-}
-
-#[allow(clippy::too_many_lines)]
-fn enrich_erased_object_fields(spec: &mut serde_json::Value) {
-    set_property_metadata(
-        spec,
-        "ProjectionColumn",
-        "column_type",
-        "Optional output column type. Defaults to VARCHAR when omitted.",
-        serde_json::json!(null),
-        serde_json::json!({"kind": "primitive", "primitive": "var_char"}),
-    );
-    set_property_metadata(
-        spec,
-        "TableRegistration",
-        "expression_attribute_values",
-        "Expression attribute values referenced by condition or projection expressions.",
-        serde_json::json!(null),
-        serde_json::json!({":active": {"BOOL": true}}),
-    );
-    set_property_metadata(
-        spec,
-        "TableRegistration",
-        "tenant_selector",
-        "Rule used to derive tenant id from records when tenant_id is not static.",
-        serde_json::json!({"kind": "table_name"}),
-        serde_json::json!({"kind": "attribute", "attribute_name": "tenant_id"}),
-    );
-    set_property_metadata(
-        spec,
-        "TableRegistration",
-        "row_identity",
-        "Rule used to derive the stable row id for upserts and deletes.",
-        serde_json::json!({"kind": "record_key"}),
-        serde_json::json!({"kind": "attribute", "attribute_name": "id"}),
-    );
-    set_property_metadata(
-        spec,
-        "StorageStreamRecord",
-        "OldImage",
-        "Previous source image for update and delete events.",
-        serde_json::json!(null),
-        serde_json::json!({
-            "pk": {"S": "USER#user-1"},
-            "profile": {"M": {"email": {"S": "old@example.com"}}}
-        }),
-    );
-    set_property_metadata(
-        spec,
-        "StorageStreamRecord",
-        "NewImage",
-        "New source image for insert and update events.",
-        serde_json::json!(null),
-        serde_json::json!({
-            "pk": {"S": "USER#user-1"},
-            "profile": {"M": {"email": {"S": "ada@example.com"}}},
-            "org_id": {"S": "org-a"}
-        }),
-    );
-    set_property_metadata(
-        spec,
-        "StandardStreamStorageRecord",
-        "OldImage",
-        "Previous record image for update and delete events.",
-        serde_json::json!(null),
-        serde_json::json!({
-            "pk": {"S": "USER#user-1"},
-            "profile": {"M": {"email": {"S": "old@example.com"}}}
-        }),
-    );
-    set_property_metadata(
-        spec,
-        "StandardStreamStorageRecord",
-        "NewImage",
-        "New record image for insert and update events.",
-        serde_json::json!(null),
-        serde_json::json!({
-            "pk": {"S": "USER#user-1"},
-            "profile": {"M": {"email": {"S": "ada@example.com"}}}
-        }),
-    );
-    set_property_metadata(
-        spec,
-        "PartitionKey",
-        "bucket",
-        "Optional partition bucketing transform.",
-        serde_json::json!(null),
-        serde_json::json!({"kind": "hash", "buckets": 32}),
-    );
-    set_property_metadata(
-        spec,
-        "ClusteringKey",
-        "order",
-        "Sort direction. Defaults to ascending when omitted.",
-        serde_json::json!("asc"),
-        serde_json::json!("asc"),
-    );
-    set_property_metadata(
-        spec,
-        "QueryOrder",
-        "direction",
-        "Sort direction. Defaults to ascending when omitted.",
-        serde_json::json!("asc"),
-        serde_json::json!("asc"),
-    );
-}
-
-fn set_property_metadata(
-    spec: &mut serde_json::Value,
-    schema: &str,
-    property: &str,
-    description: &str,
-    default: serde_json::Value,
-    example: serde_json::Value,
-) {
-    let Some(property_schema) = spec
-        .pointer_mut(&format!(
-            "/components/schemas/{schema}/properties/{property}"
-        ))
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        return;
-    };
-    property_schema
-        .entry("description")
-        .or_insert_with(|| serde_json::Value::String(description.to_string()));
-    property_schema.entry("default").or_insert(default);
-    property_schema.entry("example").or_insert(example);
+    serde_json::to_value(build()).expect("OpenAPI document serializes")
 }

@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 name = "analytics-fixtures"
@@ -11,6 +12,7 @@ doctest = false
 
 [dependencies]
 analytics-contract = { workspace = true }
+storage-types = { workspace = true }
 
 [lints]
 workspace = true

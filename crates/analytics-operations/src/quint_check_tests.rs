@@ -6,7 +6,7 @@ use crate::{
     LocalCheckExecutor, OperationActor, OperationId, OperationStore, RateLimitPolicy,
 };
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
 enum CheckCase {
     Clean,
@@ -45,10 +45,14 @@ enum MbtCheckOutcome {
     PrivacyViolationOutcome,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct MbtReportState {
+    operation_id: String,
+    strategy: MbtCheckStrategy,
     outcome: MbtCheckOutcome,
+    source_rows: i64,
+    destination_rows: i64,
     checked_rows: i64,
     missing_keys: i64,
     extra_keys: i64,
@@ -56,17 +60,23 @@ struct MbtReportState {
     stale_rows: i64,
     privacy_violations: i64,
     deterministic_chunk_hash_mismatches: i64,
-    missing_samples: i64,
-    extra_samples: i64,
-    mismatched_samples: i64,
-    stale_samples: i64,
-    privacy_samples: i64,
+    unsupported_comparisons: i64,
+    check_duration_ms: i64,
+    missing_samples: Vec<String>,
+    extra_samples: Vec<String>,
+    mismatched_samples: Vec<String>,
+    stale_samples: Vec<String>,
+    privacy_samples: Vec<String>,
 }
 
 impl Default for MbtReportState {
     fn default() -> Self {
         Self {
+            operation_id: String::new(),
+            strategy: MbtCheckStrategy::FullRows,
             outcome: MbtCheckOutcome::NotChecked,
+            source_rows: 0,
+            destination_rows: 0,
             checked_rows: 0,
             missing_keys: 0,
             extra_keys: 0,
@@ -74,11 +84,13 @@ impl Default for MbtReportState {
             stale_rows: 0,
             privacy_violations: 0,
             deterministic_chunk_hash_mismatches: 0,
-            missing_samples: 0,
-            extra_samples: 0,
-            mismatched_samples: 0,
-            stale_samples: 0,
-            privacy_samples: 0,
+            unsupported_comparisons: 0,
+            check_duration_ms: 0,
+            missing_samples: Vec::new(),
+            extra_samples: Vec::new(),
+            mismatched_samples: Vec::new(),
+            stale_samples: Vec::new(),
+            privacy_samples: Vec::new(),
         }
     }
 }
@@ -92,7 +104,7 @@ struct MbtCheckState {
 impl State<MbtCheckDriver> for MbtCheckState {
     fn from_driver(driver: &MbtCheckDriver) -> Result<Self> {
         Ok(Self {
-            last_report: driver.last_report,
+            last_report: driver.last_report.clone(),
         })
     }
 }
@@ -100,7 +112,6 @@ impl State<MbtCheckDriver> for MbtCheckState {
 #[derive(Default)]
 struct MbtCheckDriver {
     last_report: MbtReportState,
-    operation_counter: u64,
 }
 
 impl Driver for MbtCheckDriver {
@@ -140,22 +151,21 @@ impl Driver for MbtCheckDriver {
     max_steps = 4,
     seed = "0xc0ffee"
 )]
-fn quint_check_mbt_compares_full_report_state() -> impl Driver {
+fn given_quint_check_model_when_replayed_then_full_report_state_matches() -> impl Driver {
     MbtCheckDriver::default()
 }
 
 impl MbtCheckDriver {
     fn run_check(
-        &mut self,
+        &self,
         check_case: CheckCase,
         strategy: MbtCheckStrategy,
         sample_limit: SampleLimit,
     ) -> Result<MbtReportState> {
-        self.operation_counter += 1;
         let store = OperationStore::connect_in_memory()?;
         let request = CheckRequest {
-            operation_id: OperationId::new(format!("check_mbt_{}", self.operation_counter))?,
-            actor: OperationActor::new("quint")?,
+            operation_id: OperationId::try_new("check_mbt")?,
+            actor: OperationActor::try_new("quint")?,
             target_tables: vec!["users".to_string()],
             strategy: rust_strategy(strategy),
             sample_limit: rust_sample_limit(sample_limit),
@@ -165,8 +175,13 @@ impl MbtCheckDriver {
         };
         let (source, destination) = check_datasets(check_case);
         let report = LocalCheckExecutor.execute(&store, &request, &source, &destination)?;
+        let operation_id = report.operation_id.as_str().to_owned();
         Ok(MbtReportState {
+            operation_id,
+            strategy: mbt_strategy(report.strategy),
             outcome: mbt_outcome(report.outcome),
+            source_rows: u64_to_i64(report.metrics.source_rows),
+            destination_rows: u64_to_i64(report.metrics.destination_rows),
             checked_rows: u64_to_i64(report.metrics.checked_rows),
             missing_keys: u64_to_i64(report.metrics.missing_keys),
             extra_keys: u64_to_i64(report.metrics.extra_keys),
@@ -176,21 +191,55 @@ impl MbtCheckDriver {
             deterministic_chunk_hash_mismatches: u64_to_i64(
                 report.metrics.deterministic_chunk_hash_mismatches,
             ),
-            missing_samples: usize_to_i64(report.samples.missing_keys.len()),
-            extra_samples: usize_to_i64(report.samples.extra_keys.len()),
-            mismatched_samples: usize_to_i64(report.samples.mismatched_keys.len()),
-            stale_samples: usize_to_i64(report.samples.stale_keys.len()),
-            privacy_samples: usize_to_i64(report.samples.privacy_violation_keys.len()),
+            unsupported_comparisons: u64_to_i64(report.metrics.unsupported_comparisons),
+            check_duration_ms: u64_to_i64(report.metrics.check_duration_ms),
+            missing_samples: report.samples.missing_keys,
+            extra_samples: report.samples.extra_keys,
+            mismatched_samples: report.samples.mismatched_keys,
+            stale_samples: report.samples.stale_keys,
+            privacy_samples: report.samples.privacy_violation_keys,
         })
     }
 }
 
-fn u64_to_i64(value: u64) -> i64 {
-    i64::try_from(value).expect("MBT metric fits in i64")
+#[test]
+fn given_full_row_mismatch_when_report_is_projected_then_typed_fields_are_preserved() {
+    let report = MbtCheckDriver::default()
+        .run_check(
+            CheckCase::Mismatched,
+            MbtCheckStrategy::FullRows,
+            SampleLimit::TwoSamples,
+        )
+        .expect("local check report");
+
+    assert_eq!(
+        report,
+        MbtReportState {
+            operation_id: "check_mbt".to_string(),
+            strategy: MbtCheckStrategy::FullRows,
+            outcome: MbtCheckOutcome::MismatchedOutcome,
+            source_rows: 2,
+            destination_rows: 2,
+            checked_rows: 2,
+            missing_keys: 0,
+            extra_keys: 0,
+            mismatched_rows: 2,
+            stale_rows: 0,
+            privacy_violations: 0,
+            deterministic_chunk_hash_mismatches: 0,
+            unsupported_comparisons: 0,
+            check_duration_ms: 0,
+            missing_samples: Vec::new(),
+            extra_samples: Vec::new(),
+            mismatched_samples: vec!["users:a".to_string(), "users:b".to_string()],
+            stale_samples: Vec::new(),
+            privacy_samples: Vec::new(),
+        }
+    );
 }
 
-fn usize_to_i64(value: usize) -> i64 {
-    i64::try_from(value).expect("MBT sample count fits in i64")
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).expect("MBT metric fits in i64")
 }
 
 fn rust_strategy(strategy: MbtCheckStrategy) -> CheckComparisonStrategy {
@@ -199,6 +248,15 @@ fn rust_strategy(strategy: MbtCheckStrategy) -> CheckComparisonStrategy {
         MbtCheckStrategy::KeySet => CheckComparisonStrategy::KeySet,
         MbtCheckStrategy::ChunkHashes => CheckComparisonStrategy::ChunkHashes,
         MbtCheckStrategy::FullRows => CheckComparisonStrategy::FullRows,
+    }
+}
+
+fn mbt_strategy(strategy: CheckComparisonStrategy) -> MbtCheckStrategy {
+    match strategy {
+        CheckComparisonStrategy::CountsOnly => MbtCheckStrategy::CountsOnly,
+        CheckComparisonStrategy::KeySet => MbtCheckStrategy::KeySet,
+        CheckComparisonStrategy::ChunkHashes => MbtCheckStrategy::ChunkHashes,
+        CheckComparisonStrategy::FullRows => MbtCheckStrategy::FullRows,
     }
 }
 
@@ -257,7 +315,7 @@ fn row(key: &str, row_hash: u64, source_position: u64, contains_private_data: bo
         table: "users".to_string(),
         key: key.to_string(),
         row_hash,
-        source_position,
+        source_position: crate::check_test_support::backup_position(source_position),
         contains_private_data,
     }
 }

@@ -173,14 +173,17 @@
           "order": {
             "default": "asc",
             "description": "Sort direction. Defaults to ascending when omitted.",
-            "example": "asc",
             "oneOf": [
               {
-                "type": "null"
+                "description": "Sort direction for clustering and structured order clauses.",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
               },
               {
-                "$ref": "#/components/schemas/SortOrder",
-                "description": "Sort direction. Defaults to ascending when omitted."
+                "type": "null"
               }
             ]
           }
@@ -313,6 +316,49 @@
         ],
         "type": "object"
       },
+      "HttpMaintenanceRequest": {
+        "description": "Maintenance operations accepted by the HTTP submission endpoint.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "table_fix"
+                ],
+                "type": "string"
+              },
+              "request": {
+                "$ref": "#/components/schemas/TableFixRequest"
+              }
+            },
+            "required": [
+              "kind",
+              "request"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "trim"
+                ],
+                "type": "string"
+              },
+              "request": {
+                "$ref": "#/components/schemas/TrimRequest"
+              }
+            },
+            "required": [
+              "kind",
+              "request"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "IngestBatchResponse": {
         "description": "Batch stream ingestion outcome.",
         "example": {
@@ -444,7 +490,6 @@
         ]
       },
       "IngestStreamRecordRequest": {
-        "description": "Stream ingestion request.",
         "example": {
           "record": {
             "Keys": {
@@ -477,8 +522,7 @@
             "description": "Stream record in the analytics wire format or a standard stream event\nenvelope."
           },
           "record_key": {
-            "default": null,
-            "description": "Stable row key for idempotent writes. Defaults to the stream sequence or\nevent id when omitted.",
+            "description": "Optional stable row key. Omitted values use the contract sequence\nnumber, or the event id and then nested sequence number for standard\nevent envelopes.",
             "example": "user-1",
             "maxLength": 1024,
             "minLength": 1,
@@ -518,15 +562,63 @@
         },
         "type": "object"
       },
+      "MaintenanceSubmission": {
+        "properties": {
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/MaintenanceSubmissionOutcome"
+          }
+        },
+        "required": [
+          "operation_id",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "MaintenanceSubmissionOutcome": {
+        "enum": [
+          "created",
+          "existing"
+        ],
+        "type": "string"
+      },
+      "MaintenanceWindow": {
+        "additionalProperties": false,
+        "properties": {
+          "end_minute_utc": {
+            "description": "Window end in minutes after 00:00 UTC.",
+            "example": 120,
+            "format": "int32",
+            "maximum": 1440,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start_minute_utc": {
+            "description": "Window start in minutes after 00:00 UTC.",
+            "example": 60,
+            "format": "int32",
+            "maximum": 1439,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_minute_utc",
+          "end_minute_utc"
+        ],
+        "type": "object"
+      },
       "OperationAuditEventResponse": {
         "properties": {
           "cursor": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/OperationCursorResponse"
               },
               {
-                "$ref": "#/components/schemas/OperationCursorResponse"
+                "type": "null"
               }
             ]
           },
@@ -625,13 +717,21 @@
         },
         "properties": {
           "configured": {
+            "description": "Whether durable operation storage is configured.",
+            "example": true,
             "type": "boolean"
           },
           "degraded_operations": {
+            "default": 0,
+            "description": "Number of failed operations.",
+            "example": 0,
             "minimum": 0,
             "type": "integer"
           },
           "oldest_running_updated_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when the oldest running or cancelling operation\nwas updated.",
+            "example": 1778670000200,
             "format": "int64",
             "type": [
               "integer",
@@ -639,13 +739,21 @@
             ]
           },
           "operation_count": {
+            "default": 0,
+            "description": "Number of durable operations stored.",
+            "example": 3,
             "minimum": 0,
             "type": "integer"
           },
           "reachable": {
+            "description": "Whether durable operation storage is reachable.",
+            "example": true,
             "type": "boolean"
           },
           "running_operations": {
+            "default": 0,
+            "description": "Number of running or cancelling operations.",
+            "example": 1,
             "minimum": 0,
             "type": "integer"
           }
@@ -658,6 +766,9 @@
           "degraded_operations"
         ],
         "type": "object"
+      },
+      "OperationId": {
+        "type": "string"
       },
       "OperationListResponse": {
         "properties": {
@@ -688,10 +799,10 @@
           "cursor": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/OperationCursorResponse"
               },
               {
-                "$ref": "#/components/schemas/OperationCursorResponse"
+                "type": "null"
               }
             ]
           },
@@ -795,17 +906,60 @@
           "bucket": {
             "default": null,
             "description": "Optional partition bucketing transform.",
-            "example": {
-              "buckets": 32,
-              "kind": "hash"
-            },
             "oneOf": [
               {
-                "type": "null"
+                "description": "Partition bucketing transform.",
+                "oneOf": [
+                  {
+                    "description": "Hash bucket a column into a fixed number of buckets.",
+                    "properties": {
+                      "buckets": {
+                        "format": "int32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "enum": [
+                          "hash"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "buckets",
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "description": "Time bucket a timestamp column.",
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "time"
+                        ],
+                        "type": "string"
+                      },
+                      "size": {
+                        "format": "int32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "unit": {
+                        "$ref": "#/components/schemas/TimeBucketUnit"
+                      }
+                    },
+                    "required": [
+                      "unit",
+                      "size",
+                      "kind"
+                    ],
+                    "type": "object"
+                  }
+                ]
               },
               {
-                "$ref": "#/components/schemas/PartitionBucket",
-                "description": "Optional partition bucketing transform."
+                "type": "null"
               }
             ]
           },
@@ -828,6 +982,7 @@
           "boolean",
           "var_char",
           "json",
+          "storage_json",
           "big_int",
           "unsigned_big_int",
           "decimal",
@@ -864,11 +1019,18 @@
             "type": "string"
           },
           "column_type": {
-            "default": null,
-            "description": "Optional output column type. Defaults to VARCHAR when omitted.",
+            "additionalProperties": {},
+            "default": {
+              "kind": "primitive",
+              "primitive": "var_char"
+            },
+            "description": "Optional output column type. Omitted values use the VARCHAR type.",
             "example": {
               "kind": "primitive",
               "primitive": "var_char"
+            },
+            "propertyNames": {
+              "type": "string"
             },
             "type": [
               "object",
@@ -966,7 +1128,7 @@
             "type": "string"
           },
           "rows": {
-            "description": "Result rows returned by `DuckDB`.",
+            "description": "Dynamic JSON rows returned by `DuckDB`.\n\nQuery projections are selected at runtime, so a statically typed row\nwould either lose arbitrary columns and nested values or change the\nserialized response contract.",
             "example": [
               {
                 "count": 42
@@ -1003,6 +1165,7 @@
           },
           "table_alias": {
             "default": null,
+            "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the column is unambiguous.",
             "example": "m",
             "maxLength": 255,
             "minLength": 1,
@@ -1055,7 +1218,7 @@
         "type": "object"
       },
       "QueryDocumentPredicate": {
-        "description": "Bounded predicate evaluated relative to a registered JSON document or one\nelement selected by `ArrayAny`.",
+        "description": "Bounded predicate evaluated relative to a registered JSON document or one\nelement selected by an array-any predicate.",
         "oneOf": [
           {
             "properties": {
@@ -1084,6 +1247,8 @@
                 "type": "string"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1104,6 +1269,8 @@
                 "type": "string"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1127,6 +1294,8 @@
                 "$ref": "#/components/schemas/QueryComparisonOperator"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1144,6 +1313,8 @@
           {
             "properties": {
               "case_sensitive": {
+                "default": false,
+                "description": "Whether string matching is case-sensitive. The default is false.",
                 "type": "boolean"
               },
               "kind": {
@@ -1156,6 +1327,8 @@
                 "$ref": "#/components/schemas/QueryStringOperator"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1184,6 +1357,8 @@
                 "$ref": "#/components/schemas/QueryStringOperator"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1203,6 +1378,8 @@
           {
             "properties": {
               "case_sensitive": {
+                "default": false,
+                "description": "Whether string matching is case-sensitive. The default is false.",
                 "type": "boolean"
               },
               "kind": {
@@ -1215,6 +1392,8 @@
                 "$ref": "#/components/schemas/QueryStringOperator"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1312,6 +1491,8 @@
                 "type": "string"
               },
               "path": {
+                "default": null,
+                "description": "Optional path relative to the document root. Omitted values test\nthe document root.",
                 "type": [
                   "string",
                   "null"
@@ -1389,6 +1570,7 @@
               },
               "table_alias": {
                 "default": null,
+                "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the column is unambiguous.",
                 "example": "u",
                 "maxLength": 255,
                 "minLength": 1,
@@ -1429,6 +1611,7 @@
               },
               "table_alias": {
                 "default": null,
+                "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the document column is unambiguous.",
                 "example": "u",
                 "maxLength": 255,
                 "minLength": 1,
@@ -1506,6 +1689,7 @@
             "$ref": "#/components/schemas/QueryJoinKind"
           },
           "on": {
+            "default": [],
             "items": {
               "$ref": "#/components/schemas/QueryJoinPredicate"
             },
@@ -1561,14 +1745,17 @@
           "direction": {
             "default": "asc",
             "description": "Sort direction. Defaults to ascending when omitted.",
-            "example": "asc",
             "oneOf": [
               {
-                "type": "null"
+                "description": "Sort direction for clustering and structured order clauses.",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
               },
               {
-                "$ref": "#/components/schemas/SortOrder",
-                "description": "Sort direction. Defaults to ascending when omitted."
+                "type": "null"
               }
             ]
           },
@@ -1835,6 +2022,11 @@
                 "$ref": "#/components/schemas/QueryDocumentPredicate"
               },
               "table_alias": {
+                "default": null,
+                "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the document column is unambiguous.",
+                "example": "u",
+                "maxLength": 255,
+                "minLength": 1,
                 "type": [
                   "string",
                   "null"
@@ -1963,7 +2155,7 @@
             "properties": {
               "alias": {
                 "default": null,
-                "description": "Optional output alias. Defaults to the column name when omitted.",
+                "description": "Optional output alias. Omitted values use the selected column name.",
                 "example": "user_email",
                 "maxLength": 255,
                 "minLength": 1,
@@ -1987,6 +2179,7 @@
               },
               "table_alias": {
                 "default": null,
+                "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the column is unambiguous.",
                 "example": "u",
                 "maxLength": 255,
                 "minLength": 1,
@@ -2034,6 +2227,7 @@
               },
               "table_alias": {
                 "default": null,
+                "description": "Optional source table alias. Omitted values resolve against the\nregistered table name when the document column is unambiguous.",
                 "example": "u",
                 "maxLength": 255,
                 "minLength": 1,
@@ -2262,6 +2456,115 @@
         ],
         "type": "string"
       },
+      "RangePurgeClaimHttpRequest": {
+        "additionalProperties": false,
+        "description": "A shared claim descriptor published by the authenticated scheduler.",
+        "properties": {
+          "claim": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "claim"
+        ],
+        "type": "object"
+      },
+      "RateLimitPolicy": {
+        "additionalProperties": false,
+        "example": {
+          "batch_size": 100,
+          "maintenance_windows_utc": [],
+          "max_bytes_per_second": 1000000,
+          "max_destination_writes_per_second": 5,
+          "max_parallel_chunks": 1,
+          "max_rows_per_second": 100,
+          "max_source_requests_per_second": 5,
+          "pause_ms": 100,
+          "retry_backoff_ms": 1000
+        },
+        "properties": {
+          "batch_size": {
+            "default": 100,
+            "description": "Maximum records in one operation batch. The default is 100 records.",
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maintenance_windows_utc": {
+            "default": [],
+            "description": "UTC maintenance windows during which operation work may run.",
+            "items": {
+              "$ref": "#/components/schemas/MaintenanceWindow"
+            },
+            "type": "array"
+          },
+          "max_bytes_per_second": {
+            "default": 1000000,
+            "description": "Maximum bytes processed per second. The default is 1,000,000 bytes/s.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_destination_writes_per_second": {
+            "default": 5,
+            "description": "Maximum destination writes per second. The default is 5 writes/s.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_parallel_chunks": {
+            "default": 1,
+            "description": "Maximum concurrent operation chunks. The default is 1 chunk.",
+            "format": "int32",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_rows_per_second": {
+            "default": 100,
+            "description": "Maximum rows processed per second. The default is 100 rows/s.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "max_source_requests_per_second": {
+            "default": 5,
+            "description": "Maximum source requests per second. The default is 5 requests/s.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pause_ms": {
+            "default": 100,
+            "description": "Delay between throttled batches in milliseconds. The default is 100 ms.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retry_backoff_ms": {
+            "default": 1000,
+            "description": "Linear retry backoff in milliseconds. The default is 1,000 ms.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "RawBackupObjectId": {
+        "type": "string"
+      },
       "ReadyResponse": {
         "description": "Readiness response.",
         "example": {
@@ -2291,6 +2594,9 @@
         },
         "properties": {
           "last_sweep_completed_at_ms": {
+            "default": null,
+            "description": "Unix epoch milliseconds when the latest sweep completed.",
+            "example": 1778670000200,
             "minimum": 0,
             "type": [
               "integer",
@@ -2298,6 +2604,9 @@
             ]
           },
           "last_sweep_duration_ms": {
+            "default": null,
+            "description": "Duration of the latest sweep in milliseconds.",
+            "example": 25.0,
             "format": "double",
             "type": [
               "number",
@@ -2305,21 +2614,33 @@
             ]
           },
           "status": {
-            "$ref": "#/components/schemas/RetentionHealthStatus"
+            "$ref": "#/components/schemas/RetentionHealthStatus",
+            "description": "Current retention sweeper state."
           },
           "sweeper_enabled": {
+            "description": "Whether the retention sweeper is enabled.",
+            "example": true,
             "type": "boolean"
           },
           "table_count": {
+            "default": 0,
+            "description": "Number of registered tables included in retention sweeps.",
+            "example": 1,
             "minimum": 0,
             "type": "integer"
           },
           "total_rows_deleted": {
+            "default": 0,
+            "description": "Total rows deleted by completed retention sweeps.",
+            "example": 128,
             "format": "int64",
             "minimum": 0,
             "type": "integer"
           },
           "total_sweep_errors": {
+            "default": 0,
+            "description": "Total retention sweep failures since process start.",
+            "example": 0,
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -2441,10 +2762,12 @@
             ]
           },
           "source_fields": {
+            "default": [],
             "description": "Fields copied from the source item into every expanded row.",
             "items": {
               "$ref": "#/components/schemas/RowProjectionField"
             },
+            "minItems": 0,
             "type": "array"
           }
         },
@@ -2629,11 +2952,11 @@
             "type": "string"
           },
           "path": {
-            "description": "Path relative to the source item or current list element.",
+            "description": "Path relative to the source item or current list element. An empty\nelement path copies the whole element; source paths must name an\nattribute.",
             "items": {
               "$ref": "#/components/schemas/RowPathSegment"
             },
-            "minItems": 1,
+            "minItems": 0,
             "type": "array"
           }
         },
@@ -2667,8 +2990,6 @@
           "last_error_at_ms": null,
           "last_poll_started_at_ms": 1778670000000,
           "last_success_at_ms": 1778670000200,
-          "lease_token": "analytics-worker-1-1778670000000-1",
-          "lease_until_ms": 1778670300000,
           "phase": "healthy",
           "phase_started_at_ms": 1778670000000,
           "poller_enabled": true,
@@ -2711,7 +3032,7 @@
           },
           "job_id": {
             "default": null,
-            "description": "Durable job identifier used for source-polling lease ownership.",
+            "description": "Durable job identifier used for source-polling lifecycle observation.",
             "example": "analytics_source_polling",
             "type": [
               "string",
@@ -2757,27 +3078,9 @@
               "null"
             ]
           },
-          "lease_token": {
-            "default": null,
-            "description": "Fencing token for the current source-polling ownership epoch.",
-            "example": "analytics-worker-1-1778670000000-1",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "lease_until_ms": {
-            "default": null,
-            "description": "Unix epoch milliseconds when the current lease expires, if this worker\nowns it.",
-            "example": 1778670300000,
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "phase": {
             "$ref": "#/components/schemas/SourcePollingPhase",
+            "default": "disabled",
             "description": "Deterministic phase for the current source polling job step."
           },
           "phase_started_at_ms": {
@@ -2792,7 +3095,7 @@
           },
           "poller_enabled": {
             "default": false,
-            "description": "Whether source polling is enabled for this process.",
+            "description": "Whether source polling is enabled.",
             "example": true,
             "type": "boolean"
           },
@@ -2875,7 +3178,7 @@
           },
           "worker_id": {
             "default": null,
-            "description": "Worker identity currently used by this process for source-polling\nleases.",
+            "description": "Worker identity assigned to source-polling jobs.",
             "example": "analytics-worker-1",
             "type": [
               "string",
@@ -2904,17 +3207,8 @@
         "enum": [
           "disabled",
           "starting",
-          "waiting_for_lease",
-          "standby",
-          "lease_held",
-          "renewing",
-          "refreshing_plan",
-          "rebuilding_poller",
           "polling",
           "ingesting",
-          "checkpointing",
-          "lease_lost",
-          "timeout",
           "healthy",
           "degraded"
         ],
@@ -3005,6 +3299,7 @@
             "type": "object"
           },
           "NewImage": {
+            "additionalProperties": {},
             "default": null,
             "description": "New record image for insert and update events.",
             "example": {
@@ -3019,12 +3314,16 @@
                 }
               }
             },
+            "propertyNames": {
+              "type": "string"
+            },
             "type": [
               "object",
               "null"
             ]
           },
           "OldImage": {
+            "additionalProperties": {},
             "default": null,
             "description": "Previous record image for update and delete events.",
             "example": {
@@ -3038,6 +3337,9 @@
                   }
                 }
               }
+            },
+            "propertyNames": {
+              "type": "string"
             },
             "type": [
               "object",
@@ -3059,6 +3361,7 @@
         "type": "object"
       },
       "StorageStreamRecord": {
+        "additionalProperties": false,
         "description": "Domain-agnostic storage stream record accepted by the analytics ingestion\nAPI.",
         "example": {
           "Keys": {
@@ -3090,6 +3393,7 @@
             "type": "object"
           },
           "NewImage": {
+            "additionalProperties": {},
             "default": null,
             "description": "New source image for insert and update events.",
             "example": {
@@ -3107,12 +3411,16 @@
                 }
               }
             },
+            "propertyNames": {
+              "type": "string"
+            },
             "type": [
               "object",
               "null"
             ]
           },
           "OldImage": {
+            "additionalProperties": {},
             "default": null,
             "description": "Previous source image for update and delete events.",
             "example": {
@@ -3126,6 +3434,9 @@
                   }
                 }
               }
+            },
+            "propertyNames": {
+              "type": "string"
             },
             "type": [
               "object",
@@ -3228,8 +3539,8 @@
             "type": "array"
           },
           "limit": {
-            "default": null,
-            "description": "Optional row limit.",
+            "default": 1000,
+            "description": "Optional row limit in rows. Omitted values return up to 1,000 rows.",
             "example": 100,
             "format": "int32",
             "maximum": 100000,
@@ -3240,9 +3551,9 @@
             ]
           },
           "offset": {
-            "default": null,
-            "description": "Optional number of matching rows to skip before applying `limit`.",
-            "example": 100,
+            "default": 0,
+            "description": "Optional number of matching rows to skip before applying `limit`. An\nomitted offset starts at the first matching row.",
+            "example": 0,
             "format": "int32",
             "maximum": 100000,
             "minimum": 0,
@@ -3285,9 +3596,8 @@
             "type": "array"
           },
           "table_alias": {
-            "default": null,
-            "description": "Optional alias for the primary table. Defaults to the table name when\nomitted.",
-            "example": "u",
+            "description": "Optional table alias. Omitted values use the registered table name.",
+            "example": "users",
             "maxLength": 255,
             "minLength": 1,
             "type": [
@@ -3299,6 +3609,179 @@
         "required": [
           "analytics_table_name",
           "select"
+        ],
+        "type": "object"
+      },
+      "TableFixConfirmation": {
+        "type": "string"
+      },
+      "TableFixRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/TableFixSelection"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TableFixSource"
+          },
+          "table_name": {
+            "type": "string"
+          },
+          "validation": {
+            "$ref": "#/components/schemas/TableFixValidation"
+          }
+        },
+        "required": [
+          "operation_id",
+          "table_name",
+          "dry_run",
+          "selection",
+          "source",
+          "validation"
+        ],
+        "type": "object"
+      },
+      "TableFixSelection": {
+        "oneOf": [
+          {
+            "properties": {
+              "keys": {
+                "items": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "row_keys"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "keys",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "operation_id": {
+                "$ref": "#/components/schemas/OperationId"
+              },
+              "type": {
+                "enum": [
+                  "check_report"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TableFixSource": {
+        "oneOf": [
+          {
+            "properties": {
+              "object_ids": {
+                "items": {
+                  "$ref": "#/components/schemas/RawBackupObjectId"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "raw_backup"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "object_ids",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "source_identity": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "current_source"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "source_identity",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "operation_id": {
+                "$ref": "#/components/schemas/OperationId"
+              },
+              "type": {
+                "enum": [
+                  "check_report_mismatch_set"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "operation_id",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TableFixValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation": {
+            "default": null,
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TableFixConfirmation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_rows": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "require_post_fix_check": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "require_post_fix_check",
+          "max_rows"
         ],
         "type": "object"
       },
@@ -3465,6 +3948,7 @@
             ]
           },
           "expression_attribute_values": {
+            "additionalProperties": {},
             "default": null,
             "description": "Expression attribute values referenced by condition or projection\nexpressions.",
             "example": {
@@ -3472,22 +3956,21 @@
                 "BOOL": true
               }
             },
+            "propertyNames": {
+              "type": "string"
+            },
             "type": [
               "object",
               "null"
             ]
           },
           "join_policy": {
+            "$ref": "#/components/schemas/JoinPolicy",
             "default": {
               "allowed_as_join": false,
               "allowed_as_primary": true
             },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/JoinPolicy",
-                "description": "Join participation policy for bounded structured queries."
-              }
-            ]
+            "description": "Join participation policy for bounded structured queries."
           },
           "partition_keys": {
             "default": [],
@@ -3545,11 +4028,11 @@
             "default": null,
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RetentionPolicy",
                 "description": "Optional static retention policy for rows in this analytical table."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3557,29 +4040,20 @@
             "default": null,
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/RowExpansion",
                 "description": "Optional expansion that turns one source item containing a list into\none analytical source row per list element. Conditions are evaluated\nagainst the source item before expansion."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "row_identity": {
+            "$ref": "#/components/schemas/RowIdentity",
             "default": {
               "kind": "record_key"
             },
-            "description": "Rule used to derive the stable row id for upserts and deletes.",
-            "example": {
-              "attribute_name": "id",
-              "kind": "attribute"
-            },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/RowIdentity",
-                "description": "Rule used to derive the stable row id for upserts and deletes."
-              }
-            ]
+            "description": "Rule used to derive the stable row id for upserts and deletes."
           },
           "skip_delete": {
             "default": false,
@@ -3606,15 +4080,11 @@
             ]
           },
           "table_scope": {
+            "$ref": "#/components/schemas/TableScope",
             "default": {
               "kind": "tenant_scoped"
             },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TableScope",
-                "description": "Tenant/reference scope used by safe structured query planning."
-              }
-            ]
+            "description": "Tenant/reference scope used by safe structured query planning."
           },
           "tenant_id": {
             "default": null,
@@ -3628,20 +4098,11 @@
             ]
           },
           "tenant_selector": {
+            "$ref": "#/components/schemas/TenantSelector",
             "default": {
               "kind": "table_name"
             },
-            "description": "Rule used to derive tenant id from records when tenant_id is not static.",
-            "example": {
-              "attribute_name": "tenant_id",
-              "kind": "attribute"
-            },
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TenantSelector",
-                "description": "Rule used to derive tenant id from records when `tenant_id` is not\nstatic."
-              }
-            ]
+            "description": "Rule used to derive tenant id from records when `tenant_id` is not\nstatic."
           }
         },
         "required": [
@@ -3827,8 +4288,31 @@
         ],
         "type": "object"
       },
+      "TenantRangePurgeEffectHttpRequest": {
+        "additionalProperties": false,
+        "description": "One bounded purge effect under previously registered whole-job authority.",
+        "properties": {
+          "claim": {
+            "type": "object"
+          },
+          "request": {
+            "$ref": "#/components/schemas/TenantRangePurgeRequest"
+          },
+          "request_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "request",
+          "request_id",
+          "claim"
+        ],
+        "type": "object"
+      },
       "TenantRangePurgeRequest": {
-        "description": "A bounded, tenant-scoped delete operation over one analytical table.\n\n`equals` contains exact column predicates. `None` means SQL `IS NULL` and\n`Some(value)` means SQL equality. The cursor is an opaque `__id` checkpoint\nreturned by the engine; callers must persist it and pass it back unchanged.",
+        "description": "A bounded, tenant-scoped delete operation over one analytical table.\n\n`equals` contains exact column predicates. `None` means SQL `IS NULL` and\n`Some(value)` means SQL equality. The cursor is an opaque `__id` checkpoint\nreturned by the engine; callers must persist it and pass it back unchanged.\nThis describes only the bounded predicate and cursor. Mutating callers must\nsupply destination execution authority through the analytics engine's\nfenced range-purge API; the request is not an independently safe write.",
         "properties": {
           "cursor": {
             "default": null,
@@ -4060,14 +4544,440 @@
         ],
         "type": "string"
       },
+      "TrimPredicate": {
+        "description": "Closed, bounded predicate language for row deletion.\n\nColumns are validated identifiers and literals are always supplied as\nbound parameters. There is deliberately no SQL fragment variant: callers\ncannot add a statement, comment, table reference, or unbounded expression\nthrough this contract.",
+        "oneOf": [
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "eq"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "not_eq"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "gt"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "gte"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "lt"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "lte"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/components/schemas/TrimPredicateValue"
+              }
+            },
+            "required": [
+              "column",
+              "value",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "is_null"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "column",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "is_not_null"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "column",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "all"
+                ],
+                "type": "string"
+              },
+              "predicates": {
+                "items": {
+                  "$ref": "#/components/schemas/TrimPredicate"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "predicates",
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "any"
+                ],
+                "type": "string"
+              },
+              "predicates": {
+                "items": {
+                  "$ref": "#/components/schemas/TrimPredicate"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "predicates",
+              "kind"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TrimPredicateValue": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "integer"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "boolean"
+                ],
+                "type": "string"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "value",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TrimRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmation_token": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/OperationId"
+          },
+          "table_name": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TrimTarget"
+          }
+        },
+        "required": [
+          "operation_id",
+          "table_name",
+          "dry_run",
+          "target"
+        ],
+        "type": "object"
+      },
+      "TrimTarget": {
+        "oneOf": [
+          {
+            "properties": {
+              "keys": {
+                "items": {
+                  "items": {
+                    "format": "int32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "type": {
+                "enum": [
+                  "row_keys"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "keys",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "predicate": {
+                "$ref": "#/components/schemas/TrimPredicate"
+              },
+              "type": {
+                "enum": [
+                  "row_predicate"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "predicate",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "full_table_drop"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "older_than_ms": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "horizon_trim"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "older_than_ms",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "older_than_ms": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "duck_lake_snapshot_expiry"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "older_than_ms",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "older_than_ms": {
+                "format": "int64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "enum": [
+                  "raw_backup_expiration"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "older_than_ms",
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "UnscopedSqlQueryRequest": {
-        "description": "Explicitly unscoped raw SQL query request. The HTTP API validates this shape\nbut rejects execution until an admin authorization boundary exists.",
+        "description": "Request shape for the raw-SQL route. The HTTP API accepts tenant-scoped\nstructured queries for tenant-isolated reads.",
         "example": {
           "sql": "select email, org_id from users where org_id = 'org-a' order by email"
         },
         "properties": {
           "sql": {
-            "description": "Raw SQL text. The HTTP API rejects raw SQL execution because arbitrary\nSQL cannot prove tenant isolation without a separate admin boundary.",
+            "description": "Raw SQL text supplied to the route.",
             "example": "select email, org_id from users where org_id = 'org-a' order by email",
             "maxLength": 20000,
             "minLength": 1,
@@ -4101,7 +5011,7 @@
         "properties": {
           "query": {
             "$ref": "#/components/schemas/StructuredQuery",
-            "description": "Structured query tree compiled by the analytics engine without a tenant\npredicate. Use only for explicitly unscoped data."
+            "description": "Structured query tree for explicitly unscoped data. The API does not\ninject a tenant predicate into this query."
           }
         },
         "required": [
@@ -4264,6 +5174,123 @@
         ]
       }
     },
+    "/maintenance/tenant-range-purge": {
+      "post": {
+        "description": "Apply a bounded deletion and its execution receipt atomically. Replays return the retained chunk result; stale fencing or conflicting requests fail.",
+        "operationId": "apply_tenant_range_purge",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantRangePurgeEffectHttpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantRangePurgeResponse"
+                }
+              }
+            },
+            "description": "Applied or replayed chunk result"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid purge predicate or execution authority"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Stale fence or conflicting execution receipt"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Destination storage is unavailable"
+          }
+        },
+        "summary": "Apply one fenced tenant-range purge chunk",
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
+    "/maintenance/tenant-range-purge/claim": {
+      "post": {
+        "description": "Acknowledge a durable whole-job claim before scheduler execution. Exact replay succeeds; older or conflicting claims cannot replace registered authority.",
+        "operationId": "register_range_purge_claim",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RangePurgeClaimHttpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Claim durably accepted or already current"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid claim descriptor"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Stale or conflicting claim"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Destination storage is unavailable"
+          }
+        },
+        "summary": "Register shared job authority for range purges",
+        "tags": [
+          "Operations"
+        ]
+      }
+    },
     "/manifest": {
       "get": {
         "operationId": "manifest",
@@ -4324,9 +5351,70 @@
                 }
               }
             },
-            "description": "Operation store is not configured"
+            "description": "Durable operation storage is unavailable"
           }
         },
+        "tags": [
+          "Operations"
+        ]
+      },
+      "post": {
+        "description": "Create a durable operation from a table-fix or trim request.",
+        "operationId": "submit_operation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HttpMaintenanceRequest"
+              }
+            }
+          },
+          "description": "Table-fix or trim request with operation-specific validation and execution options.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceSubmission"
+                }
+              }
+            },
+            "description": "Durable maintenance operation submitted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid maintenance request"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Operation id conflicts with an existing request"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Durable operation storage is unavailable"
+          }
+        },
+        "summary": "Submit a table-fix or trim operation",
         "tags": [
           "Operations"
         ]
@@ -4375,7 +5463,7 @@
                 }
               }
             },
-            "description": "Operation store is not configured"
+            "description": "Durable operation storage is unavailable"
           }
         },
         "tags": [
@@ -4426,7 +5514,7 @@
                 }
               }
             },
-            "description": "Operation store is not configured"
+            "description": "Durable operation storage is unavailable"
           }
         },
         "tags": [
@@ -4477,7 +5565,7 @@
                 }
               }
             },
-            "description": "Operation store is not configured"
+            "description": "Durable operation storage is unavailable"
           }
         },
         "tags": [
@@ -4681,46 +5769,6 @@
         ]
       }
     },
-    "/tenant-range-purge": {
-      "post": {
-        "operationId": "tenant_range_purge",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TenantRangePurgeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantRangePurgeResponse"
-                }
-              }
-            },
-            "description": "Deleted one bounded tenant-scoped analytics range"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Invalid range purge request or deletion failure"
-          }
-        },
-        "tags": [
-          "Analytics"
-        ]
-      }
-    },
     "/unscoped-sql-query": {
       "post": {
         "operationId": "unscoped_sql_query",
@@ -4743,7 +5791,7 @@
                 }
               }
             },
-            "description": "Raw SQL is not available through HTTP without an admin boundary"
+            "description": "Use tenant-scoped structured queries for HTTP reads"
           }
         },
         "tags": [

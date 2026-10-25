@@ -1,12 +1,11 @@
 #![allow(
     clippy::enum_variant_names,
-    clippy::fn_params_excessive_bools,
     clippy::match_same_arms,
-    clippy::struct_excessive_bools,
+    non_snake_case,
     reason = "Quint MBT records intentionally mirror finite boolean model state"
 )]
 
-use analytics_quint_test_support::map_result;
+use analytics_quint_test_support::{map_result, run_fresh_traces};
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
 
@@ -63,7 +62,10 @@ enum RequestedMethod {
 #[serde(rename_all = "camelCase")]
 struct PlanningState {
     state: PlanState,
+    operation_identity: i64,
     source_kind: SourceKind,
+    metadata_reachable: bool,
+    destination_ready: bool,
     has_row_identity: bool,
     supports_pitr_export: bool,
     supports_parallel_scan: bool,
@@ -76,6 +78,12 @@ struct PlanningState {
     deletes_can_be_proven: bool,
 }
 
+impl State<PlanningDriver> for PlanningState {
+    fn from_driver(driver: &PlanningDriver) -> Result<Self> {
+        Ok(driver.state.clone())
+    }
+}
+
 struct PlanningDriver {
     state: PlanningState,
 }
@@ -85,7 +93,10 @@ impl Default for PlanningDriver {
         Self {
             state: PlanningState {
                 state: PlanState::Requested,
+                operation_identity: 1,
                 source_kind: SourceKind::DynamoDb,
+                metadata_reachable: false,
+                destination_ready: false,
                 has_row_identity: true,
                 supports_pitr_export: true,
                 supports_parallel_scan: true,
@@ -102,19 +113,24 @@ impl Default for PlanningDriver {
 }
 
 impl Driver for PlanningDriver {
-    type State = ();
+    type State = PlanningState;
 
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
             init => {
                 *self = Self::default();
             },
-            InspectSource(kind: SourceKind) => {
-                self.inspect_source(kind);
+            InspectSource(
+                kind: SourceKind,
+                identity: bool,
+                reachable: bool,
+            ) => {
+                self.inspect_source(kind, identity, reachable);
             },
             InspectDestination => {
                 if self.state.state == PlanState::SourceInspected {
                     self.state.state = PlanState::DestinationInspected;
+                    self.state.destination_ready = true;
                 }
             },
             ChooseStrategy => {
@@ -136,8 +152,20 @@ impl Driver for PlanningDriver {
                     self.state.has_row_identity = false;
                 }
             },
-            step(action_choice: String?, kind: SourceKind?) => {
-                self.model_step(action_choice.as_deref(), kind);
+            step(
+                actionChoice: String?,
+                kind: SourceKind?,
+                identity: bool?,
+                reachable: bool?,
+                requested: RequestedMethod?,
+            ) => {
+                self.model_step(
+                    actionChoice.as_deref(),
+                    kind,
+                    identity,
+                    reachable,
+                    requested,
+                );
             },
             RequestMethod(requested: RequestedMethod) => {
                 if self.state.state == PlanState::Requested {
@@ -149,15 +177,23 @@ impl Driver for PlanningDriver {
 }
 
 impl PlanningDriver {
-    fn model_step(&mut self, action_choice: Option<&str>, kind: Option<SourceKind>) {
+    fn model_step(
+        &mut self,
+        action_choice: Option<&str>,
+        kind: Option<SourceKind>,
+        identity: Option<bool>,
+        reachable: Option<bool>,
+        requested: Option<RequestedMethod>,
+    ) {
         match action_choice {
             Some("inspect_source") => {
-                if let Some(kind) = kind {
-                    self.inspect_source(kind);
+                if let (Some(kind), Some(identity), Some(reachable)) = (kind, identity, reachable) {
+                    self.inspect_source(kind, identity, reachable);
                 }
             }
             Some("inspect_destination") if self.state.state == PlanState::SourceInspected => {
                 self.state.state = PlanState::DestinationInspected;
+                self.state.destination_ready = true;
             }
             Some("choose_strategy") => self.choose_strategy(),
             Some("estimate_chunks") if self.state.state == PlanState::StrategyChosen => {
@@ -170,25 +206,31 @@ impl PlanningDriver {
             Some("missing_row_identity") if self.state.state == PlanState::Requested => {
                 self.state.has_row_identity = false;
             }
-            Some("request_method") if self.state.state == PlanState::Requested => {}
+            Some("request_method") if self.state.state == PlanState::Requested => {
+                if let Some(requested) = requested {
+                    self.state.requested_method = requested;
+                }
+            }
             _ => {}
         }
     }
 
-    fn inspect_source(&mut self, kind: SourceKind) {
+    fn inspect_source(&mut self, kind: SourceKind, identity: bool, reachable: bool) {
         if self.state.state != PlanState::Requested {
             return;
         }
         self.state.state = PlanState::SourceInspected;
+        self.state.operation_identity = 1;
         self.state.source_kind = kind;
+        self.state.metadata_reachable = reachable;
+        self.state.destination_ready = false;
+        self.state.has_row_identity = identity;
         self.state.supports_pitr_export = kind == SourceKind::DynamoDb;
         self.state.supports_parallel_scan = kind == SourceKind::DynamoDb;
-        self.state.supports_enumeration =
-            matches!(kind, SourceKind::AuxStorage | SourceKind::LocalFixture);
+        self.state.supports_enumeration = kind == SourceKind::AuxStorage;
         self.state.supports_raw_replay = kind == SourceKind::RawBackup;
         self.state.stream_retention_hours = if kind == SourceKind::DynamoDb { 24 } else { 0 };
-        self.state.deletes_can_be_proven =
-            matches!(kind, SourceKind::AuxStorage | SourceKind::LocalFixture);
+        self.state.deletes_can_be_proven = kind == SourceKind::AuxStorage;
     }
 
     fn choose_strategy(&mut self) {
@@ -197,7 +239,14 @@ impl PlanningDriver {
         }
         let request = BackfillRequest {
             target_tables: vec!["users".to_string()],
-            source: capabilities_for(self.state.source_kind),
+            source: capabilities_for_state(
+                self.state.source_kind,
+                self.state.supports_pitr_export,
+                self.state.supports_parallel_scan,
+                self.state.supports_enumeration,
+                self.state.supports_raw_replay,
+                self.state.deletes_can_be_proven,
+            ),
             requested_snapshot_method: snapshot_for_requested(self.state.requested_method),
             filters: Vec::new(),
             chunk_target_rows: 100,
@@ -208,22 +257,33 @@ impl PlanningDriver {
             all_tables_have_row_identity: self.state.has_row_identity,
             estimated_table_rows: 100,
         };
-        self.state.chosen_method = map_result(
-            ConservativeBackfillPlanner.plan(&request),
-            |plan| model_method(plan.snapshot_method),
-            |err| match err {
-                BackfillPlanError::MissingRowIdentity { .. }
-                | BackfillPlanError::UnsafeStreamOnlyBackfill { .. }
+        let result = ConservativeBackfillPlanner.plan(&request);
+        self.state.chosen_method = match result {
+            Ok(plan) => model_method(plan.snapshot_method),
+            Err(BackfillPlanError::MissingRowIdentity { .. }) => {
+                // The model records the strategy selected from source
+                // capabilities before rejecting an unsafe plan. Ask the
+                // production planner for that strategy on the same request
+                // after satisfying its independent identity precondition.
+                let mut strategy_request = request;
+                strategy_request.all_tables_have_row_identity = true;
+                match ConservativeBackfillPlanner.plan(&strategy_request) {
+                    Ok(plan) => model_method(plan.snapshot_method),
+                    Err(_) => ModelSnapshotMethod::StreamOnly,
+                }
+            }
+            Err(
+                BackfillPlanError::UnsafeStreamOnlyBackfill { .. }
                 | BackfillPlanError::HistoricalEnumerationUnsupported
                 | BackfillPlanError::MissingTargetTables
                 | BackfillPlanError::UnsupportedSourceKind(_)
                 | BackfillPlanError::CapabilityDiscoveryFailed(_)
-                | BackfillPlanError::PartialCapabilitySupport { .. } => {
-                    ModelSnapshotMethod::StreamOnly
-                }
-            },
-        );
+                | BackfillPlanError::PartialCapabilitySupport { .. },
+            ) => ModelSnapshotMethod::StreamOnly,
+        };
         self.state.state = if self.state.has_row_identity
+            && self.state.metadata_reachable
+            && self.state.destination_ready
             && self.state.chosen_method != ModelSnapshotMethod::StreamOnly
         {
             PlanState::StrategyChosen
@@ -233,22 +293,112 @@ impl PlanningDriver {
     }
 }
 
-#[quint_connect::quint_run(
-    spec = "../../specs/backfill_planning.qnt",
-    max_samples = 50,
-    max_steps = 8,
-    seed = "0x515f"
-)]
-fn quint_backfill_planning_model_matches_planner() -> impl Driver {
-    PlanningDriver::default()
+#[test]
+fn given_quint_backfill_planning_model_when_cases_are_replayed_then_planner_matches() {
+    let seeds = (0..50).map(|offset| format!("0x{:x}", 0x515f_u64 + offset));
+    run_fresh_traces(
+        "given_quint_backfill_planning_model_when_cases_are_replayed_then_planner_matches",
+        "../../specs/backfill_planning.qnt",
+        8,
+        seeds,
+        PlanningDriver::default,
+    )
+    .expect("backfill planning traces");
 }
 
-fn capabilities_for(kind: SourceKind) -> BackfillSourceCapabilities {
-    match kind {
-        SourceKind::DynamoDb => BackfillSourceCapabilities::dynamodb_export(),
-        SourceKind::AuxStorage => BackfillSourceCapabilities::aux_storage(),
-        SourceKind::RawBackup => BackfillSourceCapabilities::raw_backup(),
-        SourceKind::LocalFixture => BackfillSourceCapabilities::local_fixture(),
+#[test]
+fn given_backfill_planning_seeds_when_drivers_created_then_each_seed_is_isolated() {
+    let trace_plan = ["0x515f", "0x5160"];
+    let receipt = run_fresh_traces(
+        "backfill_planning_fresh_driver_hostile",
+        "../../specs/backfill_planning.qnt",
+        8,
+        trace_plan,
+        FreshOnlyPlanningDriver::default,
+    )
+    .expect("fresh driver must isolate each hostile trace");
+
+    assert_eq!(receipt.expected_trace_count, trace_plan.len());
+    assert_eq!(receipt.factory_invocations, trace_plan.len());
+    assert_eq!(receipt.seeds, trace_plan);
+}
+
+#[test]
+fn given_multi_trace_runner_when_driver_reuse_is_forbidden_then_control_fails() {
+    let config = quint_connect::runner::Config {
+        test_name: "backfill_planning_reused_driver_control".to_owned(),
+        gen_config: quint_connect::runner::RunConfig {
+            spec: "../../specs/backfill_planning.qnt".to_owned(),
+            main: None,
+            init: None,
+            step: None,
+            max_samples: Some(2),
+            // One-step traces are sufficient for this control and force each
+            // generated trace to include its explicit init action. This
+            // verifies runner reuse without claiming that the generated traces
+            // match the separate fresh-trace plan.
+            max_steps: Some(1),
+            seed: "0x515f".to_owned(),
+        },
+    };
+    let error = quint_connect::runner::run_test(FreshOnlyPlanningDriver::default(), config)
+        .expect_err("the multi-trace runner must reuse one driver");
+
+    assert!(
+        error
+            .to_string()
+            .contains("planning driver was reused across explicit fresh traces")
+    );
+}
+
+#[derive(Default)]
+struct FreshOnlyPlanningDriver {
+    inner: PlanningDriver,
+    initialized: bool,
+}
+
+impl State<FreshOnlyPlanningDriver> for PlanningState {
+    fn from_driver(driver: &FreshOnlyPlanningDriver) -> Result<Self> {
+        Ok(driver.inner.state.clone())
+    }
+}
+
+impl Driver for FreshOnlyPlanningDriver {
+    type State = PlanningState;
+
+    fn step(&mut self, step: &Step) -> Result {
+        if step.action_taken == "init" {
+            anyhow::ensure!(
+                !self.initialized,
+                "planning driver was reused across explicit fresh traces"
+            );
+            self.initialized = true;
+        }
+        self.inner.step(step)
+    }
+}
+
+fn capabilities_for_state(
+    kind: SourceKind,
+    supports_pitr_export: bool,
+    supports_parallel_scan: bool,
+    supports_enumeration: bool,
+    supports_raw_replay: bool,
+    can_prove_deletes: bool,
+) -> BackfillSourceCapabilities {
+    BackfillSourceCapabilities {
+        source_kind: match kind {
+            SourceKind::DynamoDb => crate::BackfillSourceKind::DynamoDb,
+            SourceKind::AuxStorage => crate::BackfillSourceKind::AuxStorage,
+            SourceKind::RawBackup => crate::BackfillSourceKind::RawBackup,
+            SourceKind::LocalFixture => crate::BackfillSourceKind::LocalFixture,
+        },
+        stream_retention_hours: (kind == SourceKind::DynamoDb).then_some(24),
+        supports_pitr_export,
+        supports_parallel_scan,
+        supports_full_enumeration: supports_enumeration,
+        supports_raw_replay,
+        can_prove_deletes,
     }
 }
 
@@ -263,7 +413,7 @@ fn model_method(method: SnapshotMethod) -> ModelSnapshotMethod {
 }
 
 #[test]
-fn backfill_strategy_examples_match_quint_model() {
+fn given_backfill_strategies_when_planned_then_quint_model_agrees() {
     let planner = ConservativeBackfillPlanner;
     for (source, expected) in [
         (
@@ -310,7 +460,7 @@ fn backfill_strategy_examples_match_quint_model() {
 }
 
 #[test]
-fn requested_strategy_examples_match_quint_model() {
+fn given_requested_strategies_when_planned_then_quint_model_agrees() {
     let planner = ConservativeBackfillPlanner;
     let mut wrong_request = BackfillRequest {
         target_tables: vec!["users".to_string()],
@@ -386,6 +536,12 @@ struct BughuntState {
     delete_proof_recorded: bool,
 }
 
+impl State<BughuntDriver> for BughuntState {
+    fn from_driver(driver: &BughuntDriver) -> Result<Self> {
+        Ok(driver.state.clone())
+    }
+}
+
 struct BughuntDriver {
     state: BughuntState,
 }
@@ -411,7 +567,7 @@ impl Default for BughuntDriver {
 }
 
 impl Driver for BughuntDriver {
-    type State = ();
+    type State = BughuntState;
 
     #[allow(non_snake_case)]
     fn step(&mut self, step: &Step) -> Result {
@@ -425,12 +581,21 @@ impl Driver for BughuntDriver {
             Plan => {
                 self.plan();
             },
-            step(action_choice: String?, sourceKind: BughuntSource?, identity: bool?) => {
+            step(
+                action_choice: String?,
+                sourceKind: BughuntSource?,
+                identity: bool?,
+                requestedMethod: BughuntRequested?,
+            ) => {
                 if action_choice.as_deref() == Some("discover") {
                     let Some(source_kind) = sourceKind else {
                         return Ok(());
                     };
                     self.discover(source_kind, identity.unwrap_or(true));
+                } else if action_choice.as_deref() == Some("request_method") {
+                    if let Some(requested_method) = requestedMethod {
+                        self.request_method(requested_method);
+                    }
                 } else if action_choice.as_deref() == Some("plan") {
                     self.plan();
                 }
@@ -448,10 +613,7 @@ impl BughuntDriver {
         self.state.has_identity = has_identity;
         self.state.pitr = source == BughuntSource::DynamoDb;
         self.state.scan = source == BughuntSource::DynamoDb;
-        self.state.enumerate = matches!(
-            source,
-            BughuntSource::AuxStorage | BughuntSource::LocalFixture
-        );
+        self.state.enumerate = source == BughuntSource::AuxStorage;
         self.state.replay = source == BughuntSource::RawBackup;
         self.state.strategy = BughuntStrategy::Reject;
         self.state.reserved = false;
@@ -499,13 +661,22 @@ impl BughuntDriver {
     }
 
     fn source_capabilities(&self) -> Option<BackfillSourceCapabilities> {
-        match self.state.source {
-            BughuntSource::DynamoDb => Some(BackfillSourceCapabilities::dynamodb_export()),
-            BughuntSource::AuxStorage => Some(BackfillSourceCapabilities::aux_storage()),
-            BughuntSource::RawBackup => Some(BackfillSourceCapabilities::raw_backup()),
-            BughuntSource::LocalFixture => Some(BackfillSourceCapabilities::local_fixture()),
-            BughuntSource::Unsupported => None,
-        }
+        let source_kind = match self.state.source {
+            BughuntSource::DynamoDb => crate::BackfillSourceKind::DynamoDb,
+            BughuntSource::AuxStorage => crate::BackfillSourceKind::AuxStorage,
+            BughuntSource::RawBackup => crate::BackfillSourceKind::RawBackup,
+            BughuntSource::LocalFixture => crate::BackfillSourceKind::LocalFixture,
+            BughuntSource::Unsupported => return None,
+        };
+        Some(BackfillSourceCapabilities {
+            source_kind,
+            stream_retention_hours: (self.state.source == BughuntSource::DynamoDb).then_some(24),
+            supports_pitr_export: self.state.pitr,
+            supports_parallel_scan: self.state.scan,
+            supports_full_enumeration: self.state.enumerate,
+            supports_raw_replay: self.state.replay,
+            can_prove_deletes: self.state.delete_proof_recorded,
+        })
     }
 }
 
@@ -535,14 +706,17 @@ fn snapshot_for_bughunt_requested(requested: BughuntRequested) -> Option<Snapsho
     }
 }
 
-#[quint_connect::quint_run(
-    spec = "../../specs/backfill_planning_bughunt.qnt",
-    max_samples = 50,
-    max_steps = 8,
-    seed = "0x5160"
-)]
-fn quint_backfill_planning_bughunt_model_matches_planner() -> impl Driver {
-    BughuntDriver::default()
+#[test]
+fn given_quint_backfill_planning_bughunt_model_when_cases_are_replayed_then_planner_matches() {
+    let seeds = (0..50).map(|offset| format!("0x{:x}", 0x5160_u64 + offset));
+    run_fresh_traces(
+        "given_quint_backfill_planning_bughunt_model_when_cases_are_replayed_then_planner_matches",
+        "../../specs/backfill_planning_bughunt.qnt",
+        8,
+        seeds,
+        BughuntDriver::default,
+    )
+    .expect("backfill planning bug-hunt traces");
 }
 
 fn bughunt_strategy(method: SnapshotMethod) -> BughuntStrategy {
@@ -571,25 +745,50 @@ enum MbtPlanResult {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct MbtPlanState {
+    #[serde(rename = "lastCase")]
+    last_case: MbtPlanCase,
     #[serde(rename = "lastResult")]
     last_result: MbtPlanResult,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct MbtPlanCase {
+    source_kind: SourceKind,
+    requested_method: RequestedMethod,
+    has_row_identity: bool,
+    supports_pitr_export: bool,
+    supports_parallel_scan: bool,
+    supports_enumeration: bool,
+    supports_raw_replay: bool,
 }
 
 impl State<MbtPlanningDriver> for MbtPlanState {
     fn from_driver(driver: &MbtPlanningDriver) -> Result<Self> {
         Ok(Self {
+            last_case: driver.last_case,
             last_result: driver.last_result,
         })
     }
 }
 
 struct MbtPlanningDriver {
+    last_case: MbtPlanCase,
     last_result: MbtPlanResult,
 }
 
 impl Default for MbtPlanningDriver {
     fn default() -> Self {
         Self {
+            last_case: MbtPlanCase {
+                source_kind: SourceKind::DynamoDb,
+                requested_method: RequestedMethod::NoRequestedMethod,
+                has_row_identity: true,
+                supports_pitr_export: true,
+                supports_parallel_scan: true,
+                supports_enumeration: false,
+                supports_raw_replay: false,
+            },
             last_result: MbtPlanResult::NotChecked,
         }
     }
@@ -601,7 +800,9 @@ impl Driver for MbtPlanningDriver {
     #[allow(non_snake_case)]
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
-            init => self.last_result = MbtPlanResult::NotChecked,
+            init => {
+                *self = Self::default();
+            },
             CheckPlan(
                 sourceKind: SourceKind,
                 requestedMethod: RequestedMethod,
@@ -611,6 +812,15 @@ impl Driver for MbtPlanningDriver {
                 supportsEnumeration: bool,
                 supportsRawReplay: bool,
             ) => {
+                self.last_case = MbtPlanCase {
+                    source_kind: sourceKind,
+                    requested_method: requestedMethod,
+                    has_row_identity: hasRowIdentity,
+                    supports_pitr_export: supportsPitrExport,
+                    supports_parallel_scan: supportsParallelScan,
+                    supports_enumeration: supportsEnumeration,
+                    supports_raw_replay: supportsRawReplay,
+                };
                 self.last_result = check_mbt_plan(
                     sourceKind,
                     requestedMethod,
@@ -647,6 +857,15 @@ impl Driver for MbtPlanningDriver {
                     supportsEnumeration,
                     supportsRawReplay,
                 ) {
+                    self.last_case = MbtPlanCase {
+                        source_kind,
+                        requested_method,
+                        has_row_identity,
+                        supports_pitr_export,
+                        supports_parallel_scan,
+                        supports_enumeration,
+                        supports_raw_replay,
+                    };
                     self.last_result = check_mbt_plan(
                         source_kind,
                         requested_method,
@@ -668,7 +887,8 @@ impl Driver for MbtPlanningDriver {
     max_steps = 6,
     seed = "0x5161"
 )]
-fn quint_backfill_planning_mbt_compares_full_result_state() -> impl Driver {
+fn given_quint_backfill_planning_model_when_replayed_then_full_result_state_matches() -> impl Driver
+{
     MbtPlanningDriver::default()
 }
 
@@ -763,25 +983,48 @@ enum DiscoveryResult {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct DiscoveryMbtState {
+    #[serde(rename = "lastCase")]
+    last_case: DiscoveryMbtCase,
     #[serde(rename = "lastResult")]
     last_result: DiscoveryResult,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryMbtCase {
+    backend_kind: DiscoveryBackendKind,
+    metadata_reachable: bool,
+    pitr_enabled: bool,
+    scan_enabled: bool,
+    enumeration_enabled: bool,
+    raw_replay_enabled: bool,
 }
 
 impl State<DiscoveryMbtDriver> for DiscoveryMbtState {
     fn from_driver(driver: &DiscoveryMbtDriver) -> Result<Self> {
         Ok(Self {
+            last_case: driver.last_case,
             last_result: driver.last_result,
         })
     }
 }
 
 struct DiscoveryMbtDriver {
+    last_case: DiscoveryMbtCase,
     last_result: DiscoveryResult,
 }
 
 impl Default for DiscoveryMbtDriver {
     fn default() -> Self {
         Self {
+            last_case: DiscoveryMbtCase {
+                backend_kind: DiscoveryBackendKind::Unsupported,
+                metadata_reachable: false,
+                pitr_enabled: false,
+                scan_enabled: false,
+                enumeration_enabled: false,
+                raw_replay_enabled: false,
+            },
             last_result: DiscoveryResult::NotChecked,
         }
     }
@@ -793,7 +1036,9 @@ impl Driver for DiscoveryMbtDriver {
     #[allow(non_snake_case)]
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
-            init => self.last_result = DiscoveryResult::NotChecked,
+            init => {
+                *self = Self::default();
+            },
             CheckDiscovery(
                 backendKind: DiscoveryBackendKind,
                 metadataReachable: bool,
@@ -802,6 +1047,14 @@ impl Driver for DiscoveryMbtDriver {
                 enumerationEnabled: bool,
                 rawReplayEnabled: bool,
             ) => {
+                self.last_case = DiscoveryMbtCase {
+                    backend_kind: backendKind,
+                    metadata_reachable: metadataReachable,
+                    pitr_enabled: pitrEnabled,
+                    scan_enabled: scanEnabled,
+                    enumeration_enabled: enumerationEnabled,
+                    raw_replay_enabled: rawReplayEnabled,
+                };
                 self.last_result = check_discovery(
                     backendKind,
                     metadataReachable,
@@ -834,6 +1087,14 @@ impl Driver for DiscoveryMbtDriver {
                     enumerationEnabled,
                     rawReplayEnabled,
                 ) {
+                    self.last_case = DiscoveryMbtCase {
+                        backend_kind,
+                        metadata_reachable,
+                        pitr_enabled,
+                        scan_enabled,
+                        enumeration_enabled,
+                        raw_replay_enabled,
+                    };
                     self.last_result = check_discovery(
                         backend_kind,
                         metadata_reachable,
@@ -854,7 +1115,8 @@ impl Driver for DiscoveryMbtDriver {
     max_steps = 6,
     seed = "0x5162"
 )]
-fn quint_backfill_capability_discovery_mbt_compares_full_result_state() -> impl Driver {
+fn given_quint_backfill_capability_discovery_model_when_replayed_then_full_result_state_matches()
+-> impl Driver {
     DiscoveryMbtDriver::default()
 }
 

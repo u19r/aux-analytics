@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 name = "analytics-contract"
@@ -9,16 +10,19 @@ version.workspace = true
 doctest = false
 
 [dependencies]
+bg-jobs = { workspace = true }
 jsonschema = { workspace = true }
 regex = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+storage-types = { workspace = true }
 thiserror = { workspace = true }
 utoipa = { workspace = true }
 
 [dev-dependencies]
+alloc-counter = { workspace = true }
 analytics-quint-test-support = { workspace = true }
 anyhow = { workspace = true }
 quint-connect = { workspace = true }

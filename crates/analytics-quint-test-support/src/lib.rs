@@ -1,10 +1,11 @@
-pub fn map_result<T, V, E>(
-    result: Result<V, E>,
-    success: impl FnOnce(V) -> T,
-    failure: impl FnOnce(E) -> T,
-) -> T {
-    match result {
-        Ok(value) => success(value),
-        Err(error) => failure(error),
-    }
-}
+pub mod command;
+mod constants;
+mod fresh_traces;
+pub mod quint_contract_checker;
+
+#[cfg(test)]
+mod fresh_traces_tests;
+#[cfg(test)]
+mod quint_contract_checker_tests;
+
+pub use fresh_traces::{FreshTraceReceipt, map_result, run_fresh_traces};

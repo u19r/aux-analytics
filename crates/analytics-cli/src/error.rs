@@ -2,8 +2,8 @@ use std::fmt;
 
 use analytics_engine::AnalyticsEngineError;
 use analytics_operations::{
-    BackfillExecutionError, BackfillPlanError, CheckError, OperationStoreError, OperationTypeError,
-    PrivacyFixError, RawBackupError, TableFixError, TrimError,
+    BackfillExecutionError, BackfillPlanError, CheckError, MaintenanceError, OperationStoreError,
+    OperationTypeError, PrivacyFixError, RawBackupError, TableFixError, TrimError,
 };
 use config::ConfigError;
 use thiserror::Error;
@@ -13,7 +13,7 @@ pub type CliResult<T> = Result<T, CliError>;
 #[derive(Debug, Error)]
 #[error("{kind}{debug}")]
 pub struct CliError {
-    kind: CliErrorKind,
+    pub(crate) kind: CliErrorKind,
     debug: CliErrorDebug,
     #[source]
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
@@ -143,6 +143,17 @@ impl From<AnalyticsEngineError> for CliError {
 impl From<OperationStoreError> for CliError {
     fn from(source: OperationStoreError) -> Self {
         Self::with_source(CliErrorKind::Operations, source)
+    }
+}
+
+impl From<MaintenanceError> for CliError {
+    fn from(source: MaintenanceError) -> Self {
+        let message = source.to_string();
+        Self {
+            kind: CliErrorKind::Operations,
+            debug: CliErrorDebug::Message(message),
+            source: Some(Box::new(source)),
+        }
     }
 }
 

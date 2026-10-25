@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-use analytics_contract::{TableRegistration, read_manifest};
+use analytics_contract::TableRegistration;
 use analytics_operations::{
     CheckComparisonStrategy, CheckOutputFormat, CheckReport, CheckRequest, CheckRow,
     CheckRowProjection, CheckRowSource, DuckDbAnalyticalCheckRows, DuckDbCheckRows,
@@ -35,8 +35,8 @@ pub(crate) fn run_check_command(command: CheckCommand) -> CliResult<String> {
         } => {
             let store = OperationStore::connect_duckdb(operation_store_duckdb)?;
             let request = CheckRequest {
-                operation_id: OperationId::new(operation_id)?,
-                actor: OperationActor::new("cli")?,
+                operation_id: OperationId::try_new(operation_id)?,
+                actor: OperationActor::try_new("cli")?,
                 target_tables: target_table.clone(),
                 strategy: strategy.into(),
                 sample_limit,
@@ -86,13 +86,15 @@ fn check_row_source(
         (Some(path), None, None, None) => Ok(Box::new(LocalFixtureCheckRows::new(
             read_check_dataset(path)?,
         ))),
-        (None, Some(path), Some(table), None) => Ok(Box::new(DuckDbCheckRows::new(path, table)?)),
-        (None, None, None, Some(path)) => {
-            Ok(Box::new(DuckDbAnalyticalCheckRows::new_with_projection(
+        (None, Some(path), Some(table), None) => {
+            Ok(Box::new(DuckDbCheckRows::try_new(path, table)?))
+        }
+        (None, None, None, Some(path)) => Ok(Box::new(
+            DuckDbAnalyticalCheckRows::try_new_with_projection(
                 path,
                 check_projection_from_manifest(manifest_path, target_tables)?,
-            )?))
-        }
+            )?,
+        )),
         (None, None, None, None) => Err(CliError::with_debug(
             CliErrorKind::Operations,
             CliErrorDebug::Message(format!(
@@ -141,7 +143,13 @@ fn check_projection_from_manifest(
             ),
         ));
     };
-    let manifest = read_manifest(manifest_path.to_string_lossy().as_ref())?;
+    let manifest = config::resolve_config(config::ConfigRequest::cli_manifest_only(
+        None,
+        Some(manifest_path.to_string_lossy().into_owned()),
+        Vec::new(),
+    ))?
+    .manifest
+    .value;
     let table = manifest
         .tables
         .iter()

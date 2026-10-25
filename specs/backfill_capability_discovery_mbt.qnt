@@ -1,3 +1,6 @@
+// Capability discovery is an input/result boundary. It records the exact
+// backend capabilities and rejects unreachable or unsupported historical
+// sources before planning can select a strategy.
 module backfill_capability_discovery_mbt {
   type BackendKind = DynamoDb | AuxStorage | RawBackup | LocalFixture | Unsupported
   type DiscoveryResult =
@@ -24,12 +27,12 @@ module backfill_capability_discovery_mbt {
 
   pure def expectedDiscovery(discoveryCase: DiscoveryCase): DiscoveryResult =
     if (not(discoveryCase.metadataReachable)) RejectedPartialUnsupported
+    else if (discoveryCase.backendKind == Unsupported) RejectedUnsupported
     else if (discoveryCase.backendKind == DynamoDb and discoveryCase.pitrEnabled and discoveryCase.scanEnabled) DiscoveredDynamoDbFull
     else if (discoveryCase.backendKind == DynamoDb and discoveryCase.scanEnabled) DiscoveredDynamoDbScanOnly
     else if (discoveryCase.backendKind == AuxStorage and discoveryCase.enumerationEnabled) DiscoveredAuxStorageFull
     else if (discoveryCase.backendKind == RawBackup and discoveryCase.rawReplayEnabled) DiscoveredRawBackupReplay
     else if (discoveryCase.backendKind == LocalFixture and discoveryCase.enumerationEnabled) DiscoveredLocalFixtureFull
-    else if (discoveryCase.backendKind == Unsupported) RejectedUnsupported
     else RejectedPartialUnsupported
 
   action init = all {
@@ -71,12 +74,21 @@ module backfill_capability_discovery_mbt {
     if (lastCase.backendKind == Unsupported and lastResult != NotChecked) lastResult == RejectedUnsupported or lastResult == RejectedPartialUnsupported else true
   val unreachableRejected =
     if (not(lastCase.metadataReachable) and lastResult != NotChecked) lastResult == RejectedPartialUnsupported else true
+  val fullDynamoRequiresCapabilities =
+    if (lastResult == DiscoveredDynamoDbFull) lastCase.backendKind == DynamoDb and lastCase.pitrEnabled and lastCase.scanEnabled else true
+  val scanDynamoRequiresScan =
+    if (lastResult == DiscoveredDynamoDbScanOnly) lastCase.backendKind == DynamoDb and lastCase.scanEnabled else true
   val auxStorageRequiresEnumeration =
-    if (lastCase.backendKind == AuxStorage and lastResult == DiscoveredAuxStorageFull) lastCase.enumerationEnabled else true
+    if (lastResult == DiscoveredAuxStorageFull) lastCase.backendKind == AuxStorage and lastCase.enumerationEnabled else true
+  val replayRequiresRawCapability =
+    if (lastResult == DiscoveredRawBackupReplay) lastCase.backendKind == RawBackup and lastCase.rawReplayEnabled else true
   val inv = all {
     unsupportedRejected,
     unreachableRejected,
+    fullDynamoRequiresCapabilities,
+    scanDynamoRequiresScan,
     auxStorageRequiresEnumeration,
+    replayRequiresRawCapability,
   }
 
   run capabilityDiscoveryMbtExamples = all {
@@ -96,5 +108,21 @@ module backfill_capability_discovery_mbt {
       enumerationEnabled: false,
       rawReplayEnabled: false,
     }) == RejectedPartialUnsupported),
+    assert(expectedDiscovery({
+      backendKind: Unsupported,
+      metadataReachable: true,
+      pitrEnabled: false,
+      scanEnabled: false,
+      enumerationEnabled: false,
+      rawReplayEnabled: false,
+    }) == RejectedUnsupported),
   }
+
+  val dynamodb_full_witness = lastResult == DiscoveredDynamoDbFull
+  val dynamodb_scan_witness = lastResult == DiscoveredDynamoDbScanOnly
+  val aux_storage_witness = lastResult == DiscoveredAuxStorageFull
+  val raw_backup_witness = lastResult == DiscoveredRawBackupReplay
+  val local_fixture_witness = lastResult == DiscoveredLocalFixtureFull
+  val unsupported_witness = lastResult == RejectedUnsupported
+  val unreachable_witness = lastResult == RejectedPartialUnsupported and not(lastCase.metadataReachable)
 }

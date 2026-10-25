@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use crate::{
-    AnalyticsLambdaResponseCompression, DEFAULT_QUERY_MAX_READ_CONNECTIONS,
+    AnalyticsLambdaResponseCompression, AnalyticsRetentionConfig,
+    DEFAULT_QUERY_MAX_READ_CONNECTIONS,
     loader::{
         apply_override, expand_env_placeholders, load_optional_with_overrides, merge_json,
         parse_override_value,
@@ -173,4 +174,20 @@ fn given_empty_override_path_when_applied_then_config_rejects_it() {
     let error = apply_override(&mut root, "", "true").unwrap_err();
 
     assert!(error.to_string().contains("invalid override path"));
+}
+
+#[test]
+fn given_default_retention_config_when_serialized_then_removed_pause_setting_is_absent() {
+    let value =
+        serde_json::to_value(AnalyticsRetentionConfig::default()).expect("retention config");
+
+    assert_eq!(
+        value,
+        json!({
+            "enabled": false,
+            "sweep_interval_ms": 60_000,
+            "delete_batch_size": 500,
+            "tables": [],
+        })
+    );
 }

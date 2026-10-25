@@ -2,7 +2,7 @@ use std::future::Future;
 
 use crate::{
     error::AnalyticsStorageResult,
-    types::{PollBatch, SnapshotChunk, SnapshotChunkCheckpoint, SourceCheckpoint},
+    source_batch::{PollBatch, SnapshotChunk, SnapshotChunkCheckpoint, SourceCheckpoint},
 };
 
 pub trait SnapshotChunkSource {

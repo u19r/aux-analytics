@@ -6,8 +6,8 @@ The standalone `aux-analytics-api` process is the primary source for both signal
 ## Metrics Endpoint
 
 The HTTP API mounts `GET /metrics` when `features.metrics.enabled` is `true`. Metrics are enabled
-by default. If `features.metrics.prometheus.bearer_token` is configured, clients must send
-`Authorization: Bearer <token>`; missing tokens return `401` and invalid tokens return `403`.
+by default. The endpoint is unauthenticated in this repository; deployments requiring
+authentication must protect it through an operator-managed reverse proxy or API gateway.
 
 The endpoint returns Prometheus text format with content type `text/plain; version=0.0.4`.
 Metric names are recorded in dotted form in Rust and rendered with underscores by the Prometheus

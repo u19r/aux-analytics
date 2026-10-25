@@ -1,9 +1,10 @@
 use std::time::Duration;
 
+use analytics_contract::{AnalyticsColumn, AnalyticsColumnType, PrimitiveColumnType};
 use analytics_fixtures::users_manifest;
 
 use crate::batch_writer::{
-    create_stage_statement, ducklake_table_phase_is_slow, replace_rows_statement,
+    BatchSqlExecutor, batch_columns, create_stage_statement, ducklake_table_phase_is_slow,
 };
 
 #[test]
@@ -14,7 +15,7 @@ fn given_ducklake_table_phase_duration_when_classified_then_one_second_is_slow()
 
 #[test]
 fn given_staged_changes_when_rows_are_replaced_then_one_set_oriented_statement_is_used() {
-    let statement = replace_rows_statement(
+    let statement = BatchSqlExecutor::build_replacement_statement(
         "__stage",
         "events",
         &[
@@ -36,7 +37,7 @@ fn given_staged_changes_when_rows_are_replaced_then_one_set_oriented_statement_i
 
 #[test]
 fn given_staged_deletes_when_rows_are_replaced_then_delete_is_separate_from_merge() {
-    let statement = replace_rows_statement(
+    let statement = BatchSqlExecutor::build_replacement_statement(
         "__stage",
         "events",
         &[
@@ -78,4 +79,54 @@ fn given_registered_columns_when_stage_is_created_then_target_table_is_not_read(
          \"__analytics_batch_upsert\" BOOLEAN)"
     );
     assert!(!statement.contains("FROM \"users\""));
+}
+
+#[test]
+fn given_reserved_source_position_outputs_when_batch_columns_are_built_then_prefix_is_unique() {
+    let mut document = users_manifest()
+        .tables
+        .into_iter()
+        .next()
+        .expect("users fixture contains a table");
+    document.document_column = Some("__source_position".to_string());
+    assert_eq!(
+        batch_columns(&document, document.retention.is_some()),
+        vec![
+            "table_name",
+            "tenant_id",
+            "__id",
+            "__source_position",
+            "user_id",
+            "email",
+            "org_id",
+        ]
+    );
+
+    let mut explicit = document.clone();
+    explicit.document_column = None;
+    explicit.projection_columns = None;
+    explicit.columns = vec![
+        AnalyticsColumn {
+            column_name: "__source_position".to_string(),
+            column_type: AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::Json,
+            },
+        },
+        AnalyticsColumn {
+            column_name: "email".to_string(),
+            column_type: AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::VarChar,
+            },
+        },
+    ];
+    assert_eq!(
+        batch_columns(&explicit, explicit.retention.is_some()),
+        vec![
+            "table_name",
+            "tenant_id",
+            "__id",
+            "__source_position",
+            "email",
+        ]
+    );
 }

@@ -1,34 +1,41 @@
-use std::collections::HashMap;
-
-use analytics_contract::{AnalyticsManifest, StorageValue};
+use analytics_contract::{AnalyticsManifest, StorageItem, StorageValue};
 use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamType};
 
-use crate::{PollerConfig, facade::storage_stream_record_from_facade, planning::table_plans};
+use crate::{PollerConfig, SourceTablePlan, stream_conversion::convert_stream_record};
 
 #[test]
-fn storage_facade_record_converts_to_contract_record() {
+fn given_stream_record_with_nested_image_when_converted_then_keys_and_nested_values_are_preserved()
+{
     let record = storage_types::StreamRecord {
         cursor: None,
         source_table_name: None,
-        keys: HashMap::new(),
+        keys: storage_types::KeyAttributes::from([(
+            "id".to_string(),
+            storage_types::AttributeValue::S("item-1".to_string()),
+        )]),
         sequence_number: "1".to_string(),
         old_image: None,
-        new_image: Some(HashMap::from([(
+        new_image: Some(storage_types::AttributeMap::from_iter([(
             "profile".to_string(),
-            storage_types::AttributeValue::M(HashMap::from([(
+            storage_types::AttributeValue::M(std::collections::HashMap::from([(
                 "email".to_string(),
                 storage_types::AttributeValue::S("a@example.com".to_string()),
             )])),
         )])),
+        system_position: None,
     };
 
-    let converted = storage_stream_record_from_facade(record);
+    let converted = convert_stream_record(record);
+    assert_eq!(
+        converted.keys.get("id"),
+        Some(&StorageValue::S("item-1".to_string()))
+    );
     assert_eq!(
         converted
             .new_image
             .as_ref()
             .and_then(|item| item.get("profile")),
-        Some(&StorageValue::M(HashMap::from([(
+        Some(&StorageValue::M(StorageItem::from_iter([(
             "email".to_string(),
             StorageValue::S("a@example.com".to_string())
         )])))
@@ -36,7 +43,8 @@ fn storage_facade_record_converts_to_contract_record() {
 }
 
 #[test]
-fn poller_defaults_bound_each_ingest_batch_to_four_source_responses() {
+fn given_default_poller_when_request_budget_is_read_then_intervals_and_response_bounds_match_defaults()
+ {
     let config = PollerConfig::default();
 
     assert_eq!(config.poll_interval, std::time::Duration::from_millis(100));
@@ -51,7 +59,8 @@ fn poller_defaults_bound_each_ingest_batch_to_four_source_responses() {
 }
 
 #[test]
-fn poller_plan_spreads_response_budget_across_concurrent_shards() {
+fn given_four_shards_and_capacity_three_when_requests_are_planned_then_first_three_share_the_response_budget()
+ {
     let config = PollerConfig {
         poll_interval: std::time::Duration::from_millis(100),
         request_timeout: std::time::Duration::from_millis(5_000),
@@ -72,7 +81,8 @@ fn poller_plan_spreads_response_budget_across_concurrent_shards() {
 }
 
 #[test]
-fn poller_config_keeps_source_request_timeout_separate_from_poll_interval() {
+fn given_distinct_source_interval_and_timeout_when_poller_config_is_built_then_both_durations_are_preserved()
+ {
     let source = AnalyticsSourceConfig {
         poll_interval_ms: 100,
         poll_request_timeout_ms: 5_000,
@@ -89,7 +99,8 @@ fn poller_config_keeps_source_request_timeout_separate_from_poll_interval() {
 }
 
 #[test]
-fn table_plans_map_source_tables_to_manifest_tables() {
+fn given_configured_source_table_when_plans_are_built_then_manifest_destination_and_stream_type_are_preserved()
+ {
     let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
         "version": 1,
         "tables": [{
@@ -112,7 +123,7 @@ fn table_plans_map_source_tables_to_manifest_tables() {
         ..AnalyticsSourceConfig::default()
     };
 
-    let plans = table_plans(&source, &manifest).expect("plans");
+    let plans = SourceTablePlan::from_source(&source, &manifest).expect("plans");
 
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].source_table_name, "tenant_entities");
@@ -121,12 +132,14 @@ fn table_plans_map_source_tables_to_manifest_tables() {
 }
 
 #[test]
-fn table_plans_use_manifest_source_tables_when_config_omits_table_list() {
+fn given_no_configured_table_list_when_plans_are_built_then_manifest_sources_are_grouped_with_their_destinations()
+ {
     let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
         "version": 1,
         "tables": [
             {
                 "source_table_name": "sys",
+                "source_table_name_prefix": "sys-prefix",
                 "analytics_table_name": "sys_tenants",
                 "tenant_selector": { "kind": "none" },
                 "row_identity": { "kind": "stream_keys" },
@@ -134,6 +147,7 @@ fn table_plans_use_manifest_source_tables_when_config_omits_table_list() {
             },
             {
                 "source_table_name": "sys",
+                "source_table_name_prefix": "other-prefix",
                 "analytics_table_name": "sys_domains",
                 "tenant_selector": { "kind": "none" },
                 "row_identity": { "kind": "stream_keys" },
@@ -156,7 +170,7 @@ fn table_plans_use_manifest_source_tables_when_config_omits_table_list() {
         ..AnalyticsSourceConfig::default()
     };
 
-    let plans = table_plans(&source, &manifest).expect("plans");
+    let plans = SourceTablePlan::from_source(&source, &manifest).expect("plans");
 
     assert_eq!(plans.len(), 2);
     assert_eq!(plans[0].source_table_name, "sys");
@@ -164,6 +178,12 @@ fn table_plans_use_manifest_source_tables_when_config_omits_table_list() {
         plans[0].analytics_table_names,
         vec!["sys_tenants", "sys_domains"]
     );
+    assert_eq!(
+        plans[0].source_table_name_prefix.as_deref(),
+        Some("sys-prefix")
+    );
+    assert_eq!(plans[0].registrations.len(), 2);
     assert_eq!(plans[1].source_table_name, "s00000");
     assert_eq!(plans[1].analytics_table_names, vec!["tenant_items"]);
+    assert_eq!(plans[1].registrations.len(), 1);
 }

@@ -1,0 +1,1024 @@
+use std::{error::Error, fs};
+
+use crate::*;
+
+#[test]
+fn given_to_stable_snake_case_contract_when_manifest_then_serializes_to_stable_snake_case_contract()
+{
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "email".to_string(),
+            attribute_path: "profile.email".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::VarChar,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    let encoded = serde_json::to_value(&manifest).expect("manifest should serialize");
+    assert_eq!(encoded["version"], MANIFEST_VERSION);
+    assert_eq!(encoded["tables"][0]["analytics_table_name"], "users");
+    assert_eq!(
+        encoded["tables"][0]["projection_columns"][0]["column_type"]["primitive"],
+        "var_char"
+    );
+    assert!(
+        encoded["tables"][0].get("retention").is_none(),
+        "retention should be omitted when no static policy is configured"
+    );
+}
+
+#[test]
+fn given_no_document_column_when_manifest_round_trips_then_explicit_null_is_preserved() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "tenant_01",
+            "analytics_table_name": "metric_points_v1",
+            "document_column": null
+        }]
+    }))
+    .expect("manifest with explicit null document column");
+
+    let encoded = serde_json::to_value(&manifest).expect("encode manifest");
+    let decoded: AnalyticsManifest =
+        serde_json::from_value(encoded.clone()).expect("decode manifest");
+
+    assert!(encoded["tables"][0]["document_column"].is_null());
+    assert_eq!(decoded.tables[0].document_column, None);
+}
+
+#[test]
+fn given_table_without_retention_when_manifest_then_deserializes_table_without_retention() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "tenant_01",
+            "analytics_table_name": "users",
+            "projection_attribute_names": ["email"]
+        }]
+    }))
+    .expect("manifest without retention should deserialize");
+
+    assert_eq!(manifest.tables[0].retention, None);
+    assert_eq!(manifest.tables[0].table_scope, TableScope::TenantScoped);
+    assert_eq!(manifest.tables[0].join_policy, JoinPolicy::default());
+    manifest
+        .validate()
+        .expect("manifest without retention should validate");
+}
+
+#[test]
+fn given_keep_existing_tables_tenant_scoped_when_manifest_scope_then_defaults_keep_existing_tables_tenant_scoped()
+ {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "tenant_01",
+            "analytics_table_name": "users",
+            "projection_attribute_names": ["email"]
+        }]
+    }))
+    .expect("manifest should deserialize with table scope defaults");
+
+    assert_eq!(manifest.tables[0].table_scope, TableScope::TenantScoped);
+    assert!(manifest.tables[0].join_policy.allowed_as_primary);
+    assert!(!manifest.tables[0].join_policy.allowed_as_join);
+    assert_eq!(manifest.tables[0].join_policy.max_join_rows_hint, None);
+}
+
+#[test]
+fn given_require_table_retention_when_manifest_schema_then_does_not_require_table_retention() {
+    let schema = serde_json::to_value(schemars::schema_for!(AnalyticsManifest))
+        .expect("manifest schema should serialize");
+    let required = schema
+        .pointer("/$defs/TableRegistration/required")
+        .and_then(serde_json::Value::as_array)
+        .expect("table required fields");
+
+    assert!(
+        !required
+            .iter()
+            .any(|field| field.as_str() == Some("retention")),
+        "retention must remain optional in the manifest schema"
+    );
+}
+
+#[test]
+fn given_expression_maps_when_manifest_round_trips_then_json_objects_are_preserved() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": MANIFEST_VERSION,
+        "tables": [{
+            "source_table_name": "source_users",
+            "analytics_table_name": "users",
+            "condition_expression": "#status = :status",
+            "expression_attribute_names": {"#status": "status"},
+            "expression_attribute_values": {":status": {"S": "ready"}}
+        }]
+    }))
+    .expect("expression maps should deserialize");
+
+    let table = &manifest.tables[0];
+    assert_eq!(
+        table
+            .expression_attribute_names
+            .as_ref()
+            .and_then(|names| names.get("#status")),
+        Some(&"status".to_string())
+    );
+    assert_eq!(
+        table
+            .expression_attribute_values
+            .as_ref()
+            .and_then(|values| values.get(":status")),
+        Some(&StorageValue::S("ready".to_string()))
+    );
+
+    let encoded = serde_json::to_value(&manifest).expect("expression maps should serialize");
+    assert_eq!(
+        encoded["tables"][0]["expression_attribute_names"],
+        serde_json::json!({"#status": "status"})
+    );
+    assert_eq!(
+        encoded["tables"][0]["expression_attribute_values"],
+        serde_json::json!({":status": {"S": "ready"}})
+    );
+}
+
+#[test]
+fn given_expression_maps_when_schema_is_generated_then_maps_are_json_objects() {
+    let schema = serde_json::to_value(schemars::schema_for!(AnalyticsManifest))
+        .expect("manifest schema should serialize");
+    let properties = schema
+        .pointer("/$defs/TableRegistration/properties")
+        .expect("table properties");
+
+    assert_eq!(
+        properties["expression_attribute_names"]["type"],
+        serde_json::json!(["object", "null"])
+    );
+    assert_eq!(
+        properties["expression_attribute_values"]["type"],
+        serde_json::json!(["object", "null"])
+    );
+    assert_eq!(
+        properties["expression_attribute_names"]["additionalProperties"]["type"],
+        serde_json::json!("string")
+    );
+    assert!(
+        properties["expression_attribute_values"]["additionalProperties"]["$ref"]
+            .as_str()
+            .is_some_and(|reference| reference.ends_with("/$defs/StorageValue"))
+    );
+}
+
+#[test]
+fn given_storage_wire_shape_without_external_types_when_stream_record_then_uses_storage_wire_shape_without_external_types()
+ {
+    let record = StorageStreamRecord {
+        keys: StorageItem::new(),
+        sequence_number: "1".to_string(),
+        old_image: None,
+        new_image: Some(StorageItem::from_iter([(
+            "profile".to_string(),
+            StorageValue::M(StorageItem::from_iter([(
+                "email".to_string(),
+                StorageValue::S("a@example.com".to_string()),
+            )])),
+        )])),
+    };
+
+    let encoded = serde_json::to_value(&record).expect("record should serialize");
+    assert_eq!(encoded["SequenceNumber"], "1");
+    assert_eq!(
+        encoded["NewImage"]["profile"]["M"]["email"]["S"],
+        "a@example.com"
+    );
+}
+
+#[test]
+fn given_duplicate_output_tables_when_manifest_validation_then_rejects_duplicate_output_tables() {
+    let table = TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    };
+    let manifest = AnalyticsManifest::new(vec![table.clone(), table]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::DuplicateAnalyticsTableName(name)) if name == "users"
+    ));
+}
+
+#[test]
+fn given_layout_columns_that_are_not_projected_when_manifest_validation_then_rejects_layout_columns_that_are_not_projected()
+ {
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: vec![PartitionKey {
+            column_name: "org_id".to_string(),
+            bucket: None,
+        }],
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::UnknownLayoutColumn { column, .. }) if column == "org_id"
+    ));
+}
+
+#[test]
+fn given_tenant_scoped_join_targets_when_policy_opts_in_when_manifest_validation_then_accepts_tenant_scoped_join_targets_when_policy_opts_in()
+ {
+    let mut table = base_table("tenant_01", "billing_rate_class_map_v1");
+    table.join_policy = JoinPolicy {
+        allowed_as_primary: false,
+        allowed_as_join: true,
+        max_join_rows_hint: Some(100_000),
+    };
+
+    AnalyticsManifest::new(vec![table])
+        .validate()
+        .expect("tenant-scoped reference table can opt into bounded joins");
+}
+
+#[test]
+fn given_global_reference_tables_with_tenant_scope_when_manifest_validation_then_rejects_global_reference_tables_with_tenant_scope()
+ {
+    let mut table = base_table("global_rates", "global_rate_class_map_v1");
+    table.table_scope = TableScope::GlobalReference {
+        reference_class: "rates".to_string(),
+    };
+
+    assert_eq!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::GlobalReferenceHasTenantScope {
+            table: "global_rate_class_map_v1".to_string(),
+        })
+    );
+}
+
+#[test]
+fn given_unbounded_global_reference_joins_when_manifest_validation_then_rejects_unbounded_global_reference_joins()
+ {
+    let mut table = base_table("global_rates", "global_rate_class_map_v1");
+    table.tenant_id = None;
+    table.tenant_selector = TenantSelector::None;
+    table.table_scope = TableScope::GlobalReference {
+        reference_class: "rates".to_string(),
+    };
+    table.join_policy = JoinPolicy {
+        allowed_as_primary: false,
+        allowed_as_join: true,
+        max_join_rows_hint: None,
+    };
+
+    assert_eq!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidJoinPolicy {
+            table: "global_rate_class_map_v1".to_string(),
+            reason: "global reference joins require max_join_rows_hint",
+        })
+    );
+}
+
+#[test]
+fn given_reserved_projection_column_names_when_manifest_validation_then_rejects_reserved_projection_column_names()
+ {
+    for reserved_column in ["tenant_id", "table_name", "__id"] {
+        let manifest = AnalyticsManifest::new(vec![TableRegistration {
+            source_table_name: "tenant_01".to_string(),
+            analytics_table_name: "users".to_string(),
+            source_table_name_prefix: None,
+            row_expansion: None,
+            tenant_id: Some("tenant_01".to_string()),
+            tenant_selector: TenantSelector::TableName,
+            row_identity: RowIdentity::RecordKey,
+            document_column: Some("item".to_string()),
+            skip_delete: false,
+            retention: None,
+            condition_expression: None,
+            expression_attribute_names: None,
+            expression_attribute_values: None,
+            projection_attribute_names: None,
+            projection_columns: Some(vec![ProjectionColumn {
+                column_name: reserved_column.to_string(),
+                attribute_path: reserved_column.to_string(),
+                column_type: Some(AnalyticsColumnType::Primitive {
+                    primitive: PrimitiveColumnType::VarChar,
+                }),
+            }]),
+            columns: Vec::new(),
+            partition_keys: Vec::new(),
+            clustering_keys: Vec::new(),
+            table_scope: crate::TableScope::default(),
+            join_policy: crate::JoinPolicy::default(),
+        }]);
+
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::ReservedOutputColumn { column, .. })
+                if column == reserved_column
+        ));
+    }
+}
+
+fn base_table(source_table_name: &str, analytics_table_name: &str) -> TableRegistration {
+    TableRegistration {
+        source_table_name: source_table_name.to_string(),
+        analytics_table_name: analytics_table_name.to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }
+}
+
+#[test]
+fn given_duplicate_output_columns_across_sources_when_manifest_validation_then_rejects_duplicate_output_columns_across_sources()
+ {
+    let mut manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: Some(vec![ProjectionColumn {
+            column_name: "item".to_string(),
+            attribute_path: "profile.item".to_string(),
+            column_type: Some(AnalyticsColumnType::Primitive {
+                primitive: PrimitiveColumnType::VarChar,
+            }),
+        }]),
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::DuplicateColumnName { column, .. }) if column == "item"
+    ));
+
+    manifest.tables[0].projection_columns = None;
+    manifest.tables[0].columns = vec![AnalyticsColumn {
+        column_name: "email".to_string(),
+        column_type: AnalyticsColumnType::Primitive {
+            primitive: PrimitiveColumnType::VarChar,
+        },
+    }];
+    manifest.tables[0].projection_attribute_names = Some(vec!["email".to_string()]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::DuplicateColumnName { column, .. }) if column == "email"
+    ));
+}
+
+#[test]
+fn given_reserved_columns_as_layout_references_when_manifest_validation_then_allows_reserved_columns_as_layout_references()
+ {
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: vec![PartitionKey {
+            column_name: "tenant_id".to_string(),
+            bucket: None,
+        }],
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    manifest
+        .validate()
+        .expect("built-in columns can be used for layout");
+}
+
+#[test]
+fn given_static_retention_when_manifest_validation_then_accepts_static_retention() {
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: Some(RetentionPolicy {
+            period_ms: 1_000,
+            timestamp: RetentionTimestamp::Attribute {
+                attribute_path: "created_at_ms".to_string(),
+            },
+        }),
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    manifest.validate().expect("static retention manifest");
+}
+
+#[test]
+fn given_zero_retention_period_when_manifest_validation_then_rejects_zero_retention_period() {
+    let mut manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "tenant_01".to_string(),
+        analytics_table_name: "users".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: Some("tenant_01".to_string()),
+        tenant_selector: TenantSelector::TableName,
+        row_identity: RowIdentity::RecordKey,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: Some(RetentionPolicy {
+            period_ms: 0,
+            timestamp: RetentionTimestamp::IngestedAt,
+        }),
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: Some(vec!["email".to_string()]),
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::InvalidRetentionPeriod { .. })
+    ));
+    manifest.tables[0].retention = Some(RetentionPolicy {
+        period_ms: 1,
+        timestamp: RetentionTimestamp::Attribute {
+            attribute_path: " ".to_string(),
+        },
+    });
+    assert!(matches!(
+        manifest.validate(),
+        Err(ManifestValidationError::EmptyField(
+            "retention timestamp attribute_path"
+        ))
+    ));
+}
+
+#[test]
+fn given_internal_retention_columns_when_manifest_validation_then_rejects_internal_retention_columns()
+ {
+    for reserved_column in [
+        INTERNAL_INGESTED_AT_COLUMN,
+        INTERNAL_EXPIRY_COLUMN,
+        INTERNAL_MISSING_RETENTION_COLUMN,
+    ] {
+        let manifest = AnalyticsManifest::new(vec![TableRegistration {
+            source_table_name: "tenant_01".to_string(),
+            analytics_table_name: "users".to_string(),
+            source_table_name_prefix: None,
+            row_expansion: None,
+            tenant_id: Some("tenant_01".to_string()),
+            tenant_selector: TenantSelector::TableName,
+            row_identity: RowIdentity::RecordKey,
+            document_column: Some("item".to_string()),
+            skip_delete: false,
+            retention: None,
+            condition_expression: None,
+            expression_attribute_names: None,
+            expression_attribute_values: None,
+            projection_attribute_names: Some(vec![reserved_column.to_string()]),
+            projection_columns: None,
+            columns: Vec::new(),
+            partition_keys: Vec::new(),
+            clustering_keys: Vec::new(),
+            table_scope: crate::TableScope::default(),
+            join_policy: crate::JoinPolicy::default(),
+        }]);
+
+        assert!(matches!(
+            manifest.validate(),
+            Err(ManifestValidationError::ReservedOutputColumn { column, .. })
+                if column == reserved_column
+        ));
+    }
+}
+
+#[test]
+fn given_invalid_json_file_when_read_manifest_then_rejects_invalid_json_file() {
+    let file = write_manifest_file("{ not json");
+
+    let error = read_manifest(file.path()).expect_err("invalid JSON should fail manifest loading");
+
+    assert_eq!(error.kind(), ManifestLoadErrorKind::Json);
+    assert!(
+        error
+            .to_string()
+            .contains("invalid analytics manifest JSON"),
+        "{error}"
+    );
+}
+
+#[test]
+fn given_schema_invalid_manifest_file_when_read_manifest_then_rejects_schema_invalid_manifest_file()
+{
+    let file = write_manifest_file(
+        r#"{
+            "version": 1,
+            "tables": "not an array"
+        }"#,
+    );
+
+    let error =
+        read_manifest(file.path()).expect_err("schema invalid JSON should fail manifest loading");
+
+    assert_eq!(error.kind(), ManifestLoadErrorKind::SchemaValidation);
+    assert!(
+        error.to_string().contains("is not of type \"array\""),
+        "{error}"
+    );
+}
+
+#[test]
+fn given_semantically_invalid_manifest_file_when_read_manifest_then_rejects_semantically_invalid_manifest_file()
+ {
+    let file = write_manifest_file(
+        r#"{
+            "version": 1,
+            "tables": [
+                {
+                    "source_table_name": "source_a",
+                    "analytics_table_name": "users",
+                    "tenant_selector": { "kind": "none" },
+                    "row_identity": { "kind": "stream_keys" },
+                    "columns": []
+                },
+                {
+                    "source_table_name": "source_b",
+                    "analytics_table_name": "users",
+                    "tenant_selector": { "kind": "none" },
+                    "row_identity": { "kind": "stream_keys" },
+                    "columns": []
+                }
+            ]
+        }"#,
+    );
+
+    let error =
+        read_manifest(file.path()).expect_err("semantic validation should fail manifest loading");
+
+    assert_eq!(error.kind(), ManifestLoadErrorKind::ManifestValidation);
+    assert!(
+        error
+            .source()
+            .is_some_and(|source| source.to_string().contains("users")),
+        "{error}"
+    );
+}
+
+#[test]
+fn given_generic_document_tables_without_tenant_layout_when_manifest_then_supports_generic_document_tables_without_tenant_layout()
+ {
+    let manifest = AnalyticsManifest::new(vec![TableRegistration {
+        source_table_name: "existing_table".to_string(),
+        analytics_table_name: "existing_items".to_string(),
+        source_table_name_prefix: None,
+        row_expansion: None,
+        tenant_id: None,
+        tenant_selector: TenantSelector::None,
+        row_identity: RowIdentity::StreamKeys,
+        document_column: Some("item".to_string()),
+        skip_delete: false,
+        retention: None,
+        condition_expression: None,
+        expression_attribute_names: None,
+        expression_attribute_values: None,
+        projection_attribute_names: None,
+        projection_columns: None,
+        columns: Vec::new(),
+        partition_keys: Vec::new(),
+        clustering_keys: Vec::new(),
+        table_scope: crate::TableScope::default(),
+        join_policy: crate::JoinPolicy::default(),
+    }]);
+
+    manifest.validate().expect("generic manifest");
+}
+
+#[test]
+fn given_typed_row_expansion_paths_when_manifest_then_accepts_typed_row_expansion_paths() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attribute {
+        attribute_name: "event_id".to_string(),
+    };
+    table.projection_attribute_names = None;
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload"), row_index(1)],
+        source_fields: vec![row_field("tenant_id", vec![row_attribute("tenant_id")])],
+        element_fields: vec![
+            row_field("event_id", vec![row_index(5)]),
+            row_field("series_name", vec![row_index(0)]),
+        ],
+        ordinal_attribute_name: Some("ordinal".to_string()),
+    });
+
+    AnalyticsManifest::new(vec![table])
+        .validate()
+        .expect("typed row expansion");
+}
+
+#[test]
+fn given_element_root_projection_when_validated_then_only_element_paths_can_be_empty() {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.projection_attribute_names = None;
+    table.row_identity = RowIdentity::Attribute {
+        attribute_name: "event_id".into(),
+    };
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("points")],
+        source_fields: vec![row_field("tenant_id", vec![row_attribute("tenant_id")])],
+        element_fields: vec![
+            row_field("event_id", vec![row_attribute("id")]),
+            row_field("payload", vec![]),
+        ],
+        ordinal_attribute_name: None,
+    });
+    AnalyticsManifest::new(vec![table.clone()])
+        .validate()
+        .unwrap();
+    table.row_expansion.as_mut().unwrap().source_fields[0]
+        .path
+        .clear();
+    assert!(AnalyticsManifest::new(vec![table]).validate().is_err());
+}
+
+#[test]
+fn given_ambiguous_row_expansion_outputs_when_manifest_then_rejects_ambiguous_row_expansion_outputs()
+ {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload")],
+        source_fields: vec![row_field("event_id", vec![row_attribute("batch_id")])],
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::DuplicateRowExpansionAttribute {
+            attribute,
+            ..
+        }) if attribute == "event_id"
+    ));
+}
+
+#[test]
+fn given_empty_row_expansion_attribute_segment_when_manifest_then_rejects_empty_row_expansion_attribute_segment()
+ {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute(" ")],
+        source_fields: Vec::new(),
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidRowExpansion { .. })
+    ));
+}
+
+#[test]
+fn given_row_expansion_missing_projection_input_when_manifest_then_rejects_row_expansion_missing_projection_input()
+ {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attribute {
+        attribute_name: "event_id".to_string(),
+    };
+    table.projection_attribute_names = None;
+    table.projection_columns = Some(vec![ProjectionColumn {
+        column_name: "series_name".to_string(),
+        attribute_path: "series_name".to_string(),
+        column_type: None,
+    }]);
+    table.row_expansion = Some(RowExpansion {
+        list_path: vec![row_attribute("payload")],
+        source_fields: Vec::new(),
+        element_fields: vec![row_field("event_id", vec![row_index(0)])],
+        ordinal_attribute_name: None,
+    });
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::UnknownRowExpansionOutput {
+            attribute,
+            ..
+        }) if attribute == "series_name"
+    ));
+}
+
+#[test]
+fn given_duplicate_composite_identity_attributes_when_manifest_then_rejects_duplicate_composite_identity_attributes()
+ {
+    let mut table = base_table("source_metrics", "metric_points");
+    table.row_identity = RowIdentity::Attributes {
+        attribute_names: vec!["batch_id".to_string(), "batch_id".to_string()],
+    };
+
+    assert!(matches!(
+        AnalyticsManifest::new(vec![table]).validate(),
+        Err(ManifestValidationError::InvalidRowIdentity { .. })
+    ));
+}
+
+fn row_field(output_attribute_name: &str, path: Vec<RowPathSegment>) -> RowProjectionField {
+    RowProjectionField {
+        output_attribute_name: output_attribute_name.to_string(),
+        path,
+    }
+}
+
+fn row_attribute(name: &str) -> RowPathSegment {
+    RowPathSegment::Attribute {
+        name: name.to_string(),
+    }
+}
+
+const fn row_index(index: usize) -> RowPathSegment {
+    RowPathSegment::Index { index }
+}
+
+#[test]
+fn given_numeric_column_types_when_resolved_then_lossless_duckdb_types_are_used() {
+    let unsigned = AnalyticsColumnType::Primitive {
+        primitive: PrimitiveColumnType::UnsignedBigInt,
+    };
+    let double = AnalyticsColumnType::Primitive {
+        primitive: PrimitiveColumnType::Double,
+    };
+
+    assert_eq!(unsigned.duckdb_type(), "UBIGINT");
+    assert_eq!(double.duckdb_type(), "DOUBLE");
+    assert_eq!(
+        serde_json::to_value(unsigned).expect("serialize unsigned type"),
+        serde_json::json!({
+            "kind": "primitive",
+            "primitive": "unsigned_big_int"
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(double).expect("serialize double type"),
+        serde_json::json!({
+            "kind": "primitive",
+            "primitive": "double"
+        })
+    );
+}
+
+#[test]
+fn given_to_stable_contract_when_structured_query_then_serializes_to_stable_contract() {
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![
+            QuerySelect::Column {
+                table_alias: None,
+                column_name: "email".to_string(),
+                alias: None,
+            },
+            QuerySelect::Count {
+                alias: "count".to_string(),
+            },
+        ],
+        filters: vec![QueryPredicate::Eq {
+            expression: QueryExpression::Column {
+                table_alias: None,
+                column_name: "org_id".to_string(),
+            },
+            value: serde_json::Value::String("org-a".to_string()),
+        }],
+        group_by: vec![QueryExpression::Column {
+            table_alias: None,
+            column_name: "email".to_string(),
+        }],
+        order_by: vec![QueryOrder {
+            expression: QueryExpression::Column {
+                table_alias: None,
+                column_name: "email".to_string(),
+            },
+            direction: Some(SortOrder::Asc),
+        }],
+        limit: Some(10),
+        offset: None,
+    };
+
+    query.validate_shape().expect("valid query");
+    let encoded = serde_json::to_value(&query).expect("query should serialize");
+    assert_eq!(encoded["analytics_table_name"], "users");
+    assert_eq!(encoded["select"][0]["kind"], "column");
+    assert_eq!(encoded["filters"][0]["kind"], "eq");
+}
+
+#[test]
+fn given_empty_select_when_structured_query_then_rejects_empty_select() {
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: Vec::new(),
+        filters: Vec::new(),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: None,
+        offset: None,
+    };
+
+    assert!(matches!(
+        query.validate_shape(),
+        Err(StructuredQueryValidationError::EmptySelect)
+    ));
+}
+
+fn write_manifest_file(contents: &str) -> tempfile::NamedTempFile {
+    let file = tempfile::NamedTempFile::new().expect("manifest temp file");
+    fs::write(file.path(), contents).expect("write manifest temp file");
+    file
+}
+
+#[test]
+fn given_repeated_projection_names_when_validated_then_the_canonical_output_set_rejects_duplicates()
+{
+    let mut table = base_table("source", "events");
+    table.projection_attribute_names = Some(vec!["email".to_string(), "email".to_string()]);
+    assert!(
+        matches!(table.validate(), Err(ManifestValidationError::DuplicateColumnName { column, .. }) if column == "email")
+    );
+    table.projection_attribute_names = None;
+    table.projection_columns = Some(vec![
+        ProjectionColumn {
+            column_name: "email".to_string(),
+            attribute_path: "first".to_string(),
+            column_type: None,
+        },
+        ProjectionColumn {
+            column_name: "email".to_string(),
+            attribute_path: "second".to_string(),
+            column_type: None,
+        },
+    ]);
+    assert!(
+        matches!(table.validate(), Err(ManifestValidationError::DuplicateColumnName { column, .. }) if column == "email")
+    );
+}
+
+#[test]
+fn given_aliased_or_list_expansion_projection_when_manifest_is_validated_then_resolved_outputs_are_required()
+ {
+    for (path, alias, missing) in [
+        ("series.label", None, None),
+        ("series[].label", None, None),
+        ("#series[].label", Some("series"), None),
+        ("#series.label", Some("series"), None),
+        ("#series.label", Some("absent"), Some("absent")),
+        ("#series.label", None, Some("#series")),
+    ] {
+        let mut table = base_table("source_metrics", "metric_points");
+        table.row_identity = RowIdentity::Attribute {
+            attribute_name: "event_id".to_string(),
+        };
+        table.projection_attribute_names = None;
+        table.projection_columns = Some(vec![ProjectionColumn {
+            column_name: "labels".to_string(),
+            attribute_path: path.to_string(),
+            column_type: None,
+        }]);
+        table.expression_attribute_names = alias.map(|name| {
+            storage_types::VecMap::from_iter([("#series".to_string(), name.to_string())])
+        });
+        table.row_expansion = Some(RowExpansion {
+            list_path: vec![row_attribute("payload")],
+            source_fields: Vec::new(),
+            element_fields: vec![
+                row_field("event_id", vec![row_index(0)]),
+                row_field("series", vec![row_index(1)]),
+            ],
+            ordinal_attribute_name: None,
+        });
+        let result = AnalyticsManifest::new(vec![table]).validate();
+        if let Some(missing) = missing {
+            assert!(
+                matches!(result,Err(ManifestValidationError::UnknownRowExpansionOutput { attribute, .. }) if attribute == missing)
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "valid expanded projection {path} rejected: {result:?}"
+            );
+        }
+    }
+}

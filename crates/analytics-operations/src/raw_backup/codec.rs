@@ -1,19 +1,21 @@
+use std::borrow::Cow;
+
 use super::{RawBackupCompression, RawBackupError, RawBackupResult};
 
-pub(super) fn encode_object_bytes(bytes: &[u8], compression: RawBackupCompression) -> Vec<u8> {
+pub(super) fn encode_object_bytes(bytes: Vec<u8>, compression: RawBackupCompression) -> Vec<u8> {
     match compression {
-        RawBackupCompression::None => bytes.to_vec(),
-        RawBackupCompression::RunLength => run_length_encode(bytes),
+        RawBackupCompression::None => bytes,
+        RawBackupCompression::RunLength => run_length_encode(&bytes),
     }
 }
 
 pub(super) fn decode_object_bytes(
     bytes: &[u8],
     compression: RawBackupCompression,
-) -> RawBackupResult<Vec<u8>> {
+) -> RawBackupResult<Cow<'_, [u8]>> {
     match compression {
-        RawBackupCompression::None => Ok(bytes.to_vec()),
-        RawBackupCompression::RunLength => run_length_decode(bytes),
+        RawBackupCompression::None => Ok(Cow::Borrowed(bytes)),
+        RawBackupCompression::RunLength => run_length_decode(bytes).map(Cow::Owned),
     }
 }
 
@@ -46,7 +48,7 @@ fn run_length_decode(bytes: &[u8]) -> RawBackupResult<Vec<u8>> {
         ));
     }
     let mut decoded = Vec::new();
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         decoded.extend(std::iter::repeat_n(pair[1], usize::from(pair[0])));
     }
     Ok(decoded)

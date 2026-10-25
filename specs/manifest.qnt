@@ -1,3 +1,10 @@
+// Manifest validation contract at the analytics-contract boundary.
+// Actors are manifest callers and the validator; the environment supplies a
+// finite manifest case. Durable output is the validation result; lastCase is
+// transient input evidence. Invalid version, names, layout references,
+// retention, row expansion, tenant scope, join policy, and row identity are
+// explicit rejection outcomes. Time and storage publication are abstracted;
+// fail-atomic publication is handed to the owning engine model.
 module manifest {
   type ValidationResult =
     | NotChecked
@@ -9,6 +16,10 @@ module manifest {
     | DuplicateColumnName
     | UnknownLayoutColumn
     | InvalidRetentionPeriod
+    | InvalidRowExpansion
+    | GlobalReferenceHasTenantScope
+    | InvalidJoinPolicy
+    | InvalidRowIdentity
 
   type ManifestCase =
     | ValidSimpleManifest
@@ -24,8 +35,14 @@ module manifest {
     | UnknownPartitionColumnManifest
     | ZeroRetentionPeriodManifest
     | EmptyRetentionTimestampManifest
+    | InvalidRowExpansionManifest
+    | GlobalReferenceTenantScopeManifest
+    | InvalidJoinPolicyManifest
+    | InvalidRowIdentityManifest
+    | NotCheckedManifest
 
   var lastResult: ValidationResult
+  var lastCase: ManifestCase
 
   pure val validationResults: Set[ValidationResult] = Set(
     NotChecked,
@@ -36,7 +53,11 @@ module manifest {
     ReservedOutputColumn,
     DuplicateColumnName,
     UnknownLayoutColumn,
-    InvalidRetentionPeriod
+    InvalidRetentionPeriod,
+    InvalidRowExpansion,
+    GlobalReferenceHasTenantScope,
+    InvalidJoinPolicy,
+    InvalidRowIdentity
   )
 
   pure def validateCase(manifest: ManifestCase): ValidationResult =
@@ -54,49 +75,116 @@ module manifest {
       | UnknownPartitionColumnManifest => UnknownLayoutColumn
       | ZeroRetentionPeriodManifest => InvalidRetentionPeriod
       | EmptyRetentionTimestampManifest => EmptyField
+      | InvalidRowExpansionManifest => InvalidRowExpansion
+      | GlobalReferenceTenantScopeManifest => GlobalReferenceHasTenantScope
+      | InvalidJoinPolicyManifest => InvalidJoinPolicy
+      | InvalidRowIdentityManifest => InvalidRowIdentity
+      | NotCheckedManifest => NotChecked
     }
 
   action init =
-    lastResult' = NotChecked
+    all {
+      lastResult' = NotChecked,
+      lastCase' = NotCheckedManifest,
+    }
 
   action CheckValidSimpleManifest =
-    lastResult' = validateCase(ValidSimpleManifest)
+    all {
+      lastResult' = validateCase(ValidSimpleManifest),
+      lastCase' = ValidSimpleManifest,
+    }
 
   action CheckValidGenericDocumentManifest =
-    lastResult' = validateCase(ValidGenericDocumentManifest)
+    all {
+      lastResult' = validateCase(ValidGenericDocumentManifest),
+      lastCase' = ValidGenericDocumentManifest,
+    }
 
   action CheckValidRetentionManifest =
-    lastResult' = validateCase(ValidRetentionManifest)
+    all {
+      lastResult' = validateCase(ValidRetentionManifest),
+      lastCase' = ValidRetentionManifest,
+    }
 
   action CheckUnsupportedVersion =
-    lastResult' = validateCase(UnsupportedVersionManifest)
+    all {
+      lastResult' = validateCase(UnsupportedVersionManifest),
+      lastCase' = UnsupportedVersionManifest,
+    }
 
   action CheckDuplicateAnalyticsTableName =
-    lastResult' = validateCase(DuplicateAnalyticsTableManifest)
+    all {
+      lastResult' = validateCase(DuplicateAnalyticsTableManifest),
+      lastCase' = DuplicateAnalyticsTableManifest,
+    }
 
   action CheckEmptySourceTableName =
-    lastResult' = validateCase(EmptySourceTableManifest)
+    all {
+      lastResult' = validateCase(EmptySourceTableManifest),
+      lastCase' = EmptySourceTableManifest,
+    }
 
   action CheckEmptyAnalyticsTableName =
-    lastResult' = validateCase(EmptyAnalyticsTableManifest)
+    all {
+      lastResult' = validateCase(EmptyAnalyticsTableManifest),
+      lastCase' = EmptyAnalyticsTableManifest,
+    }
 
   action CheckReservedProjectionColumn =
-    lastResult' = validateCase(ReservedProjectionColumnManifest)
+    all {
+      lastResult' = validateCase(ReservedProjectionColumnManifest),
+      lastCase' = ReservedProjectionColumnManifest,
+    }
 
   action CheckReservedInternalRetentionColumn =
-    lastResult' = validateCase(ReservedInternalRetentionColumnManifest)
+    all {
+      lastResult' = validateCase(ReservedInternalRetentionColumnManifest),
+      lastCase' = ReservedInternalRetentionColumnManifest,
+    }
 
   action CheckDuplicateProjectionColumn =
-    lastResult' = validateCase(DuplicateProjectionColumnManifest)
+    all {
+      lastResult' = validateCase(DuplicateProjectionColumnManifest),
+      lastCase' = DuplicateProjectionColumnManifest,
+    }
 
   action CheckUnknownPartitionColumn =
-    lastResult' = validateCase(UnknownPartitionColumnManifest)
+    all {
+      lastResult' = validateCase(UnknownPartitionColumnManifest),
+      lastCase' = UnknownPartitionColumnManifest,
+    }
 
   action CheckZeroRetentionPeriod =
-    lastResult' = validateCase(ZeroRetentionPeriodManifest)
+    all {
+      lastResult' = validateCase(ZeroRetentionPeriodManifest),
+      lastCase' = ZeroRetentionPeriodManifest,
+    }
 
   action CheckEmptyRetentionTimestamp =
-    lastResult' = validateCase(EmptyRetentionTimestampManifest)
+    all {
+      lastResult' = validateCase(EmptyRetentionTimestampManifest),
+      lastCase' = EmptyRetentionTimestampManifest,
+    }
+
+  action CheckInvalidRowExpansion = all {
+    lastResult' = validateCase(InvalidRowExpansionManifest),
+    lastCase' = InvalidRowExpansionManifest,
+  }
+
+  action CheckGlobalReferenceTenantScope = all {
+    lastResult' = validateCase(GlobalReferenceTenantScopeManifest),
+    lastCase' = GlobalReferenceTenantScopeManifest,
+  }
+
+  action CheckInvalidJoinPolicy = all {
+    lastResult' = validateCase(InvalidJoinPolicyManifest),
+    lastCase' = InvalidJoinPolicyManifest,
+  }
+
+  action CheckInvalidRowIdentity = all {
+    lastResult' = validateCase(InvalidRowIdentityManifest),
+    lastCase' = InvalidRowIdentityManifest,
+  }
 
   action step = any {
     CheckValidSimpleManifest,
@@ -112,12 +200,36 @@ module manifest {
     CheckUnknownPartitionColumn,
     CheckZeroRetentionPeriod,
     CheckEmptyRetentionTimestamp,
+    CheckInvalidRowExpansion,
+    CheckGlobalReferenceTenantScope,
+    CheckInvalidJoinPolicy,
+    CheckInvalidRowIdentity,
   }
 
   /* Properties */
 
-  val resultIsKnown = validationResults.contains(lastResult)
-  val inv = resultIsKnown
+  pure def isValidCase(manifest: ManifestCase): bool = or {
+    manifest == ValidSimpleManifest,
+    manifest == ValidGenericDocumentManifest,
+    manifest == ValidRetentionManifest,
+  }
+
+  pure def isRejectedCase(manifest: ManifestCase): bool = and {
+    manifest != NotCheckedManifest,
+    not(isValidCase(manifest)),
+  }
+
+  val acceptedOnlyForValidCase =
+    lastResult == Valid implies isValidCase(lastCase)
+  val rejectedCasesNeverAccepted =
+    isRejectedCase(lastCase) implies lastResult != Valid
+  val resultMatchesCanonicalCaseReducer =
+    lastResult == validateCase(lastCase)
+  val inv = and {
+    resultMatchesCanonicalCaseReducer,
+    acceptedOnlyForValidCase,
+    rejectedCasesNeverAccepted,
+  }
 
   /* Example Runs */
 
@@ -141,6 +253,10 @@ module manifest {
     all {
       assert(validateCase(ZeroRetentionPeriodManifest) == InvalidRetentionPeriod),
       assert(validateCase(EmptyRetentionTimestampManifest) == EmptyField),
+      assert(validateCase(InvalidRowExpansionManifest) == InvalidRowExpansion),
+      assert(validateCase(GlobalReferenceTenantScopeManifest) == GlobalReferenceHasTenantScope),
+      assert(validateCase(InvalidJoinPolicyManifest) == InvalidJoinPolicy),
+      assert(validateCase(InvalidRowIdentityManifest) == InvalidRowIdentity),
     }
 
   run rejectsMalformedTableAndLayoutFieldsTest =

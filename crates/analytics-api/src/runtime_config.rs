@@ -1,41 +1,23 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, path::Path};
 
 use analytics_contract::PrivacyPolicy;
-use config::{
-    ConfigError, ConfigErrorKind, load_optional_with_overrides, parse_override_args,
-    resolve_manifest_path as config_resolve_manifest_path,
-    validate_source_config as config_validate_source_config,
-};
 
-use crate::{
-    cli::ApiCli,
-    error::{ApiError, ApiResult},
-};
+use crate::{cli::ApiCli, constants::PRIVACY_POLICY_LOAD_FAILURES_METRIC, error::ApiResult};
 
-const PRIVACY_POLICY_LOAD_FAILURES_METRIC: &str = "analytics.privacy.policy_load_failures_total";
-
-pub(crate) fn load_serve_config(args: &ApiCli) -> Result<Arc<config::Config>, ConfigError> {
+pub(crate) fn resolve_serve_config(
+    args: &ApiCli,
+) -> Result<config::ResolvedConfig, config::ConfigError> {
     let mut overrides = Vec::new();
     if let Some(port) = args.port.as_ref() {
-        overrides.push(("http.bind_addr".to_string(), format!("0.0.0.0:{port}")));
+        overrides.push(format!("http.bind_addr=0.0.0.0:{port}"));
     }
-    overrides.extend(parse_override_args(args.overrides.as_slice())?);
-    load_optional_with_overrides(args.config.as_deref(), overrides.as_slice())
-}
-
-pub(crate) fn resolve_manifest_path(
-    manifest_arg: Option<&str>,
-    root: &config::RootConfig,
-) -> ApiResult<Option<String>> {
-    match config_resolve_manifest_path(manifest_arg, root) {
-        Ok(path) => Ok(Some(path)),
-        Err(err) if err.kind() == ConfigErrorKind::MissingManifestPath => Ok(None),
-        Err(err) => Err(ApiError::from(err)),
-    }
-}
-
-pub(crate) fn validate_source_config(source: &config::AnalyticsSourceConfig) -> ApiResult<()> {
-    config_validate_source_config(source).map_err(ApiError::from)
+    overrides.extend(args.overrides.iter().cloned());
+    config::resolve_config(config::ConfigRequest::api(
+        args.config.clone(),
+        args.manifest.clone(),
+        overrides,
+        (&args.backend).into(),
+    ))
 }
 
 pub(crate) fn load_privacy_policy(root: &config::RootConfig) -> ApiResult<Option<PrivacyPolicy>> {

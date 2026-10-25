@@ -6,28 +6,26 @@ use clap::Subcommand;
 pub(crate) enum TrimCommand {
     #[command(
         name = "plan",
-        about = "Dry-run a destructive trim request",
-        long_about = "Execute a TrimRequest JSON file, persist a privacy-safe report in the \
-                      operation store, and print stable JSON. Dry-run can use either a reviewed \
-                      --candidate-rows fixture count or --destination-duckdb for a live local \
-                      count. Apply mode requires --destination-duckdb and a request confirmation \
-                      token."
+        about = "Run a destructive trim request",
+        long_about = "Run a destructive trim request. Execute a MaintenanceRequest JSON file with \
+                      kind=trim, persist a privacy-safe report in the operation store, and print \
+                      stable JSON. Dry-run and apply mode both use --destination-duckdb for a \
+                      bounded local DuckDB source and destination. Apply mode also requires a \
+                      request confirmation token."
     )]
     Plan {
-        #[arg(long, value_name = "PATH", help = "TrimRequest JSON file")]
-        request: PathBuf,
-        #[arg(
-            long,
-            value_name = "ROWS",
-            help = "Candidate row count from a reviewed local fixture or prior query; dry-run only"
-        )]
-        candidate_rows: Option<u64>,
         #[arg(
             long,
             value_name = "PATH",
-            help = "Local DuckDB analytics database used for row-key trim count/apply"
+            help = "Complete MaintenanceRequest JSON file with kind=trim"
         )]
-        destination_duckdb: Option<PathBuf>,
+        request: PathBuf,
+        #[arg(
+            long,
+            value_name = "PATH",
+            help = "Existing local DuckDB analytics database used for bounded count/apply"
+        )]
+        destination_duckdb: PathBuf,
         #[arg(long, value_name = "PATH", help = "Operation store DuckDB path")]
         operation_store_duckdb: PathBuf,
     },

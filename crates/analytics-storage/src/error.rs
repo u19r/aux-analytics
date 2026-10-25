@@ -54,77 +54,93 @@ impl AnalyticsStorageError {
             source: Some(Box::new(source)),
         }
     }
+
+    /// Returns a stable, redacted category for operational diagnostics.
+    ///
+    /// Response bodies and backend messages are intentionally excluded so
+    /// callers can log the failure class without leaking source data.
+    #[must_use]
+    pub fn category(&self) -> &'static str {
+        self.kind.as_str()
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum AnalyticsStorageErrorKind {
+    #[error("analytics source table is not registered in the manifest")]
     UnregisteredSourceTable,
+    #[error("analytics source table needs stream_identifier for storage_stream polling")]
     MissingStreamIdentifier,
+    #[error("analytics.source.endpoint_url is required for aux_storage polling")]
     MissingAuxStorageEndpoint,
+    #[error("invalid analytics source endpoint url")]
     InvalidUrl,
+    #[error("invalid analytics source header")]
     InvalidHeader,
+    #[error("analytics source http request failed")]
     Http,
+    #[error("analytics source http request returned an error status")]
     HttpStatus,
+    #[error("analytics source json error")]
     Json,
+    #[error("aws stream polling failed")]
     AwsSdk,
+    #[error("aws stream record did not include a sequence number")]
     MissingSequenceNumber,
+    #[error("aws stream record did not include keys")]
     MissingKeys,
-    MissingSourceTableIdentity,
-    InvalidConditionExpression,
+    #[error("source table matches multiple analytics source routes")]
+    AmbiguousSourceRoute,
+    #[error("source poll response has an invalid system-stream boundary")]
+    MissingResponseScope,
+    #[error("source poll response has an invalid system-stream boundary")]
+    ResponseScopeMismatch,
+    #[error("source poll response has an invalid system-stream boundary")]
+    MissingResponseCheckpoint,
+    #[error("source poll response has an invalid system-stream boundary")]
+    MissingRecordSourceTable,
+    #[error("source poll response has an invalid system-stream boundary")]
+    MissingRecordSystemPosition,
+    #[error("source poll batch has an empty or invalid source scope")]
+    InvalidSourceBatchScope,
+    #[error("source poll batch contains multiple source scopes")]
+    MixedSourceBatchScope,
+    #[error("aws stream attribute value variant is unsupported")]
     UnsupportedAwsAttributeValue,
+    #[error("analytics retention tenant_policy.endpoint_url is required")]
     MissingRetentionPolicyEndpoint,
+    #[error("analytics retention policy lookup failed")]
     RetentionPolicyLookup,
+    #[error("analytics retention policy value is invalid")]
     InvalidRetentionPolicyValue,
 }
 
-impl fmt::Display for AnalyticsStorageErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl AnalyticsStorageErrorKind {
+    fn as_str(self) -> &'static str {
         match self {
-            Self::UnregisteredSourceTable => {
-                write!(
-                    f,
-                    "analytics source table is not registered in the manifest"
-                )
-            }
-            Self::MissingStreamIdentifier => write!(
-                f,
-                "analytics source table needs stream_identifier for storage_stream polling"
-            ),
-            Self::MissingAuxStorageEndpoint => {
-                write!(
-                    f,
-                    "analytics.source.endpoint_url is required for aux_storage polling"
-                )
-            }
-            Self::InvalidUrl => write!(f, "invalid analytics source endpoint url"),
-            Self::InvalidHeader => write!(f, "invalid analytics source header"),
-            Self::Http => write!(f, "analytics source http request failed"),
-            Self::HttpStatus => write!(f, "analytics source http request returned an error status"),
-            Self::Json => write!(f, "analytics source json error"),
-            Self::AwsSdk => write!(f, "aws stream polling failed"),
-            Self::MissingSequenceNumber => {
-                write!(f, "aws stream record did not include a sequence number")
-            }
-            Self::MissingKeys => write!(f, "aws stream record did not include keys"),
-            Self::MissingSourceTableIdentity => {
-                write!(f, "global stream record did not include its source table")
-            }
-            Self::InvalidConditionExpression => {
-                write!(f, "analytics source route condition is invalid")
-            }
-            Self::UnsupportedAwsAttributeValue => {
-                write!(f, "aws stream attribute value variant is unsupported")
-            }
-            Self::MissingRetentionPolicyEndpoint => {
-                write!(
-                    f,
-                    "analytics retention tenant_policy.endpoint_url is required"
-                )
-            }
-            Self::RetentionPolicyLookup => write!(f, "analytics retention policy lookup failed"),
-            Self::InvalidRetentionPolicyValue => {
-                write!(f, "analytics retention policy value is invalid")
-            }
+            Self::UnregisteredSourceTable => "unregistered_source_table",
+            Self::MissingStreamIdentifier => "missing_stream_identifier",
+            Self::MissingAuxStorageEndpoint => "missing_aux_storage_endpoint",
+            Self::InvalidUrl => "invalid_url",
+            Self::InvalidHeader => "invalid_header",
+            Self::Http => "http",
+            Self::HttpStatus => "http_status",
+            Self::Json => "json",
+            Self::AwsSdk => "aws_sdk",
+            Self::MissingSequenceNumber => "missing_sequence_number",
+            Self::MissingKeys => "missing_keys",
+            Self::AmbiguousSourceRoute => "ambiguous_source_route",
+            Self::MissingResponseScope => "missing_response_scope",
+            Self::ResponseScopeMismatch => "response_scope_mismatch",
+            Self::MissingResponseCheckpoint => "missing_response_checkpoint",
+            Self::MissingRecordSourceTable => "missing_record_source_table",
+            Self::MissingRecordSystemPosition => "missing_record_system_position",
+            Self::InvalidSourceBatchScope => "invalid_source_batch_scope",
+            Self::MixedSourceBatchScope => "mixed_source_batch_scope",
+            Self::UnsupportedAwsAttributeValue => "unsupported_aws_attribute_value",
+            Self::MissingRetentionPolicyEndpoint => "missing_retention_policy_endpoint",
+            Self::RetentionPolicyLookup => "retention_policy_lookup",
+            Self::InvalidRetentionPolicyValue => "invalid_retention_policy_value",
         }
     }
 }
@@ -172,6 +188,17 @@ impl From<reqwest::Error> for AnalyticsStorageError {
     }
 }
 
+impl From<http_request::HttpRequestError> for AnalyticsStorageError {
+    fn from(source: http_request::HttpRequestError) -> Self {
+        let message = source.to_string();
+        Self::with_debug_source(
+            AnalyticsStorageErrorKind::Http,
+            AnalyticsStorageErrorDebug::Message(message),
+            source,
+        )
+    }
+}
+
 impl From<serde_json::Error> for AnalyticsStorageError {
     fn from(source: serde_json::Error) -> Self {
         Self::with_source(AnalyticsStorageErrorKind::Json, source)
@@ -179,3 +206,21 @@ impl From<serde_json::Error> for AnalyticsStorageError {
 }
 
 pub type AnalyticsStorageResult<T> = Result<T, AnalyticsStorageError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum LiveDatasetError {
+    #[error("dataset not found")]
+    NotFound,
+    #[error("dataset version conflict")]
+    VersionConflict,
+    #[error("invalid dataset or query")]
+    InvalidQuery,
+    #[error("source changed; repeat the query without a cursor")]
+    SourceChanged,
+    #[error("query exceeds the indexed work budget")]
+    QueryTooBroad,
+    #[error("source is unavailable or has an unsupported index")]
+    SourceUnavailable,
+    #[error("dataset storage is unavailable")]
+    Storage,
+}

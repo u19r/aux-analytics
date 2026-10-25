@@ -1,17 +1,18 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use analytics_contract::{
     AnalyticsColumnType, AnalyticsManifest, PartitionKey, PrimitiveColumnType, ProjectionColumn,
-    RetentionPolicy, RetentionTimestamp, RowIdentity, TableRegistration, TenantSelector,
+    RetentionPolicy, RetentionTimestamp, RowIdentity, StorageValue, TableRegistration,
+    TenantSelector,
 };
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
+use storage_types::VecMap;
 
-use crate::projection::project_item;
+use crate::projection_test_support::project_item;
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(clippy::struct_excessive_bools)]
 struct ManifestProjectionBughuntState {
     accepted_manifest: bool,
     layout_resolution_count: i64,
@@ -34,7 +35,6 @@ impl State<ManifestProjectionBughuntDriver> for ManifestProjectionBughuntState {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
 struct ManifestProjectionBughuntDriver {
     accepted_manifest: bool,
     layout_resolution_count: i64,
@@ -47,8 +47,8 @@ struct ManifestProjectionBughuntDriver {
 impl Default for ManifestProjectionBughuntDriver {
     fn default() -> Self {
         Self {
-            accepted_manifest: true,
-            layout_resolution_count: 1,
+            accepted_manifest: false,
+            layout_resolution_count: 0,
             reserved_column_projected: false,
             output_sources_unique: true,
             alias_configuration_valid: true,
@@ -88,7 +88,7 @@ impl Driver for ManifestProjectionBughuntDriver {
                     has_retention,
                     period_positive,
                     timestamp_path_non_empty,
-                });
+                })?;
             },
         })
     }
@@ -100,13 +100,12 @@ impl Driver for ManifestProjectionBughuntDriver {
     max_steps = 12,
     seed = "0x6d"
 )]
-fn quint_manifest_projection_bughunt_model_matches_manifest_and_projection_boundaries()
+fn given_quint_manifest_projection_bughunt_model_when_replayed_then_manifest_and_projection_boundaries_matches()
 -> impl Driver {
     ManifestProjectionBughuntDriver::default()
 }
 
 #[derive(Clone, Copy)]
-#[allow(clippy::struct_excessive_bools)]
 struct ManifestProjectionCombination {
     has_projection_column: bool,
     has_document_column: bool,
@@ -121,28 +120,91 @@ struct ManifestProjectionCombination {
 }
 
 impl ManifestProjectionBughuntDriver {
-    fn check_combination(&mut self, combination: ManifestProjectionCombination) {
+    fn check_combination(&mut self, combination: ManifestProjectionCombination) -> Result {
         let manifest = manifest_for_combination(&combination);
-        let manifest_valid = manifest.validate().is_ok();
+        let validation = manifest.validate();
+        let manifest_valid = validation.is_ok();
         let alias_valid = alias_configuration_valid(&combination);
+        let table = &manifest.tables[0];
+        let projection_result = project_item(
+            &VecMap::from_iter([(
+                "profile".to_string(),
+                StorageValue::M(VecMap::from_iter([(
+                    "email".to_string(),
+                    StorageValue::S("probe@example.com".to_string()),
+                )])),
+            )]),
+            table.projection_columns.as_deref().unwrap_or_default(),
+            table.expression_attribute_names.as_ref(),
+        );
+        if combination.has_projection_column {
+            match (alias_valid, projection_result) {
+                (true, Ok(_)) | (false, Err(_)) => {}
+                (true, Err(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "production projection rejected a mapped alias: {error}"
+                    ));
+                }
+                (false, Ok(_)) => {
+                    return Err(anyhow::anyhow!(
+                        "production projection accepted an unmapped alias"
+                    ));
+                }
+            }
+        }
         self.accepted_manifest = manifest_valid && alias_valid;
-        self.layout_resolution_count = layout_resolution_count(&combination);
-        self.reserved_column_projected = combination.column_is_reserved;
-        self.output_sources_unique =
-            !(combination.has_projection_column && combination.has_document_column);
-        self.alias_configuration_valid =
-            !combination.uses_alias || (combination.has_name_map && combination.alias_is_mapped);
-        self.retention_configuration_valid = !combination.has_retention
-            || (combination.period_positive && combination.timestamp_path_non_empty);
+        let builtin_layout = table
+            .partition_keys
+            .iter()
+            .any(|key| key.column_name == "tenant_id");
+        let projection_source_count = table
+            .projection_columns
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|column| column.column_name != "tenant_id")
+            .count();
+        self.layout_resolution_count = if builtin_layout {
+            1
+        } else {
+            i64::try_from(projection_source_count).map_err(|error| {
+                anyhow::anyhow!("projection source count overflowed model state: {error}")
+            })? + i64::from(table.document_column.is_some())
+        };
+        self.reserved_column_projected = table.projection_columns.as_ref().is_some_and(|columns| {
+            columns.iter().any(|column| {
+                matches!(
+                    column.column_name.as_str(),
+                    "tenant_id" | "__id" | "table_name"
+                )
+            })
+        });
+        let mut output_sources = HashSet::new();
+        self.output_sources_unique = table
+            .projection_columns
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .all(|column| output_sources.insert(column.column_name.clone()));
+        if let Some(document_column) = table.document_column.as_deref() {
+            self.output_sources_unique &= output_sources.insert(document_column.to_string());
+        }
+        self.alias_configuration_valid = alias_valid;
+        self.retention_configuration_valid = retention_manifest_valid(table);
+        Ok(())
     }
 }
 
-fn layout_resolution_count(combination: &ManifestProjectionCombination) -> i64 {
-    if combination.has_builtin_column {
-        1
-    } else {
-        i64::from(combination.has_projection_column) + i64::from(combination.has_document_column)
-    }
+fn retention_manifest_valid(table: &TableRegistration) -> bool {
+    let mut retention_table = base_table();
+    retention_table.retention = table.retention.clone();
+    retention_table.partition_keys = vec![PartitionKey {
+        column_name: "tenant_id".to_string(),
+        bucket: None,
+    }];
+    AnalyticsManifest::new(vec![retention_table])
+        .validate()
+        .is_ok()
 }
 
 fn alias_configuration_valid(combination: &ManifestProjectionCombination) -> bool {
@@ -157,12 +219,12 @@ fn alias_configuration_valid(combination: &ManifestProjectionCombination) -> boo
     };
     let names = combination.has_name_map.then(|| {
         if combination.alias_is_mapped {
-            HashMap::from([("#field".to_string(), "email".to_string())])
+            VecMap::from_iter([("#field".to_string(), "email".to_string())])
         } else {
-            HashMap::new()
+            VecMap::new()
         }
     });
-    project_item(&HashMap::new(), &[column], names.as_ref()).is_ok()
+    project_item(&VecMap::new(), &[column], names.as_ref()).is_ok()
 }
 
 fn manifest_for_combination(combination: &ManifestProjectionCombination) -> AnalyticsManifest {
@@ -171,6 +233,13 @@ fn manifest_for_combination(combination: &ManifestProjectionCombination) -> Anal
         .has_document_column
         .then(|| "layout_col".to_string());
     table.projection_columns = projection_columns_for_combination(combination);
+    table.expression_attribute_names = combination.has_name_map.then(|| {
+        if combination.alias_is_mapped {
+            VecMap::from_iter([("#field".to_string(), "email".to_string())])
+        } else {
+            VecMap::new()
+        }
+    });
     table.partition_keys = vec![PartitionKey {
         column_name: if combination.has_builtin_column {
             "tenant_id".to_string()

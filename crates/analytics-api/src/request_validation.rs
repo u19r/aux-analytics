@@ -9,20 +9,17 @@ use axum::{
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-const VALIDATION_ERROR_CODE: &str = "invalid_request";
-const APPLICATION_JSON: &str = "application/json";
+use crate::constants::{APPLICATION_JSON, VALIDATION_ERROR_CODE};
 
 #[derive(Clone)]
 pub(crate) struct RequestValidators(Arc<[RouteValidator]>);
 
-#[derive(Clone)]
 struct RouteValidator {
     method: Method,
     path: Box<[PathSegment]>,
     schema: jsonschema::Validator,
 }
 
-#[derive(Clone)]
 enum PathSegment {
     Literal(Box<str>),
     Parameter,
@@ -50,7 +47,7 @@ impl RequestValidators {
                 else {
                     continue;
                 };
-                let schema = resolve_schema_refs(schema, &spec);
+                let schema = bundle_schema_refs(schema, &spec);
                 let schema = jsonschema::validator_for(&schema).unwrap_or_else(|err| {
                     panic!("generated request schema for {method} {template} is invalid: {err}")
                 });
@@ -103,27 +100,49 @@ fn compile_path(template: &str) -> Box<[PathSegment]> {
         .collect()
 }
 
-pub(crate) fn resolve_schema_refs(value: Value, spec: &Value) -> Value {
+fn bundle_schema_refs(mut schema: Value, spec: &Value) -> Value {
+    let mut definitions = spec
+        .pointer("/components/schemas")
+        .cloned()
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    rewrite_component_refs(&mut schema);
+    rewrite_component_refs(&mut definitions);
+    let Value::Object(definitions) = definitions else {
+        panic!("generated OpenAPI components.schemas is not an object");
+    };
+    let Value::Object(mut schema) = schema else {
+        return json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$defs": definitions,
+            "allOf": [schema],
+        });
+    };
+    schema.insert(
+        "$schema".to_string(),
+        Value::String("https://json-schema.org/draft/2020-12/schema".to_string()),
+    );
+    schema.insert("$defs".to_string(), Value::Object(definitions));
+    Value::Object(schema)
+}
+
+fn rewrite_component_refs(value: &mut Value) {
     match value {
-        Value::Object(mut object) => {
-            if let Some(Value::String(reference)) = object.get("$ref")
+        Value::Object(object) => {
+            if let Some(Value::String(reference)) = object.get_mut("$ref")
                 && let Some(schema_name) = reference.strip_prefix("#/components/schemas/")
-                && let Some(schema) = spec.pointer(&format!("/components/schemas/{schema_name}"))
             {
-                return resolve_schema_refs(schema.clone(), spec);
+                *reference = format!("#/$defs/{schema_name}");
             }
             for child in object.values_mut() {
-                *child = resolve_schema_refs(std::mem::take(child), spec);
+                rewrite_component_refs(child);
             }
-            Value::Object(object)
         }
-        Value::Array(items) => Value::Array(
-            items
-                .into_iter()
-                .map(|item| resolve_schema_refs(item, spec))
-                .collect(),
-        ),
-        other => other,
+        Value::Array(items) => {
+            for item in items {
+                rewrite_component_refs(item);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -144,8 +163,7 @@ where
             .expect("request validator registry layer is installed");
         let schema = validators
             .schema(request.method(), request.uri().path())
-            .expect("validated JSON extractor is used only on registered request-body routes")
-            .clone();
+            .expect("validated JSON extractor is used only on registered request-body routes");
 
         if !is_json_request(request.headers()) {
             return Err(validation_error(
@@ -202,26 +220,4 @@ fn typed_validation_error(message: String) -> Response {
         axum::Json(json!({ "error": message })),
     )
         .into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compiled_routes_match_literals_and_parameters_exactly() {
-        let validators = RequestValidators::compile();
-        assert!(validators.schema(&Method::POST, "/ingest/users").is_some());
-        assert!(
-            validators
-                .schema(&Method::POST, "/ingest/users/extra")
-                .is_none()
-        );
-        assert!(validators.schema(&Method::GET, "/ingest/users").is_none());
-        assert!(
-            validators
-                .schema(&Method::POST, "/operations/op-1/cancel")
-                .is_none()
-        );
-    }
 }

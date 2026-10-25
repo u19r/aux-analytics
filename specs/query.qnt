@@ -1,3 +1,9 @@
+// Query-shape contract for the engine's read-only SQL and structured-query
+// boundaries. Actors are query callers and the query validator/compiler; the
+// environment supplies SQL shape, registered columns/paths, expressions,
+// limits, and table identity. State records the latest acceptance decision
+// and the relevant observable gate facts. Failures are typed rejection
+// outcomes; this model abstracts DuckDB execution and result rows.
 module query {
   type QueryResult =
     | NotChecked
@@ -18,6 +24,7 @@ module query {
   var rawSingleStatement: bool
   var structuredAccepted: bool
   var structuredHasSelect: bool
+  var structuredHasTableName: bool
   var selectedColumnsRegistered: bool
   var documentPathsAllowed: bool
   var filtersAllowed: bool
@@ -74,6 +81,7 @@ module query {
 
   pure def structuredAcceptedByGate(
     selectCount: int,
+    tableNamePresent: bool,
     selectedColumnRegistered: bool,
     usesDocumentPath: bool,
     documentColumnRegistered: bool,
@@ -84,7 +92,7 @@ module query {
     orderByExpressionAllowed: bool,
     limitValid: bool,
   ): bool =
-    structuredShapeValid(selectCount, true)
+    structuredShapeValid(selectCount, tableNamePresent)
       and selectedColumnRegistered
       and (not(usesDocumentPath) or documentPathAllowed(documentColumnRegistered, usesConfiguredDocumentColumn, pathValid))
       and filterExpressionAllowed
@@ -103,6 +111,7 @@ module query {
 
   pure def structuredQueryResult(
     selectCount: int,
+    tableNamePresent: bool,
     selectedColumnRegistered: bool,
     usesDocumentPath: bool,
     documentColumnRegistered: bool,
@@ -113,7 +122,7 @@ module query {
     orderByExpressionAllowed: bool,
     limitValid: bool,
   ): QueryResult =
-    if (not(structuredShapeValid(selectCount, true))) {
+    if (not(structuredShapeValid(selectCount, tableNamePresent))) {
       EmptySelectRejected
     } else if (not(selectedColumnRegistered)
         or (usesDocumentPath and not(documentPathAllowed(documentColumnRegistered, usesConfiguredDocumentColumn, pathValid)))
@@ -128,79 +137,89 @@ module query {
       StructuredQueryCompiled
     }
 
-  pure def queryCase(result: QueryResult): QueryResult =
-    result
-
   action init = all {
     lastResult' = NotChecked,
     rawAccepted' = false,
     rawReadOnlyPrefix' = false,
-    rawSingleStatement' = true,
+    rawSingleStatement' = false,
     structuredAccepted' = false,
-    structuredHasSelect' = true,
-    selectedColumnsRegistered' = true,
-    documentPathsAllowed' = true,
-    filtersAllowed' = true,
-    groupByAllowed' = true,
-    orderByAllowed' = true,
-    limitAllowed' = true,
+    structuredHasSelect' = false,
+    structuredHasTableName' = false,
+    selectedColumnsRegistered' = false,
+    documentPathsAllowed' = false,
+    filtersAllowed' = false,
+    groupByAllowed' = false,
+    orderByAllowed' = false,
+    limitAllowed' = false,
     malformedPathUsed' = false,
   }
 
-  action ResetBugHuntState = all {
-    rawAccepted' = false,
-    rawReadOnlyPrefix' = true,
-    rawSingleStatement' = true,
-    structuredAccepted' = false,
-    structuredHasSelect' = true,
-    selectedColumnsRegistered' = true,
-    documentPathsAllowed' = true,
-    filtersAllowed' = true,
-    groupByAllowed' = true,
-    orderByAllowed' = true,
-    limitAllowed' = true,
-    malformedPathUsed' = false,
-  }
+  // Each named check supplies concrete command inputs to the same reducers as
+  // generated exploration. It cannot inject an expected result while leaving
+  // gate evidence in a contradictory state.
+  action CheckSelectAccepted = GenerateRawQueryCombination(SelectPrefix, 1)
 
-  action CheckSelectAccepted = all {
-    lastResult' = queryCase(SelectAccepted),
-    ResetBugHuntState,
-  }
+  action CheckWithAccepted = GenerateRawQueryCombination(WithPrefix, 1)
 
-  action CheckWithAccepted = all {
-    lastResult' = queryCase(WithAccepted),
-    ResetBugHuntState,
-  }
+  action CheckMutatingSqlRejected = GenerateRawQueryCombination(InsertPrefix, 1)
 
-  action CheckMutatingSqlRejected = all {
-    lastResult' = queryCase(MutatingSqlRejected),
-    ResetBugHuntState,
-  }
+  action CheckMultipleStatementsRejected = GenerateRawQueryCombination(SelectPrefix, 2)
 
-  action CheckMultipleStatementsRejected = all {
-    lastResult' = queryCase(MultipleStatementsRejected),
-    ResetBugHuntState,
-  }
+  action CheckStructuredQueryCompiled = GenerateStructuredQueryCombination(
+    1,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+  )
 
-  action CheckStructuredQueryCompiled = all {
-    lastResult' = queryCase(StructuredQueryCompiled),
-    ResetBugHuntState,
-  }
+  action CheckDocumentPathCompiled = GenerateStructuredQueryCombination(
+    1,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+  )
 
-  action CheckDocumentPathCompiled = all {
-    lastResult' = queryCase(DocumentPathCompiled),
-    ResetBugHuntState,
-  }
+  action CheckUnregisteredColumnRejected = GenerateStructuredQueryCombination(
+    1,
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+  )
 
-  action CheckUnregisteredColumnRejected = all {
-    lastResult' = queryCase(UnregisteredColumnRejected),
-    ResetBugHuntState,
-  }
-
-  action CheckEmptySelectRejected = all {
-    lastResult' = queryCase(EmptySelectRejected),
-    ResetBugHuntState,
-  }
+  action CheckEmptySelectRejected = GenerateStructuredQueryCombination(
+    0,
+    true,
+    true,
+    false,
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+  )
 
   action GenerateRawQueryCombination(prefix, statementCount) = all {
     rawAccepted' = rawAcceptedByGate(prefix, statementCount),
@@ -208,6 +227,7 @@ module query {
     rawSingleStatement' = hasSingleStatement(statementCount),
     structuredAccepted' = false,
     structuredHasSelect' = true,
+    structuredHasTableName' = true,
     selectedColumnsRegistered' = true,
     documentPathsAllowed' = true,
     filtersAllowed' = true,
@@ -220,6 +240,7 @@ module query {
 
   action GenerateStructuredQueryCombination(
     selectCount,
+    tableNamePresent,
     selectedColumnRegistered,
     usesDocumentPath,
     documentColumnRegistered,
@@ -235,6 +256,7 @@ module query {
     rawSingleStatement' = true,
     structuredAccepted' = structuredAcceptedByGate(
       selectCount,
+      tableNamePresent,
       selectedColumnRegistered,
       usesDocumentPath,
       documentColumnRegistered,
@@ -246,6 +268,7 @@ module query {
       limitValid
     ),
     structuredHasSelect' = selectCount > 0,
+    structuredHasTableName' = tableNamePresent,
     selectedColumnsRegistered' = selectedColumnRegistered,
     documentPathsAllowed' = not(usesDocumentPath) or documentPathAllowed(documentColumnRegistered, usesConfiguredDocumentColumn, pathValid),
     filtersAllowed' = filterExpressionAllowed,
@@ -255,6 +278,7 @@ module query {
     malformedPathUsed' = usesDocumentPath and not(pathValid),
     lastResult' = structuredQueryResult(
       selectCount,
+      tableNamePresent,
       selectedColumnRegistered,
       usesDocumentPath,
       documentColumnRegistered,
@@ -275,6 +299,7 @@ module query {
 
   action GenerateStructuredQuery = {
     nondet select_count = selectCounts.oneOf()
+    nondet table_name_present = bools.oneOf()
     nondet selected_column_registered = bools.oneOf()
     nondet uses_document_path = bools.oneOf()
     nondet document_column_registered = bools.oneOf()
@@ -286,6 +311,7 @@ module query {
     nondet limit_valid = bools.oneOf()
     GenerateStructuredQueryCombination(
       select_count,
+      table_name_present,
       selected_column_registered,
       uses_document_path,
       document_column_registered,
@@ -313,13 +339,18 @@ module query {
 
   /* Properties */
 
-  val resultIsKnown = queryResults.contains(lastResult)
   val acceptedRawQueriesAreReadOnly =
     rawAccepted implies rawReadOnlyPrefix
   val acceptedRawQueriesAreSingleStatement =
     rawAccepted implies rawSingleStatement
+  val acceptedRawResultsRequireRawAcceptance =
+    (lastResult == SelectAccepted or lastResult == WithAccepted) implies rawAccepted
   val acceptedStructuredQueriesHaveSelect =
     structuredAccepted implies structuredHasSelect
+  val acceptedStructuredQueriesHaveTableName =
+    structuredAccepted implies structuredHasTableName
+  val compiledStructuredResultsRequireStructuredAcceptance =
+    (lastResult == StructuredQueryCompiled or lastResult == DocumentPathCompiled) implies structuredAccepted
   val acceptedStructuredQueriesUseRegisteredColumns =
     structuredAccepted implies selectedColumnsRegistered
   val acceptedStructuredQueriesUseAllowedDocumentPaths =
@@ -336,10 +367,12 @@ module query {
     structuredAccepted implies not(malformedPathUsed)
 
   val inv = and {
-    resultIsKnown,
     acceptedRawQueriesAreReadOnly,
     acceptedRawQueriesAreSingleStatement,
+    acceptedRawResultsRequireRawAcceptance,
     acceptedStructuredQueriesHaveSelect,
+    acceptedStructuredQueriesHaveTableName,
+    compiledStructuredResultsRequireStructuredAcceptance,
     acceptedStructuredQueriesUseRegisteredColumns,
     acceptedStructuredQueriesUseAllowedDocumentPaths,
     acceptedStructuredQueriesHaveValidExpressions,
@@ -377,8 +410,8 @@ module query {
       assert(documentPathAllowed(true, true, true)),
       assert(documentPathAllowed(true, false, true) == false),
       assert(documentPathAllowed(true, true, false) == false),
-      assert(structuredAcceptedByGate(1, true, true, true, true, true, true, true, true, true)),
-      assert(structuredAcceptedByGate(1, true, true, true, true, false, true, true, true, true) == false),
+      assert(structuredAcceptedByGate(1, true, true, true, true, true, true, true, true, true, true)),
+      assert(structuredAcceptedByGate(1, true, true, true, true, true, false, true, true, true, true) == false),
     }
 
   /* Witnesses */
@@ -402,6 +435,7 @@ module query {
     not(structuredAccepted),
     or {
       not(structuredHasSelect),
+      not(structuredHasTableName),
       not(selectedColumnsRegistered),
       not(documentPathsAllowed),
       malformedPathUsed,

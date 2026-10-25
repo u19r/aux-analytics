@@ -5,11 +5,35 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use utoipa::ToSchema;
 
+/// A shared claim descriptor published by the authenticated scheduler.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RangePurgeClaimHttpRequest {
+    #[schema(value_type = Object)]
+    #[schemars(with = "serde_json::Value")]
+    pub claim: bg_jobs::RemoteJobClaim,
+}
+
+/// One bounded purge effect under previously registered whole-job authority.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TenantRangePurgeEffectHttpRequest {
+    pub request: TenantRangePurgeRequest,
+    #[schema(min_length = 1, max_length = 512)]
+    pub request_id: String,
+    #[schema(value_type = Object)]
+    #[schemars(with = "serde_json::Value")]
+    pub claim: bg_jobs::RemoteJobClaim,
+}
+
 /// A bounded, tenant-scoped delete operation over one analytical table.
 ///
 /// `equals` contains exact column predicates. `None` means SQL `IS NULL` and
 /// `Some(value)` means SQL equality. The cursor is an opaque `__id` checkpoint
 /// returned by the engine; callers must persist it and pass it back unchanged.
+/// This describes only the bounded predicate and cursor. Mutating callers must
+/// supply destination execution authority through the analytics engine's
+/// fenced range-purge API; the request is not an independently safe write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct TenantRangePurgeRequest {
@@ -103,50 +127,4 @@ fn validate_identifier(field: &'static str, value: &str) -> Result<(), RangePurg
         return Err(RangePurgeValidationError::Identifier(field));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::{RangePurgeValidationError, TenantRangePurgeRequest};
-
-    fn request() -> TenantRangePurgeRequest {
-        TenantRangePurgeRequest {
-            table_name: "metric_points_v1".to_string(),
-            tenant_id: "tenant-a".to_string(),
-            timestamp_column: "occurred_at_ms".to_string(),
-            start_ms: 1,
-            end_ms: 2,
-            equals: BTreeMap::from([("series_name".to_string(), Some("requests".to_string()))]),
-            cursor: None,
-            limit: 10,
-        }
-    }
-
-    #[test]
-    fn range_purge_request_rejects_sql_injection_identifiers() {
-        let mut request = request();
-        request.table_name = "metric_points_v1; DROP TABLE users".to_string();
-        assert!(matches!(
-            request.validate(),
-            Err(RangePurgeValidationError::Identifier("table_name"))
-        ));
-    }
-
-    #[test]
-    fn range_purge_request_requires_a_forward_range_and_bounded_limit() {
-        let mut invalid_range = request();
-        invalid_range.end_ms = invalid_range.start_ms;
-        assert!(matches!(
-            invalid_range.validate(),
-            Err(RangePurgeValidationError::Range)
-        ));
-        let mut invalid_limit = request();
-        invalid_limit.limit = 10_001;
-        assert!(matches!(
-            invalid_limit.validate(),
-            Err(RangePurgeValidationError::Limit)
-        ));
-    }
 }

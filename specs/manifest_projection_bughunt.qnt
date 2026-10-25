@@ -1,3 +1,10 @@
+// Manifest/projection bug-hunt contract for layout-source and projection
+// policy combinations. Actors are manifest validation and projection
+// boundaries; the environment chooses document/projection/built-in sources,
+// aliases, reserved names, and retention inputs. State records acceptance and
+// each independently observable validity fact. The initial state is neutral;
+// witnesses must be reached by generated combinations. Invalid combinations
+// are rejected without modeling storage publication.
 module manifest_projection_bughunt {
   var acceptedManifest: bool
   var layoutResolutionCount: int
@@ -45,8 +52,8 @@ module manifest_projection_bughunt {
       and retentionIsValid(hasRetention, periodPositive, timestampPathNonEmpty)
 
   action init = all {
-    acceptedManifest' = true,
-    layoutResolutionCount' = 1,
+    acceptedManifest' = false,
+    layoutResolutionCount' = 0,
     reservedColumnProjected' = false,
     outputSourcesUnique' = true,
     aliasConfigurationValid' = true,
@@ -105,8 +112,17 @@ module manifest_projection_bughunt {
 
   val acceptedManifestsHaveValidRetention =
     acceptedManifest implies retentionConfigurationValid
+  val acceptanceMatchesCanonicalEvidenceReducer =
+    acceptedManifest == (
+      layoutResolutionCount == 1 and
+        not(reservedColumnProjected) and
+        outputSourcesUnique and
+        aliasConfigurationValid and
+        retentionConfigurationValid
+    )
 
   val inv = and {
+    acceptanceMatchesCanonicalEvidenceReducer,
     acceptedLayoutColumnsResolveExactlyOnce,
     acceptedOutputSourcesAreUnique,
     acceptedManifestsNeverProjectReservedColumns,

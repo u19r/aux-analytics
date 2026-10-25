@@ -4,227 +4,168 @@ use std::{
 };
 
 use serde_json::Value;
+use storage_types::{SystemStreamCheckpointToken, SystemStreamScope};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
 
-use crate::{
-    AuxStorageLeaseClient, AuxStorageLeaseOutcome, aux_storage_client::AuxStorageStreamClient,
-};
+use crate::{aux_storage_client::AuxStorageStreamClient, constants::CHECKPOINT};
 
 #[tokio::test]
-async fn global_stream_request_uses_the_system_stream_and_cursor() {
-    let (base_url, requests) = serve_responses(vec![(
-        200,
-        r#"{"Records":[{"SourceTableName":"source_users","Keys":{"pk":{"S":"USER#1"}},"SequenceNumber":"seq-1"}],"LastEvaluatedKey":"cursor-2"}"#,
-    )])
+async fn given_system_stream_scope_and_checkpoint_when_polling_then_typed_requests_are_exact() {
+    let records_response = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-1","LineageId":"lineage-a","Offset":"offset-1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#;
+    let (base_url, requests) = serve_responses(vec![
+        (
+            200,
+            r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
+        ),
+        (200, records_response),
+    ])
     .await;
     let client =
-        AuxStorageStreamClient::new(&format!("{base_url}/storage"), Duration::from_secs(1))
+        AuxStorageStreamClient::try_new(&format!("{base_url}/storage"), Duration::from_secs(1))
             .expect("client");
 
+    let scope = client
+        .describe_system_stream()
+        .await
+        .expect("system stream scope")
+        .source_scope()
+        .clone();
+    let checkpoint = SystemStreamCheckpointToken::try_from(CHECKPOINT).expect("checkpoint");
     let response = client
-        .get_stream_records(Some("cursor-1".to_string()), 25)
+        .get_system_stream_records(scope.clone(), Some(checkpoint.clone()), 25)
         .await
         .expect("stream response");
 
-    assert_eq!(response.records.len(), 1);
+    assert_eq!(response.records().len(), 1);
     assert_eq!(
-        response.records[0]
+        response.records()[0]
             .source_table_name
             .as_ref()
             .map(AsRef::as_ref),
         Some("source_users")
     );
-    assert_eq!(response.last_evaluated_key.as_deref(), Some("cursor-2"));
+    assert_eq!(response.source_scope(), Some(&scope));
+    assert_eq!(response.checkpoint(), Some(&checkpoint));
 
     let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].path, "/storage");
     assert!(
         requests[0]
             .headers
+            .contains("x-amz-target: dynamodb_20120810.describesystemstream")
+    );
+    let describe_body: Value = serde_json::from_str(&requests[0].body).expect("describe body");
+    assert_eq!(describe_body, serde_json::json!({}));
+
+    assert!(
+        requests[1]
+            .headers
             .contains("x-amz-target: dynamodb_20120810.getstreamrecords")
     );
-    let body: Value = serde_json::from_str(&requests[0].body).expect("request body");
-    assert_eq!(body["SystemStream"], true);
-    assert!(body.get("TableName").is_none());
-    assert_eq!(body["LastEvaluatedKey"], "cursor-1");
-    assert_eq!(body["Limit"], 25);
+    let get_body: Value = serde_json::from_str(&requests[1].body).expect("get body");
+    assert_eq!(get_body["SystemStream"], true);
+    assert_eq!(
+        get_body["SourceScope"],
+        serde_json::json!({
+            "Version": 1,
+            "ScopeId": "aux-system",
+            "Generation": 7,
+        })
+    );
+    assert_eq!(get_body["Checkpoint"], CHECKPOINT);
+    assert_eq!(get_body["Limit"], 25);
+    assert!(get_body.get("TableName").is_none());
+    assert!(get_body.get("LastEvaluatedKey").is_none());
 }
 
 #[tokio::test]
-async fn stream_error_preserves_http_status_and_body() {
-    let (base_url, _requests) = serve_responses(vec![(503, "unavailable")]).await;
-    let client = AuxStorageStreamClient::new(&base_url, Duration::from_secs(1)).expect("client");
+async fn given_system_stream_response_with_legacy_cursor_when_decoded_then_it_fails_closed() {
+    let (base_url, _requests) = serve_responses(vec![
+        (
+            200,
+            r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"LastEvaluatedKey":"legacy"}"#,
+        ),
+    ])
+    .await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
 
     let error = client
-        .get_stream_records(None, 25)
+        .get_system_stream_records(scope(), None, 25)
+        .await
+        .expect_err("legacy cursor must be rejected");
+
+    assert!(format!("{error:?}").contains("mixed legacy and logical fields"));
+}
+
+#[tokio::test]
+async fn given_stream_error_when_polling_then_http_status_and_body_are_preserved() {
+    let (base_url, requests) = serve_responses(vec![(503, "unavailable")]).await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
+
+    let error = client
+        .get_system_stream_records(scope(), None, 25)
         .await
         .expect_err("error status should fail");
 
     assert!(error.to_string().contains("503 Service Unavailable"));
     assert!(error.to_string().contains("body=unavailable"));
+    assert_eq!(requests.lock().expect("requests").len(), 1);
 }
 
 #[tokio::test]
-async fn job_lease_table_is_the_shared_system_jobs_table() {
-    let (base_url, requests) = serve_responses(vec![(200, r#"{}"#)]).await;
-    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
+async fn given_large_stream_response_when_decoded_then_unbounded_body_is_supported() {
+    let mut body = String::from(
+        r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+    );
+    body.push_str(&" ".repeat(256 * 1024));
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let (base_url, _requests) = serve_responses(vec![(200, body)]).await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
 
-    client
-        .ensure_job_lease_table()
+    let response = client
+        .get_system_stream_records(scope(), None, 25)
         .await
-        .expect("ensure lease table");
+        .expect("large stream response");
 
-    let requests = requests.lock().expect("requests");
-    let body: Value = serde_json::from_str(&requests[0].body).expect("request body");
-    assert_eq!(body["TableName"], "sys_jobs");
-    assert_eq!(
-        body["KeySchema"],
-        serde_json::json!([
-            {"AttributeName": "pk", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"}
-        ])
-    );
+    assert!(body.len() > 256 * 1024);
+    assert!(response.records().is_empty());
 }
 
 #[tokio::test]
-async fn existing_job_lease_table_is_ready() {
-    for body in [
-        r#"{"__type":"com.amazonaws.dynamodb.v20120810#ResourceInUseException","message":"Table already exists: sys_jobs"}"#,
-        r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}"#,
-    ] {
-        let (base_url, requests) = serve_responses(vec![(400, body)]).await;
-        let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
+async fn given_redirect_response_when_polled_then_redirect_is_not_followed() {
+    let (base_url, requests) = serve_redirect_response().await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
 
-        client
-            .ensure_job_lease_table()
-            .await
-            .expect("existing lease table is ready");
-
-        assert_eq!(requests.lock().expect("requests").len(), 1);
-    }
-}
-
-#[tokio::test]
-async fn source_polling_lease_acquire_uses_one_global_lock() {
-    let (base_url, requests) = serve_responses(vec![(200, r#"{}"#)]).await;
-    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
-
-    let outcome = client
-        .try_acquire_job_lease(
-            "analytics_source_polling",
-            "worker-a",
-            "token-a",
-            1_000,
-            61_000,
-        )
+    let error = client
+        .get_system_stream_records(scope(), None, 25)
         .await
-        .expect("lease request");
+        .expect_err("redirect response should remain at the Dynamo endpoint");
 
-    assert_eq!(outcome, AuxStorageLeaseOutcome::Acquired);
-    let requests = requests.lock().expect("requests");
-    let body: Value = serde_json::from_str(&requests[0].body).expect("request body");
-    assert_eq!(
-        body["Key"],
-        serde_json::json!({
-            "pk": {"S": "JOB#analytics_source_polling"},
-            "sk": {"S": "LOCK"}
-        })
-    );
-    assert_eq!(
-        body["ConditionExpression"],
-        "(attribute_not_exists(lease_until_ms) OR lease_until_ms < :now OR leased_by = :worker)"
-    );
-    assert_eq!(
-        body["ExpressionAttributeValues"][":lease_token"],
-        serde_json::json!({"S": "token-a"})
-    );
+    assert_eq!(error.category(), "http_status");
+    assert!(error.to_string().contains("307 Temporary Redirect"));
+    assert_eq!(requests.lock().expect("requests").len(), 1);
 }
 
-#[tokio::test]
-async fn different_jobs_use_distinct_global_lock_keys() {
-    let (base_url, requests) = serve_responses(vec![(200, r#"{}"#), (200, r#"{}"#)]).await;
-    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
-
-    for job_id in ["analytics_source_polling", "analytics_retention_sweep"] {
-        client
-            .try_acquire_job_lease(job_id, "worker-a", "token-a", 1_000, 61_000)
-            .await
-            .expect("lease request");
-    }
-
-    let requests = requests.lock().expect("requests");
-    let keys = requests
-        .iter()
-        .map(|request| {
-            let body: Value = serde_json::from_str(&request.body).expect("request body");
-            body["Key"]["pk"]["S"]
-                .as_str()
-                .expect("lease partition key")
-                .to_string()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        keys,
-        vec![
-            "JOB#analytics_source_polling",
-            "JOB#analytics_retention_sweep"
-        ]
-    );
-}
-
-#[tokio::test]
-async fn stale_lease_tokens_cannot_renew_the_global_lock() {
-    let conditional_failure = r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"conditional request failed"}"#;
-    let (base_url, _requests) = serve_responses(vec![(400, conditional_failure)]).await;
-    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
-
-    assert!(
-        !client
-            .renew_job_lease(
-                "analytics_source_polling",
-                "worker-a",
-                "stale-token",
-                62_000,
-            )
-            .await
-            .expect("conditional renewal")
-    );
-}
-
-#[tokio::test]
-async fn held_global_lease_returns_standby_outcome() {
-    let (base_url, _requests) = serve_responses(vec![(
-        400,
-        r#"{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"conditional request failed"}"#,
-    )])
-    .await;
-    let client = AuxStorageLeaseClient::new(&base_url, Duration::from_secs(1)).expect("client");
-
-    let outcome = client
-        .try_acquire_job_lease(
-            "analytics_source_polling",
-            "worker-b",
-            "token-b",
-            2_000,
-            62_000,
-        )
-        .await
-        .expect("conditional acquire");
-
-    assert_eq!(outcome, AuxStorageLeaseOutcome::HeldByAnotherWorker);
+fn scope() -> SystemStreamScope {
+    SystemStreamScope::try_new("aux-system", 7).expect("scope")
 }
 
 #[derive(Debug)]
-struct CapturedRequest {
-    path: String,
-    headers: String,
-    body: String,
+pub(crate) struct CapturedRequest {
+    pub(crate) path: String,
+    pub(crate) headers: String,
+    pub(crate) body: String,
 }
 
-async fn serve_responses(
+pub(crate) async fn serve_responses(
     responses: Vec<(u16, &'static str)>,
 ) -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -248,6 +189,26 @@ async fn serve_responses(
             );
             socket.write_all(response.as_bytes()).await.unwrap();
         }
+    });
+    (format!("http://{addr}"), requests)
+}
+
+async fn serve_redirect_response() -> (String, Arc<Mutex<Vec<CapturedRequest>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured_requests = Arc::clone(&requests);
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        captured_requests.lock().expect("requests").push(request);
+        socket
+            .write_all(
+                b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /redirect-target\r\n\
+                  Content-Length: 9\r\nConnection: close\r\n\r\nredirected",
+            )
+            .await
+            .unwrap();
     });
     (format!("http://{addr}"), requests)
 }

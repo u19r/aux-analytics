@@ -2,7 +2,8 @@ use analytics_storage::SourceCheckpoint as StorageSourceCheckpoint;
 
 use crate::{
     CheckpointHealth, SourceHealth, SourceHealthStatus, SourcePollingPhase,
-    source_polling::{batch::is_iterator_checkpoint, metrics::*},
+    constants::{SOURCE_CHECKPOINTS_METRIC, SOURCE_JOB_ID, SOURCE_POLL_ERRORS_TOTAL_METRIC},
+    source_polling::batch::is_iterator_checkpoint,
 };
 
 pub(crate) fn apply_source_poll_error_health(
@@ -22,97 +23,115 @@ fn apply_source_poll_failure_health(
     health.status = SourceHealthStatus::Degraded;
     health.phase = phase;
     health.phase_started_at_ms = Some(observed_at_ms);
-    health.lease_token = None;
-    health.lease_until_ms = None;
     health.last_error_at_ms = Some(observed_at_ms);
     health.last_error = Some(error);
     health.total_poll_errors = health.total_poll_errors.saturating_add(1);
+    metrics::counter!(SOURCE_POLL_ERRORS_TOTAL_METRIC).increment(1);
 }
 
 pub(crate) fn apply_source_job_phase(
     health: &mut SourceHealth,
     phase: SourcePollingPhase,
     worker_id: &str,
-    lease_token: Option<&str>,
-    lease_until_ms: Option<i64>,
     observed_at_ms: u128,
 ) {
     health.poller_enabled = true;
-    health.job_id = Some(SOURCE_POLLING_JOB_ID.to_string());
+    health.job_id = Some(SOURCE_JOB_ID.to_string());
     health.worker_id = Some(worker_id.to_string());
-    health.lease_token = lease_token.map(str::to_string);
     health.phase = phase;
     health.phase_started_at_ms = Some(observed_at_ms);
-    health.lease_until_ms = lease_until_ms;
     health.status = match health.phase {
         SourcePollingPhase::Disabled => SourceHealthStatus::Disabled,
         SourcePollingPhase::Starting
-        | SourcePollingPhase::WaitingForLease
-        | SourcePollingPhase::Standby
-        | SourcePollingPhase::LeaseHeld
-        | SourcePollingPhase::Renewing
-        | SourcePollingPhase::RefreshingPlan
-        | SourcePollingPhase::RebuildingPoller
         | SourcePollingPhase::Polling
-        | SourcePollingPhase::Ingesting
-        | SourcePollingPhase::Checkpointing => SourceHealthStatus::Starting,
-        SourcePollingPhase::LeaseLost | SourcePollingPhase::Timeout => SourceHealthStatus::Degraded,
+        | SourcePollingPhase::Ingesting => SourceHealthStatus::Starting,
         SourcePollingPhase::Healthy => SourceHealthStatus::Healthy,
         SourcePollingPhase::Degraded => SourceHealthStatus::Degraded,
     };
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_source_success_health(
-    health: &mut SourceHealth,
-    all_records_ingested: bool,
-    records_ingested: u64,
-    ingest_errors: u64,
-    checkpoints_saved: u64,
-    checkpoint_errors: u64,
-    checkpoints: &[StorageSourceCheckpoint],
-    observed_at_ms: u128,
-) {
-    health.status = if all_records_ingested {
-        SourceHealthStatus::Healthy
-    } else {
-        SourceHealthStatus::Degraded
-    };
-    health.phase = if all_records_ingested {
-        SourcePollingPhase::Healthy
-    } else {
-        SourcePollingPhase::Degraded
-    };
-    health.phase_started_at_ms = Some(observed_at_ms);
-    health.lease_until_ms = None;
-    health.last_success_at_ms = Some(observed_at_ms);
-    if all_records_ingested {
-        health.last_error = None;
-    }
-    health.total_records_ingested = health
-        .total_records_ingested
-        .saturating_add(records_ingested);
-    health.total_ingest_errors = health.total_ingest_errors.saturating_add(ingest_errors);
-    health.total_checkpoints_saved = health
-        .total_checkpoints_saved
-        .saturating_add(checkpoints_saved);
-    health.total_checkpoint_errors = health
-        .total_checkpoint_errors
-        .saturating_add(checkpoint_errors);
-    for checkpoint in checkpoints {
-        if is_iterator_checkpoint(checkpoint) {
-            continue;
+pub(crate) struct SourceBatchOutcome {
+    pub(crate) is_committed: bool,
+    pub(crate) records_ingested: u64,
+    pub(crate) ingest_errors: u64,
+    pub(crate) checkpoints_saved: u64,
+    pub(crate) checkpoint_errors: u64,
+}
+
+impl SourceHealth {
+    pub(crate) fn apply_source_batch_health(
+        &mut self,
+        outcome: SourceBatchOutcome,
+        checkpoints: &[StorageSourceCheckpoint],
+        observed_at_ms: u128,
+    ) {
+        (self.status, self.phase) = if outcome.is_committed {
+            (SourceHealthStatus::Healthy, SourcePollingPhase::Healthy)
+        } else {
+            (SourceHealthStatus::Degraded, SourcePollingPhase::Degraded)
+        };
+        self.phase_started_at_ms = Some(observed_at_ms);
+        if outcome.is_committed {
+            self.last_success_at_ms = Some(observed_at_ms);
+            self.last_error = None;
+        } else {
+            self.last_error_at_ms = Some(observed_at_ms);
+            if self.last_error.is_none() {
+                self.last_error = Some(
+                    "source batch did not commit; durable checkpoint state was preserved"
+                        .to_string(),
+                );
+            }
+            self.total_poll_errors = self.total_poll_errors.saturating_add(1);
         }
-        upsert_checkpoint_health(
-            &mut health.checkpoints,
-            CheckpointHealth {
-                source_table_name: checkpoint.source_table_name.clone(),
-                shard_id: checkpoint.shard_id.clone(),
-                position: checkpoint.position.clone(),
-                updated_at_ms: Some(observed_at_ms),
-            },
-        );
+        self.total_records_ingested = self
+            .total_records_ingested
+            .saturating_add(outcome.records_ingested);
+        self.total_ingest_errors = self
+            .total_ingest_errors
+            .saturating_add(outcome.ingest_errors);
+        self.total_checkpoints_saved = self
+            .total_checkpoints_saved
+            .saturating_add(outcome.checkpoints_saved);
+        self.total_checkpoint_errors = self
+            .total_checkpoint_errors
+            .saturating_add(outcome.checkpoint_errors);
+        if outcome.is_committed {
+            self.merge_source_checkpoints(checkpoints, Some(observed_at_ms));
+        }
+        outcome.record_metrics(self, observed_at_ms);
     }
+
+    fn merge_source_checkpoints(
+        &mut self,
+        checkpoints: &[StorageSourceCheckpoint],
+        observed_at_ms: Option<u128>,
+    ) {
+        self.checkpoints.reserve(checkpoints.len());
+        for checkpoint in checkpoints
+            .iter()
+            .filter(|checkpoint| !is_iterator_checkpoint(checkpoint))
+        {
+            upsert_checkpoint_health(
+                &mut self.checkpoints,
+                CheckpointHealth {
+                    source_table_name: checkpoint.source_table_name.clone(),
+                    shard_id: checkpoint.shard_id.clone(),
+                    position: checkpoint.position.clone(),
+                    updated_at_ms: observed_at_ms,
+                },
+            );
+        }
+    }
+}
+
+pub(crate) fn apply_source_durable_checkpoints(
+    health: &mut SourceHealth,
+    checkpoints: &[StorageSourceCheckpoint],
+) {
+    health.checkpoints.clear();
+    health.merge_source_checkpoints(checkpoints, None);
+    metrics::gauge!(SOURCE_CHECKPOINTS_METRIC).set(health.checkpoints.len() as f64);
 }
 
 pub(crate) fn upsert_checkpoint_health(

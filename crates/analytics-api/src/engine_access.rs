@@ -1,11 +1,12 @@
-use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{future::Future, sync::Arc};
 
-use analytics_engine::{AnalyticsEngine, AnalyticsEngineError, StorageBackend};
+use analytics_engine::{AnalyticsEngine, AnalyticsEngineError, QueryCancellation, StorageBackend};
 use config::DEFAULT_QUERY_MAX_READ_CONNECTIONS;
 use thiserror::Error;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::{
+    sync::{Mutex, Semaphore},
+    task::{JoinError, JoinSet},
+};
 
 #[derive(Debug, Error)]
 pub enum AnalyticsEngineAccessError {
@@ -19,8 +20,6 @@ pub enum AnalyticsEngineAccessError {
 pub struct AnalyticsEngineAccess {
     writer: Arc<Mutex<AnalyticsEngine>>,
     read_strategy: ReadStrategy,
-    #[cfg(test)]
-    write_entries: Arc<AtomicUsize>,
 }
 
 #[derive(Clone)]
@@ -35,13 +34,52 @@ struct DedicatedReadConnections {
 }
 
 impl AnalyticsEngineAccess {
+    /// Executes independent queries concurrently and restores the request
+    /// order. A failure cancels sibling native work and awaits its settlement.
+    /// Each operation must pass its cancellation signal to
+    /// `with_cancellable_read` or otherwise observe it before completing.
+    pub async fn execute_query_batch<T, R, E, F, Q>(
+        items: Vec<T>,
+        execute_query: F,
+    ) -> Result<Vec<R>, E>
+    where
+        T: Send + 'static,
+        R: Send + 'static,
+        E: From<JoinError> + Send + 'static,
+        F: Fn(T, QueryCancellation) -> Q,
+        Q: Future<Output = Result<R, E>> + Send + 'static,
+    {
+        let mut tasks = JoinSet::new();
+        let cancellation =
+            QueryBatchCancellation(items.iter().map(|_| QueryCancellation::default()).collect());
+        for (index, (item, signal)) in items.into_iter().zip(&cancellation.0).enumerate() {
+            let query = execute_query(item, signal.clone());
+            tasks.spawn(async move { query.await.map(|result| (index, result)) });
+        }
+        let mut results = Vec::with_capacity(tasks.len());
+        let mut failure = None;
+        while let Some(joined) = tasks.join_next().await {
+            match joined.map_err(E::from).and_then(|result| result) {
+                Ok(result) => results.push(result),
+                Err(error) if failure.is_none() => {
+                    failure = Some(error);
+                    cancellation.cancel();
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        results.sort_by_key(|(index, _)| *index);
+        Ok(results.into_iter().map(|(_, result)| result).collect())
+    }
+
     #[must_use]
     pub fn shared(engine: AnalyticsEngine) -> Self {
         Self {
             writer: Arc::new(Mutex::new(engine)),
             read_strategy: ReadStrategy::SharedWriter,
-            #[cfg(test)]
-            write_entries: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -71,8 +109,6 @@ impl AnalyticsEngineAccess {
         Self {
             writer: Arc::new(Mutex::new(engine)),
             read_strategy,
-            #[cfg(test)]
-            write_entries: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -83,14 +119,24 @@ impl AnalyticsEngineAccess {
     where
         T: Send + 'static,
     {
-        match &self.read_strategy {
+        self.with_cancellable_read(QueryCancellation::default(), operation)
+            .await
+    }
+
+    pub async fn with_cancellable_read<T>(
+        &self,
+        cancellation: QueryCancellation,
+        operation: impl FnOnce(&AnalyticsEngine) -> T + Send + 'static,
+    ) -> Result<T, AnalyticsEngineAccessError>
+    where
+        T: Send + 'static,
+    {
+        let mut cancel_on_drop = CancelReadOnDrop(Some(cancellation.clone()));
+        let result = match &self.read_strategy {
             ReadStrategy::SharedWriter => {
-                let writer = Arc::clone(&self.writer);
-                run_engine_work(move || {
-                    let engine = writer.blocking_lock();
-                    Ok(operation(&engine))
-                })
-                .await
+                let engine = Arc::clone(&self.writer).lock_owned().await;
+                run_engine_work(move || execute_cancellable_read(&engine, cancellation, operation))
+                    .await
             }
             ReadStrategy::DedicatedConnections(read_connections) => {
                 let permit = Arc::clone(&read_connections.permits)
@@ -100,13 +146,16 @@ impl AnalyticsEngineAccess {
                 let read_connections = Arc::clone(read_connections);
                 run_engine_work(move || {
                     let engine = AnalyticsEngine::connect(&read_connections.backend)?;
-                    let result = operation(&engine);
+                    let result = execute_cancellable_read(&engine, cancellation, operation);
+                    drop(engine);
                     drop(permit);
-                    Ok(result)
+                    result
                 })
                 .await
             }
-        }
+        };
+        cancel_on_drop.0.take();
+        result
     }
 
     pub async fn with_write<T>(
@@ -116,19 +165,8 @@ impl AnalyticsEngineAccess {
     where
         T: Send + 'static,
     {
-        #[cfg(test)]
-        self.write_entries.fetch_add(1, Ordering::Relaxed);
-        let writer = Arc::clone(&self.writer);
-        run_engine_work(move || {
-            let engine = writer.blocking_lock();
-            operation(&engine)
-        })
-        .await
-    }
-
-    #[cfg(test)]
-    pub(crate) fn write_entry_count(&self) -> usize {
-        self.write_entries.load(Ordering::Relaxed)
+        let engine = Arc::clone(&self.writer).lock_owned().await;
+        run_engine_work(move || operation(&engine)).await
     }
 }
 
@@ -149,4 +187,41 @@ pub(crate) fn supports_dedicated_read_connections(backend: &StorageBackend) -> b
         StorageBackend::DuckDb { .. } => false,
         StorageBackend::DuckLake { .. } => true,
     }
+}
+
+struct QueryBatchCancellation(Vec<QueryCancellation>);
+
+impl QueryBatchCancellation {
+    fn cancel(&self) {
+        for signal in &self.0 {
+            signal.cancel();
+        }
+    }
+}
+
+impl Drop for QueryBatchCancellation {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+struct CancelReadOnDrop(Option<QueryCancellation>);
+
+impl Drop for CancelReadOnDrop {
+    fn drop(&mut self) {
+        if let Some(signal) = &self.0 {
+            signal.cancel();
+        }
+    }
+}
+
+fn execute_cancellable_read<T>(
+    engine: &AnalyticsEngine,
+    cancellation: QueryCancellation,
+    operation: impl FnOnce(&AnalyticsEngine) -> T,
+) -> Result<T, AnalyticsEngineAccessError> {
+    if cancellation.is_cancelled() {
+        return Err(AnalyticsEngineError::QueryCancelled.into());
+    }
+    Ok(engine.with_query_cancellation(cancellation, operation))
 }

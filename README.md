@@ -66,24 +66,29 @@ can own domain table registration while this repo stays agnostic.
     },
     "source": {
       "stream_type": "storage_stream",
+      "endpoint_url": "https://dynamodb.us-east-1.amazonaws.com",
       "region": "us-east-1",
       "credentials": {
         "instance_keys": true
       },
       "poll_interval_ms": 100,
+      "poll_request_timeout_ms": 5000,
       "poll_max_shards": 16,
       "poll_max_responses_per_interval": 160,
+      "poll_max_records_per_response": 8192,
       "tables": [
         {
           "table_name": "tenant_entities",
           "stream_identifier": "arn:aws:dynamodb:us-east-1:123456789012:table/tenant_entities/stream/2026-05-13T00:00:00.000"
-        },
-        {
-          "table_name": "audit_events",
-          "stream_type": "aux_storage",
-          "stream_identifier": "audit_events"
         }
       ]
+    },
+    "ingest": {
+      "processor_enabled": true
+    },
+    "job_store": {
+      "endpoint_url": "https://aux-storage.example.test",
+      "request_timeout_ms": 5000
     },
     "catalog": {
       "backend": "ducklake_aux_catalog",
@@ -93,7 +98,7 @@ can own domain table registration while this repo stays agnostic.
       "provider": "r2",
       "scheme": "s3",
       "bucket": "analytics-lake",
-      "path": "customers/prod",
+      "path": "analytics-data/demo",
       "endpoint_url": "https://account-id.r2.cloudflarestorage.com",
       "region": "auto",
       "credentials": {
@@ -135,15 +140,18 @@ credential expiry and refresh timestamps in memory when the provider returns the
 operation performs a cheap refresh comparison and replaces the DuckDB secret before continuing when
 credentials need rotation. Explicit static credentials are caller-managed.
 
-When the binary runs continuously, `analytics-storage` starts the configured source pollers and
-feeds contract records into the engine. Lambda deployments do not start this poller; AWS event
-source mappings handle stream polling and invoke `analytics-lambda` with batches.
+When the binary runs continuously, the bg-jobs runtime schedules bounded source and retention work;
+the configured source adapter fetches contract records and commits their destination effects. Lambda
+deployments do not start this runtime; AWS event source mappings handle stream polling and invoke
+`analytics-lambda` with batches.
 
-For aux-storage pull deployments, ingest-capable instances coordinate through aux-storage heartbeat,
-slot lease, progress, and change-index tables. Set `analytics.ingest.processor_enabled = false` on
-query-only instances; they serve HTTP reads but do not write heartbeats, acquire slot leases, or poll
-aux-storage. The Docker Compose demo runs two processors and one query-only instance against a
-shared FoundationDB-backed aux DuckLake catalog.
+For source pull deployments, ingest-capable instances run the bg-jobs processor. Set
+`analytics.ingest.processor_enabled = false` on query-only instances; they serve HTTP reads but do
+not claim or execute background jobs. Both standard streams and AuxStorage/SystemStream use typed
+source progress: AuxStorage first discovers its database-owned versioned logical scope, then polls
+with that scope and an opaque resumable checkpoint. Each record carries validated logical table and
+shard/lineage/offset metadata; raw cursors, physical topology IDs, malformed tokens, and fabricated
+scope identities are rejected before reads or checkpoint advancement.
 
 ## Retention
 
@@ -171,22 +179,25 @@ AWS SDK, and `query_table.limit` must be `1`. Aux-storage lookups retry 3 times 
 backoff. Failed strict lookups retain the row with `__missing_retention = true` until repaired with
 `aux-analytics repair-retention`.
 
-Standalone polling checkpoints are stored durably in the analytics database in
-`__analytics_source_checkpoints`. Aux-storage polling stores the last stream page position per
-source table. Standard stream polling stores the last successfully ingested sequence number per
-stream shard and resumes with `AFTER_SEQUENCE_NUMBER` on restart. Aux-fn does not own or schedule
-these checkpoints; it only supplies manifests and deployment config for the standalone
-aux-analytics process.
+Source progress is an analytics-destination transaction executed under bg-jobs authority. For each
+accepted source job, the analytics destination atomically compares and advances the execution fence
+while committing records, quarantine decisions, the source checkpoint/frontier, and an
+analytics-owned destination-effect receipt. Aux-common `OperationReceipt` records only local job
+lifecycle and authority; it is not proof of the external analytical effect. Standard stream jobs
+resume from the last successfully committed sequence number with `AFTER_SEQUENCE_NUMBER`; typed
+AuxStorage/SystemStream jobs resume from the issued opaque frontier after validating its scope and
+generation. The calling application supplies manifests and deployment config but does not schedule
+source or retention work.
 
 ## Health And Metrics
 
 The HTTP API exposes `/up`, `/ready`, `/health`, `/diagnostics`, and `/metrics`.
-`/health` includes source poller status and current checkpoint health. `/diagnostics`
+`/health` includes source background-job status and current checkpoint health. `/diagnostics`
 returns the same source detail with counters for poll errors, ingest errors, and
 checkpoint saves. `/metrics` exports Prometheus metrics when `features.metrics.enabled`
 is true.
 
-Important polling metrics:
+Important source metrics:
 
 - `analytics.source.polls_total`
 - `analytics.source.poll_errors_total`
@@ -202,22 +213,16 @@ Important polling metrics:
 - `analytics.source.records_skipped_total`
 - `analytics.source.write_transactions_total`
 - `analytics.source.write_duration_ms`
-- `analytics.source.batch_memory_increment_bytes`
+- `analytics.source.batch_memory_increment_bytes` (Linux peak resident growth per source poll or job attempt)
 - `analytics.source.ingest_errors_total`
-- `analytics.source.quarantined_total`
 - `analytics.source.checkpoints_saved_total`
 - `analytics.source.checkpoint_errors_total`
 - `analytics.source.checkpoints`
 - `analytics.source.checkpoint_saved_timestamp_seconds`
-- `analytics.source.leader`
-- `analytics.source.lease_remaining_ms`
-- `analytics.source.lease_attempts_total`
-- `analytics.ingest.table.records_total`
-- `analytics.ingest.table.bytes_total`
 - `analytics.retention.lookups_total`
 - `analytics.retention.lookup_failures_total`
-- `analytics.retention.sweeps_total`
-- `analytics.retention.sweep_duration_ms`
+- `analytics.retention.delete_batches_total`
+- `analytics.retention.delete_batch_duration_ms`
 - `analytics.retention.rows_deleted_total`
 - `analytics.query.requests_total`
 - `analytics.query.latency_ms`
@@ -235,8 +240,9 @@ See `observability.md` for the metrics endpoint and stdout/stderr logging behavi
 
 `analytics-contract` is the integration boundary. Application services should export manifests and,
 when pushing records over HTTP, use the contract JSON shape. Static integrations that already link
-the storage facade can use `analytics-storage` to convert storage records into contract records, but
-`analytics-engine` and `analytics-api` do not depend on the storage facade or application crates.
+the storage facade can use `analytics-storage` to convert storage records into contract records.
+`analytics-engine` remains independent of the storage facade and application crates. The standalone
+API composes storage adapters and the durable job store for source polling and retention.
 
 DuckLake connections use a catalog and data path:
 
@@ -261,14 +267,25 @@ Environment variables:
 - `AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG`: optional DuckLake aux catalog metadata path override.
 - `AUX_ANALYTICS_DUCKLAKE_DATA_PATH`: required when a DuckLake env override is used.
 
-Example unscoped SQL query event:
+Example structured query event:
 
 ```json
 {
-  "operation": "unscoped_sql_query",
-  "sql": "select count(*) as rows from users"
+  "operation": "unscoped_structured_query",
+  "query": {
+    "analytics_table_name": "users",
+    "select": [
+      {
+        "kind": "column",
+        "column_name": "email"
+      }
+    ]
+  }
 }
 ```
+
+Tenant-facing Lambda events do not accept raw SQL; use structured queries so the registered
+manifest and query policy remain authoritative.
 
 Example ETL event:
 

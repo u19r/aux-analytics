@@ -1,12 +1,12 @@
 use analytics_contract::{
-    QueryExpression, QueryPredicate, QuerySelect, RowIdentity, StructuredQuery, TableRegistration,
-    TenantSelector,
+    AnalyticsManifest, QueryExpression, QueryPredicate, QuerySelect, RowIdentity, StructuredQuery,
+    TableRegistration, TenantSelector,
 };
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{AnalyticsEngine, structured_query::structured_query_sql};
+use crate::{AnalyticsEngine, AnalyticsEngineError, structured_query::structured_query_sql};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
@@ -24,38 +24,154 @@ enum QueryResult {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-#[allow(clippy::enum_variant_names)]
 enum SqlPrefix {
-    SelectPrefix,
-    WithPrefix,
-    InsertPrefix,
-    UpdatePrefix,
-    DeletePrefix,
-    UnknownPrefix,
+    #[serde(rename = "SelectPrefix")]
+    Select,
+    #[serde(rename = "WithPrefix")]
+    With,
+    #[serde(rename = "InsertPrefix")]
+    Insert,
+    #[serde(rename = "UpdatePrefix")]
+    Update,
+    #[serde(rename = "DeletePrefix")]
+    Delete,
+    #[serde(rename = "UnknownPrefix")]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct QueryState {
     #[serde(rename = "lastResult")]
     last_result: QueryResult,
+    #[serde(rename = "rawAccepted")]
+    raw_accepted: bool,
+    #[serde(rename = "rawReadOnlyPrefix")]
+    raw_read_only_prefix: bool,
+    #[serde(rename = "rawSingleStatement")]
+    raw_single_statement: bool,
+    #[serde(rename = "structuredAccepted")]
+    structured_accepted: bool,
+    #[serde(rename = "structuredHasSelect")]
+    structured_has_select: bool,
+    #[serde(rename = "structuredHasTableName")]
+    structured_has_table_name: bool,
+    #[serde(rename = "selectedColumnsRegistered")]
+    selected_columns_registered: bool,
+    #[serde(rename = "documentPathsAllowed")]
+    document_paths_allowed: bool,
+    #[serde(rename = "filtersAllowed")]
+    filters_allowed: bool,
+    #[serde(rename = "groupByAllowed")]
+    group_by_allowed: bool,
+    #[serde(rename = "orderByAllowed")]
+    order_by_allowed: bool,
+    #[serde(rename = "limitAllowed")]
+    limit_allowed: bool,
+    #[serde(rename = "malformedPathUsed")]
+    malformed_path_used: bool,
 }
 
 impl State<QueryDriver> for QueryState {
     fn from_driver(driver: &QueryDriver) -> Result<Self> {
         Ok(Self {
             last_result: driver.last_result,
+            raw_accepted: driver.raw_accepted,
+            raw_read_only_prefix: driver.raw_read_only_prefix,
+            raw_single_statement: driver.raw_single_statement,
+            structured_accepted: driver.structured_accepted,
+            structured_has_select: driver.structured_has_select,
+            structured_has_table_name: driver.structured_has_table_name,
+            selected_columns_registered: driver.selected_columns_registered,
+            document_paths_allowed: driver.document_paths_allowed,
+            filters_allowed: driver.filters_allowed,
+            group_by_allowed: driver.group_by_allowed,
+            order_by_allowed: driver.order_by_allowed,
+            limit_allowed: driver.limit_allowed,
+            malformed_path_used: driver.malformed_path_used,
         })
     }
 }
 
 struct QueryDriver {
+    engine: AnalyticsEngine,
+    manifest: AnalyticsManifest,
     last_result: QueryResult,
+    raw_accepted: bool,
+    raw_read_only_prefix: bool,
+    raw_single_statement: bool,
+    structured_accepted: bool,
+    structured_has_select: bool,
+    structured_has_table_name: bool,
+    selected_columns_registered: bool,
+    document_paths_allowed: bool,
+    filters_allowed: bool,
+    group_by_allowed: bool,
+    order_by_allowed: bool,
+    limit_allowed: bool,
+    malformed_path_used: bool,
 }
 
 impl Default for QueryDriver {
     fn default() -> Self {
+        let manifest = AnalyticsManifest::new(vec![table()]);
+        let engine = AnalyticsEngine::connect_duckdb(":memory:")
+            .and_then(|engine| {
+                engine.ensure_manifest(&manifest)?;
+                Ok(engine)
+            })
+            .expect("connect query conformance engine");
         Self {
+            engine,
+            manifest,
             last_result: QueryResult::NotChecked,
+            raw_accepted: false,
+            raw_read_only_prefix: false,
+            raw_single_statement: false,
+            structured_accepted: false,
+            structured_has_select: false,
+            structured_has_table_name: false,
+            selected_columns_registered: false,
+            document_paths_allowed: false,
+            filters_allowed: false,
+            group_by_allowed: false,
+            order_by_allowed: false,
+            limit_allowed: false,
+            malformed_path_used: false,
+        }
+    }
+}
+
+// These are independent model inputs, including deliberately invalid query
+// witnesses. Keep them named through execution and observation rather than
+// positional boolean lists.
+struct StructuredQueryCase {
+    select_count: i64,
+    table_name_present: bool,
+    selected_column_registered: bool,
+    uses_document_path: bool,
+    document_column_registered: bool,
+    uses_configured_document_column: bool,
+    path_valid: bool,
+    filter_expression_allowed: bool,
+    group_by_expression_allowed: bool,
+    order_by_expression_allowed: bool,
+    limit_valid: bool,
+}
+
+impl Default for StructuredQueryCase {
+    fn default() -> Self {
+        Self {
+            select_count: 1,
+            table_name_present: true,
+            selected_column_registered: true,
+            uses_document_path: false,
+            document_column_registered: false,
+            uses_configured_document_column: false,
+            path_valid: true,
+            filter_expression_allowed: true,
+            group_by_expression_allowed: true,
+            order_by_expression_allowed: true,
+            limit_valid: true,
         }
     }
 }
@@ -65,24 +181,37 @@ impl Driver for QueryDriver {
 
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
-            init => self.last_result = QueryResult::NotChecked,
-            CheckSelectAccepted => self.last_result = check_select_accepted()?,
-            CheckWithAccepted => self.last_result = check_with_accepted()?,
-            CheckMutatingSqlRejected => self.last_result = check_mutating_sql_rejected()?,
+            init => *self = Self::default(),
+            CheckSelectAccepted => self.record_raw(SqlPrefix::Select, check_select_accepted()?),
+            CheckWithAccepted => self.record_raw(SqlPrefix::With, check_with_accepted()?),
+            CheckMutatingSqlRejected => self.record_raw(SqlPrefix::Insert, check_mutating_sql_rejected()?),
             CheckMultipleStatementsRejected => {
-                self.last_result = check_multiple_statements_rejected()?;
+                self.record_raw(SqlPrefix::Select, check_multiple_statements_rejected()?);
             },
-            CheckStructuredQueryCompiled => self.last_result = check_structured_query_compiled()?,
-            CheckDocumentPathCompiled => self.last_result = check_document_path_compiled()?,
+            CheckStructuredQueryCompiled => self.record_structured(&StructuredQueryCase::default(), check_structured_query_compiled()?),
+            CheckDocumentPathCompiled => self.record_structured(&StructuredQueryCase {
+                uses_document_path: true,
+                document_column_registered: true,
+                uses_configured_document_column: true,
+                ..Default::default()
+            }, check_document_path_compiled()?),
             CheckUnregisteredColumnRejected => {
-                self.last_result = check_unregistered_column_rejected()?;
+                self.record_structured(&StructuredQueryCase {
+                    selected_column_registered: false,
+                    ..Default::default()
+                }, check_unregistered_column_rejected()?);
             },
-            CheckEmptySelectRejected => self.last_result = check_empty_select_rejected()?,
+            CheckEmptySelectRejected => self.record_structured(&StructuredQueryCase {
+                select_count: 0,
+                ..Default::default()
+            }, check_empty_select_rejected()?),
             GenerateRawQuery(prefix, statement_count) => {
-                self.last_result = raw_query_result(prefix, statement_count);
+                let result = self.execute_raw_query(prefix, statement_count)?;
+                self.record_raw(prefix, result);
             },
             GenerateStructuredQuery(
                 select_count,
+                table_name_present,
                 selected_column_registered,
                 uses_document_path,
                 document_column_registered,
@@ -93,8 +222,9 @@ impl Driver for QueryDriver {
                 order_by_expression_allowed,
                 limit_valid
             ) => {
-                self.last_result = structured_query_result(
+                let case = StructuredQueryCase {
                     select_count,
+                    table_name_present,
                     selected_column_registered,
                     uses_document_path,
                     document_column_registered,
@@ -104,9 +234,242 @@ impl Driver for QueryDriver {
                     group_by_expression_allowed,
                     order_by_expression_allowed,
                     limit_valid,
-                );
+                };
+                let result = self.execute_structured_query(&case)?;
+                self.record_structured(&case, result);
             },
         })
+    }
+}
+
+impl QueryDriver {
+    fn execute_raw_query(&self, prefix: SqlPrefix, statement_count: i64) -> Result<QueryResult> {
+        let statement = match prefix {
+            SqlPrefix::Select => "select 1 as value",
+            SqlPrefix::With => "with ready as (select 1 as value) select value from ready",
+            SqlPrefix::Insert => "insert into users values (1)",
+            SqlPrefix::Update => "update users set email = 'changed'",
+            SqlPrefix::Delete => "delete from users",
+            SqlPrefix::Unknown => "drop table users",
+        };
+        let sql = if statement_count == 2 {
+            format!("{statement}; {statement}")
+        } else if statement_count == 0 {
+            String::new()
+        } else {
+            statement.to_string()
+        };
+        match self.engine.query_unscoped_sql_json(sql.as_str()) {
+            Ok(rows) => {
+                let result = match prefix {
+                    SqlPrefix::Select
+                        if rows.first().and_then(|row| row["value"].as_i64()) == Some(1) =>
+                    {
+                        QueryResult::SelectAccepted
+                    }
+                    SqlPrefix::With
+                        if rows.first().and_then(|row| row["value"].as_i64()) == Some(1) =>
+                    {
+                        QueryResult::WithAccepted
+                    }
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "production accepted unexpected raw query shape \
+                             {prefix:?}/{statement_count}"
+                        ));
+                    }
+                };
+                Ok(result)
+            }
+            Err(AnalyticsEngineError::InvalidQuery) if statement_count != 1 => {
+                Ok(QueryResult::MultipleStatementsRejected)
+            }
+            Err(AnalyticsEngineError::InvalidQuery) => Ok(QueryResult::MutatingSqlRejected),
+            Err(error) => Err(anyhow::anyhow!(
+                "raw query boundary returned an unmapped error for {prefix:?}/{statement_count}: \
+                 {error:?}"
+            )),
+        }
+    }
+
+    fn execute_structured_query(&self, case: &StructuredQueryCase) -> Result<QueryResult> {
+        let StructuredQueryCase {
+            select_count,
+            table_name_present,
+            selected_column_registered,
+            uses_document_path,
+            document_column_registered,
+            uses_configured_document_column,
+            path_valid,
+            filter_expression_allowed,
+            group_by_expression_allowed,
+            order_by_expression_allowed,
+            limit_valid,
+        } = *case;
+        let analytics_table_name = if table_name_present {
+            "users".to_string()
+        } else {
+            String::new()
+        };
+        let mut select = Vec::new();
+        for index in 0..select_count.max(0) {
+            if uses_document_path && index == 0 {
+                select.push(QuerySelect::DocumentPath {
+                    table_alias: None,
+                    document_column: if document_column_registered {
+                        if uses_configured_document_column {
+                            "item".to_string()
+                        } else {
+                            "email".to_string()
+                        }
+                    } else {
+                        "not_registered".to_string()
+                    },
+                    path: if path_valid {
+                        "profile.email".to_string()
+                    } else {
+                        "profile..email".to_string()
+                    },
+                    alias: "document_value".to_string(),
+                });
+            } else {
+                let column_name = if selected_column_registered {
+                    if index == 0 { "email" } else { "org_id" }
+                } else {
+                    "not_registered"
+                };
+                select.push(QuerySelect::Column {
+                    table_alias: None,
+                    column_name: column_name.to_string(),
+                    alias: Some(format!("column_{index}")),
+                });
+            }
+        }
+        let filters = if filter_expression_allowed {
+            Vec::new()
+        } else {
+            vec![QueryPredicate::Eq {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "not_registered".to_string(),
+                },
+                value: json!("rejected"),
+            }]
+        };
+        let group_by = if group_by_expression_allowed {
+            Vec::new()
+        } else {
+            vec![QueryExpression::Column {
+                table_alias: None,
+                column_name: "not_registered".to_string(),
+            }]
+        };
+        let order_by = if order_by_expression_allowed {
+            Vec::new()
+        } else {
+            vec![analytics_contract::QueryOrder {
+                expression: QueryExpression::Column {
+                    table_alias: None,
+                    column_name: "not_registered".to_string(),
+                },
+                direction: Some(analytics_contract::SortOrder::Asc),
+            }]
+        };
+        let query = StructuredQuery {
+            analytics_table_name,
+            table_alias: None,
+            joins: Vec::new(),
+            select,
+            filters,
+            group_by,
+            order_by,
+            // `0` is the invalid contract witness. The production boundary
+            // must reject it; it must not be rendered as an executable LIMIT.
+            limit: Some(if limit_valid { 10 } else { 0 }),
+            offset: None,
+        };
+        match self
+            .engine
+            .query_unscoped_structured_json(&self.manifest, &query)
+        {
+            Ok(_) if uses_document_path => Ok(QueryResult::DocumentPathCompiled),
+            Ok(_) => Ok(QueryResult::StructuredQueryCompiled),
+            Err(AnalyticsEngineError::InvalidStructuredQuery(_))
+                if select_count == 0 || !table_name_present =>
+            {
+                Ok(QueryResult::EmptySelectRejected)
+            }
+            Err(AnalyticsEngineError::InvalidStructuredQuery(_))
+                if !selected_column_registered
+                    || (uses_document_path
+                        && (!document_column_registered
+                            || !uses_configured_document_column
+                            || !path_valid))
+                    || !filter_expression_allowed
+                    || !group_by_expression_allowed
+                    || !order_by_expression_allowed
+                    || !limit_valid =>
+            {
+                Ok(QueryResult::UnregisteredColumnRejected)
+            }
+            Err(error) => Err(anyhow::anyhow!(
+                "structured query boundary returned an unmapped error for a valid shape: {error:?}"
+            )),
+        }
+    }
+
+    fn record_raw(&mut self, prefix: SqlPrefix, result: QueryResult) {
+        self.last_result = result;
+        self.raw_accepted = matches!(
+            result,
+            QueryResult::SelectAccepted | QueryResult::WithAccepted
+        );
+        self.raw_read_only_prefix = is_read_only_prefix(prefix);
+        self.raw_single_statement = !matches!(result, QueryResult::MultipleStatementsRejected);
+        self.structured_accepted = false;
+        self.structured_has_select = true;
+        self.structured_has_table_name = true;
+        self.selected_columns_registered = true;
+        self.document_paths_allowed = true;
+        self.filters_allowed = true;
+        self.group_by_allowed = true;
+        self.order_by_allowed = true;
+        self.limit_allowed = true;
+        self.malformed_path_used = false;
+    }
+
+    fn record_structured(&mut self, case: &StructuredQueryCase, result: QueryResult) {
+        let StructuredQueryCase {
+            select_count,
+            table_name_present,
+            selected_column_registered,
+            uses_document_path,
+            document_column_registered,
+            uses_configured_document_column,
+            path_valid,
+            filter_expression_allowed,
+            group_by_expression_allowed,
+            order_by_expression_allowed,
+            limit_valid,
+        } = *case;
+        self.last_result = result;
+        self.raw_accepted = false;
+        self.raw_read_only_prefix = true;
+        self.raw_single_statement = true;
+        self.structured_has_select = select_count > 0;
+        self.structured_has_table_name = table_name_present;
+        self.selected_columns_registered = selected_column_registered;
+        self.document_paths_allowed = !uses_document_path
+            || (document_column_registered && uses_configured_document_column && path_valid);
+        self.filters_allowed = filter_expression_allowed;
+        self.group_by_allowed = group_by_expression_allowed;
+        self.order_by_allowed = order_by_expression_allowed;
+        self.limit_allowed = limit_valid;
+        self.malformed_path_used = uses_document_path && !path_valid;
+        self.structured_accepted = matches!(
+            result,
+            QueryResult::StructuredQueryCompiled | QueryResult::DocumentPathCompiled
+        );
     }
 }
 
@@ -116,60 +479,41 @@ impl Driver for QueryDriver {
     max_steps = 8,
     seed = "0xa"
 )]
-fn quint_query_model_matches_engine_query_rules() -> impl Driver {
+fn given_quint_query_model_when_replayed_then_engine_query_rules_matches() -> impl Driver {
     QueryDriver::default()
 }
 
-fn raw_query_result(prefix: SqlPrefix, statement_count: i64) -> QueryResult {
-    if is_read_only_prefix(prefix) && statement_count == 1 {
-        if prefix == SqlPrefix::SelectPrefix {
-            QueryResult::SelectAccepted
-        } else {
-            QueryResult::WithAccepted
-        }
-    } else if statement_count != 1 {
-        QueryResult::MultipleStatementsRejected
-    } else {
-        QueryResult::MutatingSqlRejected
-    }
-}
-
-#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
-fn structured_query_result(
-    select_count: i64,
-    selected_column_registered: bool,
-    uses_document_path: bool,
-    document_column_registered: bool,
-    uses_configured_document_column: bool,
-    path_valid: bool,
-    filter_expression_allowed: bool,
-    group_by_expression_allowed: bool,
-    order_by_expression_allowed: bool,
-    limit_valid: bool,
-) -> QueryResult {
-    if select_count == 0 {
-        return QueryResult::EmptySelectRejected;
-    }
-    let document_path_allowed = !uses_document_path
-        || (document_column_registered && uses_configured_document_column && path_valid);
-    if !selected_column_registered
-        || !document_path_allowed
-        || !filter_expression_allowed
-        || !group_by_expression_allowed
-        || !order_by_expression_allowed
-        || !limit_valid
-    {
-        return QueryResult::UnregisteredColumnRejected;
-    }
-    if uses_document_path {
-        QueryResult::DocumentPathCompiled
-    } else {
-        QueryResult::StructuredQueryCompiled
-    }
+#[test]
+fn given_zero_limit_when_structured_query_reaches_engine_then_boundary_rejects_without_execution() {
+    let manifest = AnalyticsManifest::new(vec![table()]);
+    let engine = AnalyticsEngine::connect_duckdb(":memory:").expect("connect query engine");
+    engine
+        .ensure_manifest(&manifest)
+        .expect("ensure query manifest");
+    let query = StructuredQuery {
+        analytics_table_name: "users".to_string(),
+        table_alias: None,
+        joins: Vec::new(),
+        select: vec![QuerySelect::Column {
+            table_alias: None,
+            column_name: "email".to_string(),
+            alias: None,
+        }],
+        filters: Vec::new(),
+        group_by: Vec::new(),
+        order_by: Vec::new(),
+        limit: Some(0),
+        offset: None,
+    };
+    assert!(matches!(
+        engine.query_unscoped_structured_json(&manifest, &query),
+        Err(AnalyticsEngineError::InvalidStructuredQuery(message))
+            if message == "limit must be greater than zero"
+    ));
 }
 
 fn is_read_only_prefix(prefix: SqlPrefix) -> bool {
-    matches!(prefix, SqlPrefix::SelectPrefix | SqlPrefix::WithPrefix)
+    matches!(prefix, SqlPrefix::Select | SqlPrefix::With)
 }
 
 fn check_select_accepted() -> Result<QueryResult> {

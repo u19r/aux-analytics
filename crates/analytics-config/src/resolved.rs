@@ -4,7 +4,7 @@ use crate::{
     AnalyticsCatalogBackend, AnalyticsCatalogConfig, AnalyticsObjectStorageConfig,
     AnalyticsRetentionConfig, AnalyticsSourceConfig, ConfigError, ConfigErrorDebug,
     ConfigErrorKind, RootConfig, TenantRetentionPolicyRequest, TenantRetentionPolicySource,
-    load_optional_with_overrides,
+    constants::MAX_RETENTION_DELETE_BATCH_SIZE, load_optional_with_overrides,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -23,35 +23,48 @@ impl BackendOverride {
             || self.ducklake_aux_catalog.is_some()
     }
 
-    fn storage_backend(&self) -> Result<StorageBackend, ConfigError> {
+    fn resolve_storage_backend(
+        &self,
+        root: Option<&RootConfig>,
+    ) -> Result<StorageBackend, ConfigError> {
         if let Some(path) = self.duckdb.as_ref() {
+            if path.trim().is_empty() {
+                return Err(ConfigError::new(ConfigErrorKind::MissingBackend));
+            }
             return Ok(StorageBackend::DuckDb { path: path.clone() });
         }
-        if let Some(catalog_path) = self.ducklake_sqlite_catalog.as_ref() {
-            return Ok(StorageBackend::DuckLake {
-                catalog: CatalogType::Sqlite,
-                catalog_path: catalog_path.clone(),
-                data_path: self.required_ducklake_data_path()?,
-                object_storage: None,
-                catalog_settings: DuckLakeCatalogSettings::default(),
+        let selection = self
+            .ducklake_sqlite_catalog
+            .as_ref()
+            .map(|path| (CatalogType::Sqlite, path))
+            .or_else(|| {
+                self.ducklake_aux_catalog
+                    .as_ref()
+                    .map(|path| (CatalogType::AuxCatalog, path))
             });
+        let Some((catalog, catalog_path)) = selection else {
+            return Err(ConfigError::new(ConfigErrorKind::MissingBackend));
+        };
+        if catalog_path.trim().is_empty() {
+            return Err(ConfigError::new(ConfigErrorKind::MissingBackend));
         }
-        if let Some(catalog_path) = self.ducklake_aux_catalog.as_ref() {
-            return Ok(StorageBackend::DuckLake {
-                catalog: CatalogType::AuxCatalog,
-                catalog_path: catalog_path.clone(),
-                data_path: self.required_ducklake_data_path()?,
-                object_storage: None,
-                catalog_settings: DuckLakeCatalogSettings::default(),
-            });
-        }
-        Err(ConfigError::new(ConfigErrorKind::MissingBackend))
+        Ok(StorageBackend::new_ducklake(
+            catalog,
+            catalog_path.clone(),
+            self.get_ducklake_data_path()?,
+            root,
+        ))
     }
 
-    fn required_ducklake_data_path(&self) -> Result<String, ConfigError> {
-        self.ducklake_data_path
+    fn get_ducklake_data_path(&self) -> Result<String, ConfigError> {
+        let path = self
+            .ducklake_data_path
             .clone()
-            .ok_or_else(|| ConfigError::new(ConfigErrorKind::MissingDucklakeDataPath))
+            .ok_or_else(|| ConfigError::new(ConfigErrorKind::MissingDucklakeDataPath))?;
+        if path.trim().is_empty() {
+            return Err(ConfigError::new(ConfigErrorKind::MissingDucklakeDataPath));
+        }
+        Ok(path)
     }
 }
 
@@ -67,6 +80,25 @@ pub enum StorageBackend {
         object_storage: Option<Box<AnalyticsObjectStorageConfig>>,
         catalog_settings: DuckLakeCatalogSettings,
     },
+}
+
+impl StorageBackend {
+    fn new_ducklake(
+        catalog: CatalogType,
+        catalog_path: String,
+        data_path: String,
+        root: Option<&RootConfig>,
+    ) -> Self {
+        Self::DuckLake {
+            catalog,
+            catalog_path,
+            data_path,
+            object_storage: root.map(|root| Box::new(root.analytics.object_storage.clone())),
+            catalog_settings: root.map_or_else(DuckLakeCatalogSettings::default, |root| {
+                DuckLakeCatalogSettings::from(&root.analytics.catalog)
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +128,7 @@ pub fn resolve_storage_backend(
     root: &RootConfig,
 ) -> Result<StorageBackend, ConfigError> {
     if backend_override.has_backend() {
-        return backend_override.storage_backend();
+        return backend_override.resolve_storage_backend(None);
     }
 
     let catalog = &root.analytics.catalog;
@@ -107,46 +139,62 @@ pub fn resolve_storage_backend(
         .connection_string
         .as_deref()
         .ok_or_else(|| ConfigError::new(ConfigErrorKind::MissingCatalogConnectionString))?;
-
-    match catalog_backend {
-        AnalyticsCatalogBackend::Duckdb => Ok(StorageBackend::DuckDb {
-            path: connection_string.to_string(),
-        }),
-        AnalyticsCatalogBackend::DucklakeSqlite => Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::Sqlite,
-            catalog_path: connection_string.to_string(),
-            data_path: ducklake_data_path(root)?,
-            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
-            catalog_settings: DuckLakeCatalogSettings::from(catalog),
-        }),
-        AnalyticsCatalogBackend::DucklakeAuxCatalog => Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::AuxCatalog,
-            catalog_path: connection_string.to_string(),
-            data_path: ducklake_data_path(root)?,
-            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
-            catalog_settings: DuckLakeCatalogSettings::from(catalog),
-        }),
-        AnalyticsCatalogBackend::DucklakeMotherduck => Ok(StorageBackend::DuckLake {
-            catalog: CatalogType::MotherDuck,
-            catalog_path: connection_string.to_string(),
-            data_path: ducklake_data_path(root)?,
-            object_storage: Some(Box::new(root.analytics.object_storage.clone())),
-            catalog_settings: DuckLakeCatalogSettings::from(catalog),
-        }),
+    if connection_string.trim().is_empty() {
+        return Err(ConfigError::new(
+            ConfigErrorKind::MissingCatalogConnectionString,
+        ));
     }
+
+    let catalog_type = match catalog_backend {
+        AnalyticsCatalogBackend::Duckdb => {
+            return Ok(StorageBackend::DuckDb {
+                path: connection_string.to_string(),
+            });
+        }
+        AnalyticsCatalogBackend::DucklakeSqlite => CatalogType::Sqlite,
+        AnalyticsCatalogBackend::DucklakeAuxCatalog => CatalogType::AuxCatalog,
+        AnalyticsCatalogBackend::DucklakeMotherduck => CatalogType::MotherDuck,
+    };
+    Ok(StorageBackend::new_ducklake(
+        catalog_type,
+        connection_string.to_string(),
+        resolve_object_storage_path(root)?,
+        Some(root),
+    ))
 }
 
-fn ducklake_data_path(root: &RootConfig) -> Result<String, ConfigError> {
+pub(crate) fn resolve_storage_backend_with_root(
+    backend_override: &BackendOverride,
+    root: &RootConfig,
+) -> Result<StorageBackend, ConfigError> {
+    if backend_override.has_backend() {
+        return backend_override.resolve_storage_backend(Some(root));
+    }
+    resolve_storage_backend(backend_override, root)
+}
+
+fn resolve_object_storage_path(root: &RootConfig) -> Result<String, ConfigError> {
     let path = root
         .analytics
         .object_storage
         .path
         .as_deref()
         .ok_or_else(|| ConfigError::new(ConfigErrorKind::MissingDucklakeObjectStoragePath))?;
+    if path.trim().is_empty() {
+        return Err(ConfigError::new(
+            ConfigErrorKind::MissingDucklakeObjectStoragePath,
+        ));
+    }
     if let Some(bucket) = root.analytics.object_storage.bucket.as_deref() {
+        let scheme = root
+            .analytics
+            .object_storage
+            .scheme
+            .trim_end_matches("://")
+            .trim_matches('/');
         return Ok(format!(
             "{}://{}/{}",
-            root.analytics.object_storage.scheme.trim_matches('/'),
+            scheme,
             bucket.trim_matches('/'),
             path.trim_start_matches('/')
         ));
@@ -181,16 +229,6 @@ pub fn parse_override_args(values: &[String]) -> Result<Vec<(String, String)>, C
         .collect()
 }
 
-pub fn resolve_manifest_path(
-    manifest_arg: Option<&str>,
-    root: &RootConfig,
-) -> Result<String, ConfigError> {
-    manifest_arg
-        .map(ToOwned::to_owned)
-        .or_else(|| root.analytics.manifest_path.clone())
-        .ok_or_else(|| ConfigError::new(ConfigErrorKind::MissingManifestPath))
-}
-
 pub fn validate_source_config(source: &AnalyticsSourceConfig) -> Result<(), ConfigError> {
     for table in &source.tables {
         if table.stream_type.or(source.stream_type).is_none() {
@@ -203,32 +241,42 @@ pub fn validate_source_config(source: &AnalyticsSourceConfig) -> Result<(), Conf
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn validate_retention_config(retention: &AnalyticsRetentionConfig) -> Result<(), ConfigError> {
     if !retention.enabled {
         return Ok(());
     }
-    if retention.sweep_interval_ms == 0
-        || retention.delete_batch_size == 0
-        || retention.delete_batch_pause_ms == 0
-    {
+    if retention.sweep_interval_ms == 0 || retention.delete_batch_size == 0 {
         return Err(ConfigError::with_debug(
             ConfigErrorKind::InvalidRetentionConfig,
             ConfigErrorDebug::Message(
-                "sweep_interval_ms, delete_batch_size, and delete_batch_pause_ms must be greater \
-                 than zero"
-                    .to_string(),
+                "sweep_interval_ms and delete_batch_size must be greater than zero".to_string(),
             ),
         ));
     }
+    if retention.delete_batch_size > MAX_RETENTION_DELETE_BATCH_SIZE {
+        return Err(ConfigError::with_debug(
+            ConfigErrorKind::InvalidRetentionConfig,
+            ConfigErrorDebug::Message(format!(
+                "delete_batch_size must be at most {MAX_RETENTION_DELETE_BATCH_SIZE}"
+            )),
+        ));
+    }
     for table in &retention.tables {
+        table.validate()?;
+    }
+    Ok(())
+}
+
+impl crate::AnalyticsRetentionTableConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        let table = self;
         validate_non_empty_retention_field(
             table.analytics_table_name.as_str(),
             "analytics_table_name",
             table.analytics_table_name.as_str(),
         )?;
         if table.default_period_ms == 0 {
-            return Err(retention_table_error(
+            return Err(create_retention_table_error(
                 table.analytics_table_name.as_str(),
                 "default_period_ms must be greater than zero",
             ));
@@ -252,64 +300,85 @@ pub fn validate_retention_config(retention: &AnalyticsRetentionConfig) -> Result
                 .attribute_path
                 .as_str(),
         )?;
-        match table.tenant_policy.source {
+        table
+            .tenant_policy
+            .validate_source(&table.analytics_table_name)?;
+        table
+            .tenant_policy
+            .request
+            .validate(&table.analytics_table_name)
+    }
+}
+
+impl crate::TenantRetentionPolicyConfig {
+    fn validate_source(&self, table_name: &str) -> Result<(), ConfigError> {
+        match self.source {
             TenantRetentionPolicySource::AuxStorage => {
-                if table
-                    .tenant_policy
-                    .endpoint_url
-                    .as_deref()
-                    .is_none_or(str::is_empty)
-                {
-                    return Err(retention_table_error(
-                        table.analytics_table_name.as_str(),
+                if self.endpoint_url.as_deref().is_none_or(str::is_empty) {
+                    return Err(create_retention_table_error(
+                        table_name,
                         "tenant_policy.endpoint_url is required for aux_storage",
                     ));
                 }
             }
             TenantRetentionPolicySource::DynamoDb => {}
         }
-        match &table.tenant_policy.request {
-            TenantRetentionPolicyRequest::GetItem(request) => {
-                validate_non_empty_retention_field(
-                    table.analytics_table_name.as_str(),
-                    "tenant_policy.request.get_item.table_name",
-                    request.table_name.as_str(),
-                )?;
-                if request.key.is_empty() {
-                    return Err(retention_table_error(
-                        table.analytics_table_name.as_str(),
-                        "tenant_policy.request.get_item.key must not be empty",
-                    ));
-                }
-            }
-            TenantRetentionPolicyRequest::QueryTable(request) => {
-                validate_non_empty_retention_field(
-                    table.analytics_table_name.as_str(),
-                    "tenant_policy.request.query_table.table_name",
-                    request.table_name.as_str(),
-                )?;
-                validate_non_empty_retention_field(
-                    table.analytics_table_name.as_str(),
-                    "tenant_policy.request.query_table.key_condition_expression",
-                    request.key_condition_expression.as_str(),
-                )?;
-                if request.expression_attribute_values.is_empty() {
-                    return Err(retention_table_error(
-                        table.analytics_table_name.as_str(),
-                        "tenant_policy.request.query_table.expression_attribute_values must not \
-                         be empty",
-                    ));
-                }
-                if request.limit != 1 {
-                    return Err(retention_table_error(
-                        table.analytics_table_name.as_str(),
-                        "tenant_policy.request.query_table.limit must equal 1",
-                    ));
-                }
-            }
+        Ok(())
+    }
+}
+
+impl TenantRetentionPolicyRequest {
+    fn validate(&self, table_name: &str) -> Result<(), ConfigError> {
+        match self {
+            Self::GetItem(request) => request.validate(table_name),
+            Self::QueryTable(request) => request.validate(table_name),
         }
     }
-    Ok(())
+}
+
+impl crate::TenantRetentionGetItemRequest {
+    fn validate(&self, table_name: &str) -> Result<(), ConfigError> {
+        validate_non_empty_retention_field(
+            table_name,
+            "tenant_policy.request.get_item.table_name",
+            self.table_name.as_str(),
+        )?;
+        if self.key.is_empty() {
+            return Err(create_retention_table_error(
+                table_name,
+                "tenant_policy.request.get_item.key must not be empty",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl crate::TenantRetentionQueryTableRequest {
+    fn validate(&self, table_name: &str) -> Result<(), ConfigError> {
+        validate_non_empty_retention_field(
+            table_name,
+            "tenant_policy.request.query_table.table_name",
+            self.table_name.as_str(),
+        )?;
+        validate_non_empty_retention_field(
+            table_name,
+            "tenant_policy.request.query_table.key_condition_expression",
+            self.key_condition_expression.as_str(),
+        )?;
+        if self.expression_attribute_values.is_empty() {
+            return Err(create_retention_table_error(
+                table_name,
+                "tenant_policy.request.query_table.expression_attribute_values must not be empty",
+            ));
+        }
+        if self.limit != 1 {
+            return Err(create_retention_table_error(
+                table_name,
+                "tenant_policy.request.query_table.limit must equal 1",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_non_empty_retention_field(
@@ -318,7 +387,7 @@ fn validate_non_empty_retention_field(
     value: &str,
 ) -> Result<(), ConfigError> {
     if value.trim().is_empty() {
-        return Err(retention_table_error(
+        return Err(create_retention_table_error(
             table_name,
             format!("{field} must not be empty"),
         ));
@@ -326,7 +395,7 @@ fn validate_non_empty_retention_field(
     Ok(())
 }
 
-fn retention_table_error(table_name: &str, message: impl Into<String>) -> ConfigError {
+fn create_retention_table_error(table_name: &str, message: impl Into<String>) -> ConfigError {
     ConfigError::with_debug(
         ConfigErrorKind::InvalidRetentionConfig,
         ConfigErrorDebug::Message(format!(

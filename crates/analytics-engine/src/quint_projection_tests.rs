@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use analytics_contract::{ProjectionColumn, StorageValue};
-use analytics_quint_test_support::map_result;
 use quint_connect::{Driver, Result, State, Step, switch};
 use serde::Deserialize;
+use storage_types::VecMap;
 
-use crate::projection::project_item;
+use crate::projection_test_support::project_item;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
@@ -20,28 +18,54 @@ enum ProjectionResult {
     MissingExpressionAttributeNames,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+enum ProjectionCase {
+    #[serde(rename = "AliasPathProjection")]
+    AliasPath,
+    #[serde(rename = "ListExpansionProjection")]
+    ListExpansion,
+    #[serde(rename = "MissingPathProjection")]
+    MissingPath,
+    #[serde(rename = "EmptyAttributePathProjection")]
+    EmptyAttributePath,
+    #[serde(rename = "InvalidAttributePathProjection")]
+    InvalidAttributePath,
+    #[serde(rename = "AliasWithoutNameMapProjection")]
+    AliasWithoutNameMap,
+    #[serde(rename = "MissingAliasProjection")]
+    MissingAlias,
+    #[serde(rename = "NotCheckedProjection")]
+    NotChecked,
+}
+
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 struct ProjectionState {
     #[serde(rename = "lastResult")]
     last_result: ProjectionResult,
+    #[serde(rename = "lastCase")]
+    last_case: ProjectionCase,
 }
 
 impl State<ProjectionDriver> for ProjectionState {
     fn from_driver(driver: &ProjectionDriver) -> Result<Self> {
         Ok(Self {
             last_result: driver.last_result,
+            last_case: driver.last_case,
         })
     }
 }
 
 struct ProjectionDriver {
     last_result: ProjectionResult,
+    last_case: ProjectionCase,
 }
 
 impl Default for ProjectionDriver {
     fn default() -> Self {
         Self {
             last_result: ProjectionResult::NotChecked,
+            last_case: ProjectionCase::NotChecked,
         }
     }
 }
@@ -51,40 +75,35 @@ impl Driver for ProjectionDriver {
 
     fn step(&mut self, step: &Step) -> Result {
         switch!(step {
-            init => self.last_result = ProjectionResult::NotChecked,
+            init => *self = Self::default(),
             ProjectAliasPath => {
+                self.last_case = ProjectionCase::AliasPath;
                 self.project_alias_path()?;
             },
             ProjectListExpansion => {
+                self.last_case = ProjectionCase::ListExpansion;
                 self.project_list_expansion()?;
             },
             ProjectMissingPath => {
+                self.last_case = ProjectionCase::MissingPath;
                 self.project_missing_path()?;
             },
             RejectEmptyAttributePath => {
-                self.project_error("", None, ProjectionResult::EmptyAttributePath)?;
+                self.last_case = ProjectionCase::EmptyAttributePath;
+                self.project_error("", None)?;
             },
             RejectInvalidAttributePath => {
-                self.project_error(
-                    "profile..email",
-                    None,
-                    ProjectionResult::InvalidAttributePath,
-                )?;
+                self.last_case = ProjectionCase::InvalidAttributePath;
+                self.project_error("profile..email", None)?;
             },
             RejectAliasWithoutNameMap => {
-                self.project_error(
-                    "#email",
-                    None,
-                    ProjectionResult::MissingExpressionAttributeNames,
-                )?;
+                self.last_case = ProjectionCase::AliasWithoutNameMap;
+                self.project_error("#email", None)?;
             },
             RejectMissingAlias => {
-                let names = HashMap::new();
-                self.project_error(
-                    "#email",
-                    Some(&names),
-                    ProjectionResult::MissingExpressionAttributeName,
-                )?;
+                let names = VecMap::new();
+                self.last_case = ProjectionCase::MissingAlias;
+                self.project_error("#email", Some(&names))?;
             },
         })
     }
@@ -92,14 +111,14 @@ impl Driver for ProjectionDriver {
 
 impl ProjectionDriver {
     fn project_alias_path(&mut self) -> Result {
-        let item = HashMap::from([(
+        let item = VecMap::from_iter([(
             "profile".to_string(),
-            StorageValue::M(HashMap::from([(
+            StorageValue::M(VecMap::from_iter([(
                 "email-address".to_string(),
                 StorageValue::S("a@example.com".to_string()),
             )])),
         )]);
-        let names = HashMap::from([("#email".to_string(), "email-address".to_string())]);
+        let names = VecMap::from_iter([("#email".to_string(), "email-address".to_string())]);
         let projected = project_item(
             &item,
             &[projection_column("email", "profile.#email")],
@@ -117,18 +136,18 @@ impl ProjectionDriver {
     }
 
     fn project_list_expansion(&mut self) -> Result {
-        let item = HashMap::from([(
+        let item = VecMap::from_iter([(
             "orders".to_string(),
             StorageValue::L(vec![
-                StorageValue::M(HashMap::from([(
+                StorageValue::M(VecMap::from_iter([(
                     "total".to_string(),
                     StorageValue::N("12.50".to_string()),
                 )])),
-                StorageValue::M(HashMap::from([(
+                StorageValue::M(VecMap::from_iter([(
                     "status".to_string(),
                     StorageValue::S("cancelled".to_string()),
                 )])),
-                StorageValue::M(HashMap::from([(
+                StorageValue::M(VecMap::from_iter([(
                     "total".to_string(),
                     StorageValue::N("99.00".to_string()),
                 )])),
@@ -152,9 +171,9 @@ impl ProjectionDriver {
     }
 
     fn project_missing_path(&mut self) -> Result {
-        let item = HashMap::from([(
+        let item = VecMap::from_iter([(
             "profile".to_string(),
-            StorageValue::M(HashMap::from([(
+            StorageValue::M(VecMap::from_iter([(
                 "email".to_string(),
                 StorageValue::S("a@example.com".to_string()),
             )])),
@@ -172,27 +191,21 @@ impl ProjectionDriver {
         Ok(())
     }
 
-    fn project_error(
-        &mut self,
-        path: &str,
-        names: Option<&HashMap<String, String>>,
-        expected: ProjectionResult,
-    ) -> Result {
-        self.last_result = map_result(
-            project_item(&HashMap::new(), &[projection_column("value", path)], names),
-            |_| ProjectionResult::NotChecked,
-            |error| projection_error_result(&error),
-        );
-        if self.last_result == expected {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("projection error did not match model"))
+    fn project_error(&mut self, path: &str, names: Option<&VecMap<String, String>>) -> Result {
+        match project_item(&VecMap::new(), &[projection_column("value", path)], names) {
+            Ok(_) => Err(anyhow::anyhow!(
+                "projection path {path:?} unexpectedly succeeded"
+            )),
+            Err(error) => {
+                self.last_result = projection_error_result(&error)?;
+                Ok(())
+            }
         }
     }
 }
 
-fn projection_error_result(error: &crate::projection::ProjectionError) -> ProjectionResult {
-    match error.to_string().as_str() {
+fn projection_error_result(error: &crate::projection::ProjectionError) -> Result<ProjectionResult> {
+    let result = match error.to_string().as_str() {
         text if text.starts_with("projection attribute path is empty") => {
             ProjectionResult::EmptyAttributePath
         }
@@ -207,8 +220,13 @@ fn projection_error_result(error: &crate::projection::ProjectionError) -> Projec
         {
             ProjectionResult::MissingExpressionAttributeNames
         }
-        _ => ProjectionResult::NotChecked,
-    }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "unmapped production projection error: {error}"
+            ));
+        }
+    };
+    Ok(result)
 }
 
 #[quint_connect::quint_run(
@@ -217,7 +235,7 @@ fn projection_error_result(error: &crate::projection::ProjectionError) -> Projec
     max_steps = 8,
     seed = "0x3"
 )]
-fn quint_projection_model_matches_engine_projection() -> impl Driver {
+fn given_quint_projection_model_when_replayed_then_engine_projection_matches() -> impl Driver {
     ProjectionDriver::default()
 }
 

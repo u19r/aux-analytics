@@ -1,11 +1,11 @@
-use super::async_worker_threads_for;
+use crate::run::async_worker_threads_for;
 
 #[test]
-fn async_runtime_keeps_two_request_workers_on_single_cpu_hosts() {
+fn given_single_cpu_host_when_runtime_composed_then_two_request_workers_are_available() {
     assert_eq!(async_worker_threads_for(1), 2);
 }
 
 #[test]
-fn async_runtime_uses_all_workers_on_larger_hosts() {
+fn given_multiple_cpu_host_when_runtime_composed_then_all_workers_are_used() {
     assert_eq!(async_worker_threads_for(8), 8);
 }

@@ -44,6 +44,49 @@ fn given_http_status_debug_when_formatted_then_status_and_body_are_included() {
 }
 
 #[test]
+fn given_http_body_when_category_is_requested_then_sensitive_body_is_excluded() {
+    let error = AnalyticsStorageError::with_debug(
+        AnalyticsStorageErrorKind::HttpStatus,
+        AnalyticsStorageErrorDebug::HttpStatus {
+            status: StatusCode::BAD_GATEWAY,
+            body: "source payload must not be logged".to_string(),
+        },
+    );
+
+    assert_eq!(error.category(), "http_status");
+}
+
+#[test]
+fn given_system_stream_boundary_failures_when_categorized_then_each_branch_is_distinct() {
+    let cases = [
+        (
+            AnalyticsStorageErrorKind::MissingResponseScope,
+            "missing_response_scope",
+        ),
+        (
+            AnalyticsStorageErrorKind::ResponseScopeMismatch,
+            "response_scope_mismatch",
+        ),
+        (
+            AnalyticsStorageErrorKind::MissingResponseCheckpoint,
+            "missing_response_checkpoint",
+        ),
+        (
+            AnalyticsStorageErrorKind::MissingRecordSourceTable,
+            "missing_record_source_table",
+        ),
+        (
+            AnalyticsStorageErrorKind::MissingRecordSystemPosition,
+            "missing_record_system_position",
+        ),
+    ];
+
+    for (kind, category) in cases {
+        assert_eq!(AnalyticsStorageError::new(kind).category(), category);
+    }
+}
+
+#[test]
 fn given_storage_boundary_failures_when_formatted_then_operator_messages_name_required_context() {
     let cases = [
         (

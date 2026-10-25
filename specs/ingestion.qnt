@@ -1,3 +1,11 @@
+// Ingestion state contract for registered analytical tables.
+// Actors are the stream-ingestion reducer and table registrations; the
+// environment supplies identities, values, operation kind, and registration
+// outcome. Durable facts are mutable user rows and append-only audit rows;
+// updates replace by identity, deletes remove only mutable rows, duplicate
+// inserts are idempotent, and missing registrations reject without mutation.
+// This compact model abstracts source ordering, filters, tenant policy, and
+// SQL while lifecycle/source-position models own those dimensions.
 module ingestion {
   var rows: str -> str
   var auditRows: str -> str

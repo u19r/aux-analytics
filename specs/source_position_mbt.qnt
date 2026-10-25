@@ -1,3 +1,10 @@
+// Compact conformance model for the source-position merge reducer.
+// A driver supplies existing/incoming source positions, mutation kind, and
+// append-only policy; expected is the single canonical decision reducer.
+// Comparable stream positions model ordered time, equal positions are
+// duplicates, stale positions are ignored, and incomparable source kinds
+// require validation. The compared state contains the decision inputs and
+// public merge result; validation/storage details remain owner-local.
 module source_position_mbt {
   type ExistingPosition = NoExisting | StreamOld | StreamNew | Snapshot
   type IncomingPosition = IncomingStreamOld | IncomingStreamNew | IncomingSnapshot
@@ -82,11 +89,25 @@ module source_position_mbt {
     if (existingPosition != NoExisting and not(comparable(existingPosition, incomingPosition))) {
       lastResult == RequiresValidation
     } else true
+  val resultMatchesExpected =
+    lastResult == NotChecked or
+      lastResult == expected(existingPosition, incomingPosition, mutation, appendOnly)
   val inv = all {
     staleNeverWrites,
     appendOnlyNeverReplaces,
     incomparableRequiresValidation,
+    resultMatchesExpected,
   }
+
+  // Each decision branch is reachable from CheckMerge and is compared by the
+  // Rust adapter as part of the complete post-action state.
+  val insert_witness = lastResult == InsertRow
+  val replace_witness = lastResult == ReplaceRow
+  val delete_witness = lastResult == DeleteRow
+  val duplicate_witness = lastResult == IgnoreDuplicate
+  val stale_witness = lastResult == IgnoreStale
+  val append_witness = lastResult == AppendRow
+  val validation_witness = lastResult == RequiresValidation
 
   run sourcePositionMbtExamples = all {
     assert(expected(NoExisting, IncomingStreamOld, Upsert, false) == InsertRow),

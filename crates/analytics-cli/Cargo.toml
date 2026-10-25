@@ -1,4 +1,5 @@
 [package]
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 name = "analytics-cli"
@@ -23,15 +24,16 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 config = { workspace = true }
 schemars = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+analytics-operations = { workspace = true, features = ["test-support"] }
 anyhow = { workspace = true }
 duckdb = { workspace = true }
 quint-connect = { workspace = true }
-serde = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

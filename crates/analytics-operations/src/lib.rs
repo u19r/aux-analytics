@@ -3,21 +3,26 @@
 mod backfill_execution;
 mod backfill_plan;
 mod check;
+mod check_position;
 mod check_sources;
+mod constants;
+mod error;
+mod maintenance;
+mod maintenance_execution;
+mod operation_contract;
 mod privacy_fix;
 mod rate_limit;
 mod raw_backup;
 mod store;
 mod table_fix;
 mod trim;
-mod types;
 
 pub use backfill_execution::{
-    BackfillDestinationWriter, BackfillExecutionError, BackfillExecutionMetrics,
-    BackfillExecutionReport, BackfillExecutionRequest, BackfillExecutionResult,
-    BackfillExecutionState, BackfillWriteOutcome, CountingBackfillDestinationWriter,
-    LocalBackfillChunk, LocalBackfillExecutor, LocalBackfillFixture, LocalStreamUpdate,
-    SnapshotChunkSource, StreamCatchupSource,
+    BackfillDestinationWriter, BackfillExecutionError, BackfillExecutionInput,
+    BackfillExecutionMetrics, BackfillExecutionProgress, BackfillExecutionReport,
+    BackfillExecutionRequest, BackfillExecutionResult, BackfillExecutionState,
+    CountingBackfillDestinationWriter, LocalBackfillChunk, LocalBackfillExecutor,
+    LocalBackfillFixture, LocalStreamUpdate, SnapshotChunkSource, StreamCatchupSource,
 };
 pub use backfill_plan::{
     AuxStorageBackfillMetadata, AuxStorageBackfillMetadataAdapter, BackfillCapabilityDiscovery,
@@ -25,14 +30,17 @@ pub use backfill_plan::{
     BackfillPlanStep, BackfillPlanner, BackfillRequest, BackfillRequestInput,
     BackfillSourceCapabilities, BackfillSourceKind, ConservativeBackfillPlanner,
     DestinationBackend, DynamoDbBackfillMetadata, DynamoDbBackfillMetadataAdapter, SnapshotMethod,
-    StaticBackfillCapabilityDiscovery, ValidationMode, build_backfill_request,
+    StaticBackfillCapabilityDiscovery, ValidationMode,
 };
+#[cfg(test)]
+pub(crate) use check::filter_target_tables_baseline;
 pub use check::{
     CheckComparisonStrategy, CheckError, CheckMetrics, CheckOutcome, CheckOutputFormat,
     CheckReport, CheckRequest, CheckResult, CheckRow, CheckRowStream, CheckRowStreamItem,
     CheckRowStreamSource, CheckSamples, DestinationRows, LocalCheckDataset, LocalCheckExecutor,
     SourceTruthRows,
 };
+pub use check_position::CheckSourcePosition;
 pub use check_sources::{
     AuxStorageCheckRows, CheckBackendKind, CheckBackendSupport, CheckRowProjection, CheckRowSource,
     CurrentRowPageReader, CurrentRowPageRequest, CurrentRowReader, CurrentRowStreamOrder,
@@ -43,35 +51,51 @@ pub use check_sources::{
     ProjectedCurrentRowPage, ProjectedCurrentRowStream, ProjectionBackedCheckRows,
     StaticCheckBackendRows,
 };
-#[allow(deprecated)]
-pub use check_sources::{StaticCurrentRowReader, StaticPagedCurrentRowReader};
-pub use privacy_fix::{
-    PrivacyFixDestructiveAction, PrivacyFixError, PrivacyFixExecutor, PrivacyFixReport,
-    PrivacyFixRequest, PrivacyFixResult,
+pub use error::{MaintenanceError, MaintenanceResult};
+pub use maintenance::{
+    MaintenanceExecutionReport, MaintenanceOperations, MaintenanceRequest, MaintenanceSubmission,
+    MaintenanceSubmissionOutcome,
 };
-pub use rate_limit::{OperationRateLimiter, RateLimitDecision, RateLimitUsage};
+pub use operation_contract::{
+    CancellationState, MaintenanceExecutionAuthority, MaintenanceWindow, OperationActor,
+    OperationChunkKey, OperationCursor, OperationEvent, OperationEventKind, OperationId,
+    OperationKind, OperationPhase, OperationRequest, OperationResult, OperationStatus,
+    OperationTypeError, RateLimitPolicy,
+};
+pub(crate) use privacy_fix::PrivacyFixExecutor;
+pub use privacy_fix::{
+    PrivacyFixDestructiveAction, PrivacyFixError, PrivacyFixReport, PrivacyFixRequest,
+    PrivacyFixResult,
+};
+pub use rate_limit::{
+    OperationRateLimiter, RateLimitClock, RateLimitDecision, RateLimitDenied, RateLimitUsage,
+    SystemRateLimitClock, enforce_rate_limit, enforce_rate_limit_with_limiter,
+};
 pub use raw_backup::{
     FilesystemRawBackupStore, RAW_BACKUP_SCHEMA_VERSION, RawBackupChecksumAlgorithm,
-    RawBackupCompression, RawBackupEncryption, RawBackupError, RawBackupMetrics, RawBackupObjectId,
-    RawBackupObjectIndex, RawBackupObjectLayout, RawBackupObjectStore, RawBackupRecord,
-    RawBackupReplayRecord, RawBackupReplayReport, RawBackupResult, RawBackupVerifyReport,
-    RawBackupWriteReport, RawBackupWriteRequest, S3CompatibleObjectClient,
-    S3CompatibleRawBackupStore,
+    RawBackupCleanupAuthority, RawBackupCleanupMetadata, RawBackupCleanupProgress,
+    RawBackupCompression, RawBackupDestinationKind, RawBackupEncryption, RawBackupError,
+    RawBackupMetrics, RawBackupObjectId, RawBackupObjectIndex, RawBackupObjectLayout,
+    RawBackupObjectStore, RawBackupRecord, RawBackupReplayExecution, RawBackupReplayRecord,
+    RawBackupReplayReport, RawBackupReplayRequest, RawBackupReplaySummary, RawBackupResult,
+    RawBackupVerifyReport, RawBackupWriteReport, RawBackupWriteRequest,
 };
-pub use store::{OperationStore, OperationStoreError, OperationStoreResult, StoredOperation};
+pub use store::{
+    ExecutionAttempt, OperationEffectCompletion, OperationStore, OperationStoreError,
+    OperationStoreResult, OperationTransition, StoredOperation,
+};
+#[cfg(test)]
+pub(crate) use table_fix::ProjectionBackedTableFixCurrentSource;
+pub(crate) use table_fix::TableFixExecutor;
 pub use table_fix::{
-    ProjectionBackedTableFixCurrentSource, TableFixCurrentSource, TableFixDestination,
-    TableFixError, TableFixExecutor, TableFixReport, TableFixRequest, TableFixResult,
-    TableFixSelection, TableFixSource, TableFixTruthRecord, TableFixValidation,
+    TableFixApplyOutcome, TableFixConfirmation, TableFixError, TableFixReport, TableFixRequest,
+    TableFixResult, TableFixSelection, TableFixSource, TableFixSourceSnapshot, TableFixTruthRecord,
+    TableFixValidation, VerifiedTableFixDestination, VersionedTableFixCurrentSource,
 };
 pub use trim::{
-    DuckDbTrimRows, TrimCandidateSource, TrimDestination, TrimError, TrimExecutor, TrimReport,
-    TrimRequest, TrimResult, TrimTarget,
-};
-pub use types::{
-    CancellationState, MaintenanceWindow, OperationActor, OperationCursor, OperationEvent,
-    OperationEventKind, OperationId, OperationKind, OperationPhase, OperationRequest,
-    OperationResult, OperationStatus, OperationTypeError, RateLimitPolicy,
+    DuckDbTrimRows, TrimCandidateSnapshot, TrimCandidateSource, TrimDeletionOutcome,
+    TrimDestination, TrimError, TrimPredicate, TrimPredicateValue, TrimReport, TrimRequest,
+    TrimResult, TrimTarget,
 };
 
 #[cfg(test)]
@@ -79,13 +103,19 @@ mod backfill_execution_tests;
 #[cfg(test)]
 mod backfill_plan_tests;
 #[cfg(test)]
-mod check_performance_tests;
+mod check_position_tests;
 #[cfg(test)]
 mod check_stream_order_tests;
 #[cfg(test)]
 mod check_tests;
 #[cfg(test)]
+mod maintenance_executor_performance_tests;
+#[cfg(test)]
+mod maintenance_tests;
+#[cfg(test)]
 mod operation_contract_tests;
+#[cfg(test)]
+mod performance_measurement;
 #[cfg(test)]
 mod privacy_fix_tests;
 #[cfg(test)]
@@ -109,8 +139,13 @@ mod rate_limit_tests;
 #[cfg(test)]
 mod raw_backup_tests;
 #[cfg(test)]
+mod store_test_support;
+#[cfg(test)]
 mod store_tests;
 #[cfg(test)]
 mod table_fix_tests;
 #[cfg(test)]
 mod trim_tests;
+
+#[cfg(test)]
+mod check_test_support;

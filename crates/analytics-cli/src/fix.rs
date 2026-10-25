@@ -1,11 +1,15 @@
 use std::{fs, path::Path};
 
-use analytics_contract::{AnalyticsManifest, StorageStreamRecord, read_manifest};
-use analytics_engine::AnalyticsEngine;
+use analytics_contract::{AnalyticsManifest, StorageStreamRecord};
+use analytics_engine::{
+    AnalyticsEngine, MaintenanceEffectApplyRequest, MaintenanceEffectAuthority,
+    MaintenanceEffectDisposition, MaintenanceEffectVerifyRequest,
+};
 use analytics_operations::{
-    FilesystemRawBackupStore, OperationActor, OperationEventKind, OperationKind, OperationPhase,
-    OperationRequest, OperationStatus, OperationStore, RateLimitPolicy, TableFixDestination,
-    TableFixError, TableFixExecutor, TableFixRequest, TableFixResult, TableFixSource,
+    FilesystemRawBackupStore, MaintenanceError, MaintenanceExecutionAuthority,
+    MaintenanceExecutionReport, MaintenanceOperations, MaintenanceRequest, OperationActor,
+    OperationChunkKey, OperationStore, RateLimitPolicy, TableFixApplyOutcome, TableFixError,
+    TableFixRequest, TableFixResult, VerifiedTableFixDestination,
 };
 
 use crate::{
@@ -23,41 +27,38 @@ pub(crate) fn run_fix_command(command: FixCommand) -> CliResult<String> {
             operation_store_duckdb,
         } => {
             let request = read_table_fix_request(request.as_path())?;
-            let store = FilesystemRawBackupStore::new(raw_backup_root);
-            let indexes = raw_backup_indexes(&store, &request)?;
-            let mut destination = table_fix_destination(
-                &request,
-                manifest.as_deref(),
-                destination_duckdb.as_deref(),
-            )?;
-            let report = TableFixExecutor::new(&store).execute_raw_backup(
-                &request,
-                &indexes,
-                &mut destination,
-            )?;
+            let source_store = FilesystemRawBackupStore::new(raw_backup_root);
             let operation_store = OperationStore::connect_duckdb(operation_store_duckdb)?;
-            create_or_resume_table_fix_operation(&operation_store, &request)?;
-            operation_store.save_table_fix_report(&request.operation_id, &report)?;
-            operation_store.transition_with_counts(
-                &request.operation_id,
-                OperationPhase::Completed,
-                OperationStatus::Succeeded,
-                None,
-                OperationEventKind::Succeeded,
-                report.operation_counts(),
-                Some("table fix completed"),
+            let operations = MaintenanceOperations::new(&operation_store);
+            let actor = OperationActor::try_new("cli")?;
+            let dry_run = request.dry_run;
+            let destination_factory = move || {
+                table_fix_destination(dry_run, manifest.as_deref(), destination_duckdb.as_deref())
+                    .map_err(|error| MaintenanceError::DestinationInitialization {
+                        message: error.to_string(),
+                    })
+            };
+            let report = operations.execute_table_fix_raw_backup_verified_from_store(
+                &request,
+                &actor,
+                RateLimitPolicy::default(),
+                &source_store,
+                destination_factory,
             )?;
+            let MaintenanceExecutionReport::TableFix(report) = report else {
+                unreachable!("table-fix facade returned a different report kind")
+            };
             Ok(serde_json::to_string_pretty(&report)?)
         }
     }
 }
 
 fn table_fix_destination(
-    request: &TableFixRequest,
+    dry_run: bool,
     manifest: Option<&Path>,
     destination_duckdb: Option<&Path>,
 ) -> CliResult<CliTableFixDestination> {
-    if request.dry_run {
+    if dry_run {
         return Ok(CliTableFixDestination::DryRun);
     }
     let Some(manifest_path) = manifest else {
@@ -70,11 +71,20 @@ fn table_fix_destination(
             "table fix CLI apply requires --manifest and --destination-duckdb",
         ));
     };
-    let manifest = read_manifest(manifest_path.to_string_lossy().as_ref())?;
+    let manifest = config::resolve_config(config::ConfigRequest::cli_manifest_only(
+        None,
+        Some(manifest_path.to_string_lossy().into_owned()),
+        Vec::new(),
+    ))?
+    .manifest
+    .value;
     let engine = AnalyticsEngine::connect_duckdb(destination_duckdb.to_string_lossy().as_ref())?;
-    engine.ensure_manifest(&manifest)?;
     Ok(CliTableFixDestination::Engine(Box::new(
-        EngineTableFixDestination { manifest, engine },
+        EngineTableFixDestination {
+            manifest,
+            engine,
+            manifest_ready: false,
+        },
     )))
 }
 
@@ -87,14 +97,29 @@ fn table_fix_apply_error(message: &str) -> CliError {
 
 struct DryRunTableFixDestination;
 
-impl TableFixDestination for DryRunTableFixDestination {
-    fn apply_repair(
+impl VerifiedTableFixDestination for DryRunTableFixDestination {
+    fn apply_repair_with_key(
         &mut self,
+        _authority: &MaintenanceExecutionAuthority,
+        _key: &OperationChunkKey,
         _table_name: &str,
         _record_key: &[u8],
         _record: StorageStreamRecord,
-    ) -> TableFixResult<()> {
+        _expected_source_revision: &str,
+    ) -> TableFixResult<TableFixApplyOutcome> {
         Err(TableFixError::UnsupportedSource)
+    }
+
+    fn verify_repair(
+        &self,
+        _authority: &MaintenanceExecutionAuthority,
+        _key: &OperationChunkKey,
+        _table_name: &str,
+        _record_key: &[u8],
+        _expected: &StorageStreamRecord,
+        _expected_source_revision: &str,
+    ) -> TableFixResult<bool> {
+        Ok(false)
     }
 }
 
@@ -103,16 +128,55 @@ enum CliTableFixDestination {
     Engine(Box<EngineTableFixDestination>),
 }
 
-impl TableFixDestination for CliTableFixDestination {
-    fn apply_repair(
+impl VerifiedTableFixDestination for CliTableFixDestination {
+    fn apply_repair_with_key(
         &mut self,
+        authority: &MaintenanceExecutionAuthority,
+        key: &OperationChunkKey,
         table_name: &str,
         record_key: &[u8],
         record: StorageStreamRecord,
-    ) -> TableFixResult<()> {
+        expected_source_revision: &str,
+    ) -> TableFixResult<TableFixApplyOutcome> {
         match self {
-            Self::DryRun => DryRunTableFixDestination.apply_repair(table_name, record_key, record),
-            Self::Engine(destination) => destination.apply_repair(table_name, record_key, record),
+            Self::DryRun => DryRunTableFixDestination.apply_repair_with_key(
+                authority,
+                key,
+                table_name,
+                record_key,
+                record,
+                expected_source_revision,
+            ),
+            Self::Engine(destination) => destination.apply_repair_with_key(
+                authority,
+                key,
+                table_name,
+                record_key,
+                record,
+                expected_source_revision,
+            ),
+        }
+    }
+
+    fn verify_repair(
+        &self,
+        authority: &MaintenanceExecutionAuthority,
+        key: &OperationChunkKey,
+        table_name: &str,
+        record_key: &[u8],
+        expected: &StorageStreamRecord,
+        expected_source_revision: &str,
+    ) -> TableFixResult<bool> {
+        match self {
+            Self::DryRun => Ok(false),
+            Self::Engine(destination) => destination.verify_repair(
+                authority,
+                key,
+                table_name,
+                record_key,
+                expected,
+                expected_source_revision,
+            ),
         }
     }
 }
@@ -120,60 +184,86 @@ impl TableFixDestination for CliTableFixDestination {
 struct EngineTableFixDestination {
     manifest: AnalyticsManifest,
     engine: AnalyticsEngine,
+    manifest_ready: bool,
 }
 
-impl TableFixDestination for EngineTableFixDestination {
-    fn apply_repair(
+impl VerifiedTableFixDestination for EngineTableFixDestination {
+    fn apply_repair_with_key(
         &mut self,
+        authority: &MaintenanceExecutionAuthority,
+        key: &OperationChunkKey,
         table_name: &str,
         record_key: &[u8],
         record: StorageStreamRecord,
-    ) -> TableFixResult<()> {
-        self.engine
-            .ingest_stream_record(&self.manifest, table_name, record_key, record)
+        expected_source_revision: &str,
+    ) -> TableFixResult<TableFixApplyOutcome> {
+        if !self.manifest_ready {
+            self.engine
+                .ensure_manifest(&self.manifest)
+                .map_err(|error| TableFixError::Destination(error.to_string()))?;
+            self.manifest_ready = true;
+        }
+        let engine_authority = MaintenanceEffectAuthority::try_new(
+            authority.execution_id().as_str(),
+            authority.fence().get(),
+        )
+        .map_err(|error| TableFixError::Destination(error.to_string()))?;
+        let disposition = self
+            .engine
+            .apply_stream_record_with_receipt(MaintenanceEffectApplyRequest {
+                manifest: &self.manifest,
+                analytics_table_name: table_name,
+                record_key,
+                record,
+                repair_key: key.as_str(),
+                source_revision: expected_source_revision,
+                authority: &engine_authority,
+            })
             .map_err(|error| TableFixError::Destination(error.to_string()))?;
-        Ok(())
+        Ok(match disposition {
+            MaintenanceEffectDisposition::Applied => TableFixApplyOutcome::Applied,
+            MaintenanceEffectDisposition::AlreadyApplied => TableFixApplyOutcome::AlreadyApplied,
+        })
+    }
+
+    fn verify_repair(
+        &self,
+        authority: &MaintenanceExecutionAuthority,
+        key: &OperationChunkKey,
+        table_name: &str,
+        record_key: &[u8],
+        expected: &StorageStreamRecord,
+        expected_source_revision: &str,
+    ) -> TableFixResult<bool> {
+        let engine_authority = MaintenanceEffectAuthority::try_new(
+            authority.execution_id().as_str(),
+            authority.fence().get(),
+        )
+        .map_err(|error| TableFixError::Destination(error.to_string()))?;
+        self.engine
+            .verify_stream_record_with_receipt(MaintenanceEffectVerifyRequest {
+                manifest: &self.manifest,
+                analytics_table_name: table_name,
+                record_key,
+                expected,
+                repair_key: key.as_str(),
+                source_revision: expected_source_revision,
+                authority: &engine_authority,
+            })
+            .map_err(|error| TableFixError::Destination(error.to_string()))
     }
 }
 
 fn read_table_fix_request(path: &Path) -> CliResult<TableFixRequest> {
-    let request = serde_json::from_str::<TableFixRequest>(fs::read_to_string(path)?.as_str())?;
-    request.validate()?;
-    Ok(request)
-}
-
-fn raw_backup_indexes(
-    store: &FilesystemRawBackupStore,
-    request: &TableFixRequest,
-) -> CliResult<Vec<analytics_operations::RawBackupObjectIndex>> {
-    let TableFixSource::RawBackup { object_ids } = &request.source else {
+    let request = serde_json::from_str::<MaintenanceRequest>(fs::read_to_string(path)?.as_str())?;
+    let MaintenanceRequest::TableFix(request) = request else {
         return Err(CliError::with_debug(
             CliErrorKind::Operations,
             CliErrorDebug::Message(
-                "table fix CLI currently supports raw_backup source only".into(),
+                "maintenance request kind must be table_fix for fix table".to_string(),
             ),
         ));
     };
-    object_ids
-        .iter()
-        .map(|object_id| store.read_index(object_id).map_err(Into::into))
-        .collect()
-}
-
-fn create_or_resume_table_fix_operation(
-    store: &OperationStore,
-    request: &TableFixRequest,
-) -> CliResult<()> {
-    match store.create_operation(&OperationRequest {
-        operation_id: request.operation_id.clone(),
-        kind: OperationKind::TableFix,
-        actor: OperationActor::new("cli")?,
-        target_tables: vec![request.table_name.clone()],
-        dry_run: request.dry_run,
-        rate_limit: RateLimitPolicy::default(),
-        payload: serde_json::to_value(request)?,
-    }) {
-        Ok(()) | Err(analytics_operations::OperationStoreError::DuplicateOperation(_)) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    request.validate()?;
+    Ok(request)
 }
