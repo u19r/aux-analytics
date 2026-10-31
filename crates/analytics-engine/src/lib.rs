@@ -46,6 +46,8 @@ mod batch_writer_tests;
 mod condition_tests;
 #[cfg(test)]
 mod engine_tests;
+#[cfg(all(test, feature = "duckdb-bundled"))]
+mod native_dependency_tests;
 #[cfg(test)]
 mod performance_tests;
 #[cfg(test)]

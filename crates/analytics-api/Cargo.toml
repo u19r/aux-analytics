@@ -16,6 +16,7 @@ path = "src/main.rs"
 [features]
 default = ["bundled"]
 bundled = ["analytics-engine/bundled"]
+duckdb-bundled = ["bundled", "analytics-engine/duckdb-bundled"]
 bdd-test-support = ["bg-jobs/test-support", "bg-jobs-tokio/test-support"]
 
 [dependencies]

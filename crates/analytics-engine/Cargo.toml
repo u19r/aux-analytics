@@ -12,6 +12,7 @@ doctest = false
 [features]
 default = ["bundled"]
 bundled = []
+duckdb-bundled = ["bundled", "duckdb/bundled", "duckdb/json", "duckdb/parquet"]
 dynamic = []
 
 [dependencies]

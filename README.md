@@ -17,6 +17,17 @@ with the product repo and be exported as an `analytics-contract` manifest.
   explicit tenant-scoped or unscoped queries.
 - `analytics-lambda`: AWS Lambda adapter for direct ETL and query invocation.
 
+## Native DuckDB dependency
+
+For a standalone DuckDB-only runtime, build `analytics-api` with `--features duckdb-bundled`.
+Cargo compiles DuckDB with JSON and Parquet support into the executable. A C++ compiler is required;
+a system DuckDB installation and `DUCKDB_LIB_DIR` are not required. Later builds reuse Cargo's cache.
+
+DuckLake and native-library benchmarks retain their dynamic linkage. Set `DUCKDB_LIB_DIR` and the
+platform loader path to a matching aux-ducklake release library for these builds. The `bundled`
+feature selects the embedded analytics engine; `duckdb-bundled` additionally selects static native
+DuckDB linkage. The frontend's managed runtime uses `duckdb-bundled` with a DuckDB destination.
+
 ## CLI
 
 ```sh
