@@ -14,7 +14,7 @@ use crate::{aux_storage_client::AuxStorageStreamClient, constants::CHECKPOINT};
 
 #[tokio::test]
 async fn given_system_stream_scope_and_checkpoint_when_polling_then_typed_requests_are_exact() {
-    let records_response = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-1","LineageId":"lineage-a","Offset":"offset-1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#;
+    let records_response = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"shard-1","LineageId":"lineage-a","Offset":"offset-1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#;
     let (base_url, requests) = serve_responses(vec![
         (
             200,

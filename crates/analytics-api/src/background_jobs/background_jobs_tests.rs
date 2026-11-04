@@ -29,8 +29,8 @@ use bg_jobs::{
         codec::{KeyCodec, KeyTag},
         raw::{
             CancellationResult, ClaimedJob, DriveRequest, DriveRequestInput, ExpiryResult,
-            LifecycleObservation, NewJob, OperationId, OutcomeResult, ReconciliationOutcome,
-            RedriveExecution, RedriveRequest,
+            LifecycleObservation, NewJob, OperationId, OutcomeResult, RedriveExecution,
+            RedriveRequest,
         },
     },
 };
@@ -421,12 +421,12 @@ impl JobStore for LatencyStore {
         self.inner.read_range(request).await
     }
 
-    async fn commit<'a>(
+    async fn transact<'a>(
         &'a self,
         transaction: &'a StoreTransaction,
     ) -> Result<CommitOutcome, Self::Error> {
         self.clock.advance(self.latency);
-        self.inner.commit(transaction).await
+        self.inner.transact(transaction).await
     }
 }
 
@@ -565,7 +565,9 @@ async fn given_shutdown_during_source_enqueue_when_commit_is_blocked_then_shutdo
         .expect("start source polling");
     poll_started.await.expect("source poll starts");
     release_poll.send(()).expect("release source poll");
-    store.wait_for_payload_commit().await;
+    tokio::time::timeout(Duration::from_secs(5), store.wait_for_payload_commit())
+        .await
+        .expect("source enqueue reaches the native payload commit");
 
     let shutdown = {
         let runtime = Arc::clone(&runtime);
@@ -1608,7 +1610,7 @@ async fn given_a_durable_source_job_when_runtime_restarts_then_new_instance_exec
             .observe_lifecycle(id)
             .await
             .expect("completed restart job is observable"),
-        LifecycleObservation::Terminal(_)
+        LifecycleObservation::Missing
     ));
 }
 
@@ -1781,7 +1783,7 @@ fn given_the_drive_policy_when_built_then_claim_concurrency_and_store_work_are_b
         bg_jobs::MAX_INLINE_PAYLOAD_BYTES
     );
     assert_eq!(request.max_completion_details(), 8);
-    assert_eq!(request.max_store_operations().get(), 64);
+    assert_eq!(request.max_store_operations().get(), 2048);
     assert!(request.stop_claiming_at().is_before(request.finish_by()));
 }
 
@@ -1955,7 +1957,8 @@ fn lifecycle_drive_request() -> DriveRequest {
         max_concurrency: NonZeroU16::new(1).expect("concurrency bound is non-zero"),
         max_payload_bytes_in_flight: NonZeroUsize::new(1024).expect("payload bound is non-zero"),
         max_completion_details: 1,
-        max_store_operations: NonZeroU32::new(64).expect("store bound is non-zero"),
+        max_store_operations: NonZeroU32::new(crate::constants::DRIVER_STORE_OPERATIONS)
+            .expect("store bound is non-zero"),
         stop_claiming_at: MonotonicDeadline::from_nanos(1),
         finish_by: MonotonicDeadline::from_nanos(u64::MAX),
     })
@@ -2196,7 +2199,8 @@ async fn given_store_failure_when_drive_stops_then_source_health_is_degraded() {
 }
 
 #[tokio::test]
-async fn given_claim_and_completion_when_job_system_runs_then_receipt_and_events_are_visible() {
+async fn given_claim_and_completion_when_job_system_runs_then_bookkeeping_is_removed_and_events_are_visible()
+ {
     let collector = EventCollector::default();
     let system = lifecycle_system(FakeStore::new(), Arc::new(collector.clone()));
     let id = JobId::from([1; 16]);
@@ -2216,8 +2220,8 @@ async fn given_claim_and_completion_when_job_system_runs_then_receipt_and_events
         system
             .observe_lifecycle(id)
             .await
-            .expect("receipt is readable"),
-        LifecycleObservation::Terminal(_)
+            .expect("settled completion removes per-job evidence"),
+        LifecycleObservation::Missing
     ));
     let events = collector.events.lock().expect("event collector lock");
     assert!(
@@ -2238,7 +2242,7 @@ async fn given_claim_and_completion_when_job_system_runs_then_receipt_and_events
 }
 
 #[tokio::test]
-async fn given_unknown_completion_when_reconciling_then_receipt_controls_replay() {
+async fn given_unknown_completion_when_acknowledged_then_journal_settles_without_per_job_receipt() {
     let store = FakeStore::new();
     let system = lifecycle_system(store.clone(), Arc::new(EventCollector::default()));
     let id = JobId::from([2; 16]);
@@ -2250,7 +2254,6 @@ async fn given_unknown_completion_when_reconciling_then_receipt_controls_replay(
         .claim(id, Timestamp::ZERO)
         .await
         .expect("claim commits");
-    let operation = claim.operation_id();
     store
         .queue_unknown_after_commit()
         .expect("unknown result is queued");
@@ -2262,18 +2265,15 @@ async fn given_unknown_completion_when_reconciling_then_receipt_controls_replay(
             Timestamp::from_millis(1),
         )
         .await
-        .expect("receipt proves completion without replay");
-    assert_eq!(
-        system
-            .reconcile(id, operation)
-            .await
-            .expect("reconciliation succeeds"),
-        ReconciliationOutcome::AlreadyCommitted
-    );
+        .expect("finite journal proves completion without replay");
+    assert!(matches!(
+        system.observe_lifecycle(id).await.unwrap(),
+        bg_jobs::LifecycleObservation::Missing
+    ));
 }
 
 #[tokio::test]
-async fn given_registered_source_handler_when_completion_ack_is_unknown_then_receipt_reconciles_without_replay()
+async fn given_registered_source_handler_when_completion_ack_is_unknown_then_journal_recovers_without_effect_replay()
  {
     let fixture = source_handler_fixture().await;
     let store = FakeStore::new();
@@ -2297,7 +2297,6 @@ async fn given_registered_source_handler_when_completion_ack_is_unknown_then_rec
         .claim(id, Timestamp::ZERO)
         .await
         .expect("source claim commits");
-    let operation = claim.operation_id();
     let outcome = system
         .execute_claimed(&claim, Timestamp::ZERO, || MonotonicDeadline::ZERO)
         .await
@@ -2312,14 +2311,59 @@ async fn given_registered_source_handler_when_completion_ack_is_unknown_then_rec
         .expect("source completion reconciles");
 
     assert_eq!(fixture.shared.progress_commits.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        system
-            .reconcile(id, operation)
-            .await
-            .expect("source reconciliation succeeds"),
-        ReconciliationOutcome::AlreadyCommitted
-    );
+    assert!(matches!(
+        system.observe_lifecycle(id).await.unwrap(),
+        bg_jobs::LifecycleObservation::Missing
+    ));
     assert_eq!(fixture.shared.progress_commits.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn given_two_unknown_completion_results_when_journal_retries_then_completion_settles() {
+    let store = FakeStore::new();
+    let collector = EventCollector::default();
+    let system = lifecycle_system(store.clone(), Arc::new(collector.clone()));
+    let id = JobId::from([6; 16]);
+    system
+        .enqueue_raw(lifecycle_job(6), Timestamp::ZERO)
+        .await
+        .expect("enqueue commits");
+    let claim = system
+        .claim(id, Timestamp::ZERO)
+        .await
+        .expect("claim commits");
+    for _ in 0..2 {
+        store
+            .queue_unknown_before_commit()
+            .expect("unknown result is queued");
+    }
+
+    let completion = system
+        .complete(
+            claim,
+            JobOutcome::Complete(OutcomeCode::try_new("completed").expect("outcome is valid")),
+            Timestamp::from_millis(1),
+        )
+        .await
+        .expect("journal reservation retries recover the completion");
+    assert_eq!(completion.attempts.get(), 1);
+    assert!(matches!(
+        system
+            .observe_lifecycle(id)
+            .await
+            .expect("completion is observable"),
+        LifecycleObservation::Missing
+    ));
+    assert_eq!(
+        collector
+            .events
+            .lock()
+            .expect("event collector lock")
+            .iter()
+            .filter(|event| matches!(event, JobEvent::Completed { .. }))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -2337,30 +2381,31 @@ async fn given_unknown_before_completion_when_reconciling_then_handler_must_not_
         .await
         .expect("claim commits");
     let operation = claim.operation_id();
-    store
-        .queue_unknown_before_commit()
-        .expect("first unknown result is queued");
-    store
-        .queue_unknown_before_commit()
-        .expect("retry unknown result is queued");
+    // Exhaust the atomic completion attempt and both journal-reservation
+    // attempts. Two unknown results alone are recovered by the updated commit
+    // journal.
+    for _ in 0..3 {
+        store
+            .queue_unknown_before_commit()
+            .expect("unknown result is queued");
+    }
 
-    assert!(matches!(
-        system
-            .complete(
-                claim,
-                JobOutcome::Complete(OutcomeCode::try_new("completed").expect("outcome is valid"),),
-                Timestamp::from_millis(1),
-            )
-            .await,
-        Err(bg_jobs::JobSystemError::UnknownCommit)
-    ));
-    assert_eq!(
-        system
-            .reconcile(id, operation)
-            .await
-            .expect("reconciliation succeeds"),
-        ReconciliationOutcome::RetryCommit
+    let completion = system
+        .complete(
+            claim,
+            JobOutcome::Complete(OutcomeCode::try_new("completed").expect("outcome is valid")),
+            Timestamp::from_millis(1),
+        )
+        .await;
+    assert!(
+        matches!(completion, Err(bg_jobs::JobSystemError::UnknownCommit)),
+        "expected unresolved completion, got {completion:?}"
     );
+    assert!(matches!(
+        system.observe_lifecycle(id).await.expect("lifecycle remains observable"),
+        LifecycleObservation::Current { record, operation_id: Some(current), .. }
+            if current == operation && matches!(record.state, JobState::Leased(_))
+    ));
     assert!(
         !collector
             .events
@@ -2588,7 +2633,7 @@ async fn serve_shutdown_source_endpoint() -> (
         let _ = release_poll_rx.await;
         write_source_response(
             &mut poll_socket,
-            r#"{"Records":[{"SourceTableName":"tenant_01","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"logical-shard","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+            r#"{"Records":[{"SourceTableName":"tenant_01","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"logical-shard","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
         )
         .await;
     });
@@ -2683,7 +2728,7 @@ impl JobStore for BlockingStore {
         async move { inner.read_range(request).await }
     }
 
-    fn commit<'a>(
+    fn transact<'a>(
         &'a self,
         transaction: &'a StoreTransaction,
     ) -> impl Future<Output = Result<CommitOutcome, Self::Error>> + Send + 'a {
@@ -2699,7 +2744,7 @@ impl JobStore for BlockingStore {
                 store.state.commit_started.notify_one();
                 store.state.release_commit.notified().await;
             }
-            store.inner.commit(transaction).await
+            store.inner.transact(transaction).await
         }
     }
 }

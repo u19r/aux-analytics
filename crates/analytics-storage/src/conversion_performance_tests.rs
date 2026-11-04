@@ -761,8 +761,7 @@ fn stream_records() -> Vec<StreamRecord> {
                 AttributeValue::S(format!("user-{index}")),
             )]),
             sequence_number: format!("sequence-{index}"),
-            old_image: None,
-            new_image: Some(AttributeMap::from_iter([
+            item: Some(AttributeMap::from_iter([
                 ("id".to_string(), AttributeValue::S(format!("user-{index}"))),
                 (
                     "tenant".to_string(),
@@ -800,7 +799,7 @@ fn wire_items() -> Vec<WireItem> {
         .into_iter()
         .enumerate()
         .map(|(index, record)| {
-            let mut image = record.new_image.expect("new image");
+            let mut image = record.item.expect("snapshot");
             for index in 0..16 {
                 image.insert(
                     format!("unselected_{index}"),

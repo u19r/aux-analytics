@@ -245,7 +245,6 @@ impl LiveDatasetManager {
                 .collect(),
             ),
             return_values_on_condition_check_failure: None,
-            aux_item_stream_ttl_hours: None,
         };
         let mut items = vec![
             storage_types::TransactEncodeItem::builder()

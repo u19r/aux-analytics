@@ -659,7 +659,8 @@ fn given_attribute_regex_when_resolved_then_named_capture_is_used() {
 }
 
 #[tokio::test]
-async fn given_retention_schedule_transaction_when_replayed_then_schedule_is_committed_once() {
+async fn given_retention_schedule_transaction_when_replayed_then_its_value_fences_duplicate_application()
+ {
     let store = FakeStore::new();
     let capabilities = store.capabilities();
     let (key, transaction) = retention_schedule_transaction(capabilities, None, 10_000)
@@ -671,7 +672,7 @@ async fn given_retention_schedule_transaction_when_replayed_then_schedule_is_com
         CommitOperationId::BYTE_LENGTH
     );
     assert_eq!(
-        store.commit(&transaction).await.expect("first commit"),
+        store.transact(&transaction).await.expect("first commit"),
         CommitOutcome::Committed
     );
     let first = store.get(key.clone()).await.expect("first schedule");
@@ -679,12 +680,15 @@ async fn given_retention_schedule_transaction_when_replayed_then_schedule_is_com
     let (_, competing) =
         retention_schedule_transaction(capabilities, None, 20_000).expect("fresh transaction");
     assert_eq!(
-        store.commit(&competing).await.expect("competing commit"),
+        store.transact(&competing).await.expect("competing commit"),
         CommitOutcome::Conflict
     );
     assert_eq!(
-        store.commit(&transaction).await.expect("replay commit"),
-        CommitOutcome::Committed
+        store
+            .transact(&transaction)
+            .await
+            .expect("replay is fenced"),
+        CommitOutcome::Conflict
     );
     assert_eq!(store.get(key).await.expect("replayed schedule"), first);
 }

@@ -22,7 +22,7 @@ use bg_jobs::{
     test_support::{
         FakeStore,
         codec::{ValueCodec, ValueTag},
-        raw::{ClaimedJob, DriveRequest, DriveRequestInput, NewJob, ReconciliationOutcome},
+        raw::{ClaimedJob, DriveRequest, DriveRequestInput, NewJob},
     },
 };
 use config::{
@@ -275,7 +275,6 @@ async fn given_retention_effect_before_unknown_completion_when_job_system_reconc
         .claim(id, Timestamp::ZERO)
         .await
         .expect("retention claim commits");
-    let operation = claim.operation_id();
     let outcome = system
         .execute_claimed(&claim, Timestamp::ZERO, || MonotonicDeadline::ZERO)
         .await
@@ -292,13 +291,10 @@ async fn given_retention_effect_before_unknown_completion_when_job_system_reconc
         .await
         .expect("unknown completion reconciles");
 
-    assert_eq!(
-        system
-            .reconcile(id, operation)
-            .await
-            .expect("retention reconciliation succeeds"),
-        ReconciliationOutcome::AlreadyCommitted
-    );
+    assert!(matches!(
+        system.observe_lifecycle(id).await.unwrap(),
+        bg_jobs::LifecycleObservation::Missing
+    ));
     let health = fixture.health.read().await;
     assert!(matches!(health.status, RetentionHealthStatus::Healthy));
     assert_eq!(health.total_rows_deleted, 1);
@@ -653,7 +649,8 @@ fn retention_drive_request() -> DriveRequest {
         max_payload_bytes_in_flight: NonZeroUsize::new(bg_jobs::MAX_INLINE_PAYLOAD_BYTES)
             .expect("payload bound is non-zero"),
         max_completion_details: 1,
-        max_store_operations: NonZeroU32::new(64).expect("store bound is non-zero"),
+        max_store_operations: NonZeroU32::new(crate::constants::DRIVER_STORE_OPERATIONS)
+            .expect("store bound is non-zero"),
         stop_claiming_at: MonotonicDeadline::from_nanos(1),
         finish_by: MonotonicDeadline::from_nanos(u64::MAX),
     })

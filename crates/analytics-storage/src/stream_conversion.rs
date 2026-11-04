@@ -11,8 +11,8 @@ pub(crate) fn convert_stream_record(record: StreamRecord) -> StorageStreamRecord
                 .map(|attribute| (attribute.name, attribute.value)),
         ),
         sequence_number: record.sequence_number,
-        old_image: record.old_image.map(convert_attribute_map),
-        new_image: record.new_image.map(convert_attribute_map),
+        old_image: None,
+        new_image: record.item.map(convert_attribute_map),
     }
 }
 

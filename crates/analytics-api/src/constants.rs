@@ -131,3 +131,7 @@ pub(crate) const SOURCE_RECORDS_PER_POLL_METRIC: &str = "analytics.source.record
 pub(crate) const SOURCE_RECORDS_SKIPPED_TOTAL_METRIC: &str =
     "analytics.source.records_skipped_total";
 pub(crate) const SOURCE_MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_millis(10);
+
+// Eight claims reserve enough work for checked claim/completion journals and
+// bounded discovery; a 64-call budget cannot admit even one new journal claim.
+pub(crate) const DRIVER_STORE_OPERATIONS: u32 = 8 * 256;

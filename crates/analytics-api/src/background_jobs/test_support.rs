@@ -21,7 +21,7 @@ const DRIVER_CLAIMS: u32 = 8;
 #[cfg(any(test, feature = "bdd-test-support"))]
 const DRIVER_CONCURRENCY: u16 = 4;
 #[cfg(any(test, feature = "bdd-test-support"))]
-const DRIVER_STORE_OPERATIONS: u32 = 64;
+use crate::constants::DRIVER_STORE_OPERATIONS;
 #[cfg(any(test, feature = "bdd-test-support"))]
 const MONOTONIC_DRIVE_WINDOW: Duration = Duration::from_millis(250);
 

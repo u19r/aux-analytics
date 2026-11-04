@@ -4,8 +4,7 @@ use config::{AnalyticsSourceConfig, AnalyticsSourceTableConfig, AnalyticsStreamT
 use crate::{PollerConfig, SourceTablePlan, stream_conversion::convert_stream_record};
 
 #[test]
-fn given_stream_record_with_nested_image_when_converted_then_keys_and_nested_values_are_preserved()
-{
+fn given_snapshot_and_delete_marker_when_converted_then_keys_and_snapshot_values_are_preserved() {
     let record = storage_types::StreamRecord {
         cursor: None,
         source_table_name: None,
@@ -14,8 +13,7 @@ fn given_stream_record_with_nested_image_when_converted_then_keys_and_nested_val
             storage_types::AttributeValue::S("item-1".to_string()),
         )]),
         sequence_number: "1".to_string(),
-        old_image: None,
-        new_image: Some(storage_types::AttributeMap::from_iter([(
+        item: Some(storage_types::AttributeMap::from_iter([(
             "profile".to_string(),
             storage_types::AttributeValue::M(std::collections::HashMap::from([(
                 "email".to_string(),
@@ -25,7 +23,8 @@ fn given_stream_record_with_nested_image_when_converted_then_keys_and_nested_val
         system_position: None,
     };
 
-    let converted = convert_stream_record(record);
+    let converted = convert_stream_record(record.clone());
+    assert!(converted.old_image.is_none());
     assert_eq!(
         converted.keys.get("id"),
         Some(&StorageValue::S("item-1".to_string()))
@@ -40,6 +39,14 @@ fn given_stream_record_with_nested_image_when_converted_then_keys_and_nested_val
             StorageValue::S("a@example.com".to_string())
         )])))
     );
+    let deleted = convert_stream_record(storage_types::StreamRecord {
+        item: None,
+        ..record
+    });
+    assert_eq!(deleted.keys, converted.keys);
+    assert_eq!(deleted.sequence_number, converted.sequence_number);
+    assert!(deleted.old_image.is_none());
+    assert!(deleted.new_image.is_none());
 }
 
 #[test]

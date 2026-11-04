@@ -174,7 +174,7 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
             retention_schedule_transaction(capabilities, previous_due, next_due)?;
         let outcome = self
             .schedule_store()
-            .commit(&transaction)
+            .transact(&transaction)
             .await
             .map_err(|_| ())?;
         match outcome {

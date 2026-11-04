@@ -11,8 +11,8 @@ use crate::{
     AppState,
     background_jobs::{error::BackgroundJobError, observation::SourceJobShared},
     constants::{
-        MAX_JOB_STORE_REQUEST_TIMEOUT, MAX_SOURCE_DEADLINE_AT_MS, MAX_SOURCE_JOB_TIMEOUT,
-        MAX_SOURCE_RECORDS,
+        DRIVER_STORE_OPERATIONS, MAX_JOB_STORE_REQUEST_TIMEOUT, MAX_SOURCE_DEADLINE_AT_MS,
+        MAX_SOURCE_JOB_TIMEOUT, MAX_SOURCE_RECORDS,
     },
     error::{ApiError, ApiErrorDebug, ApiErrorKind, ApiResult},
     source_polling::load_worker_id,
@@ -26,7 +26,7 @@ pub(super) fn driver_budget(timeout: Duration) -> Result<DriveBudget, Validation
         queues: QueueSelection::all(),
         max_claims: 8,
         max_concurrency: 4,
-        max_store_operations: 64,
+        max_store_operations: DRIVER_STORE_OPERATIONS,
         stop_claiming_after: timeout,
         finish_after: finish_window,
     })

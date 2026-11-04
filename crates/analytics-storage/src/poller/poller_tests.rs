@@ -96,7 +96,7 @@ async fn given_system_stream_batch_when_committed_then_opaque_checkpoint_is_sent
     let token = system_checkpoint();
     let (base_url, requests) = serve_sequence_with_capture(vec![
         r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
-        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
         r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
     ])
     .await;
@@ -139,10 +139,10 @@ async fn given_system_stream_page_with_multiple_logical_tables_when_polled_then_
  {
     let records_response = r#"{
             "Records": [
-                {"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"1"}},
-                {"SourceTableName":"source_accounts","Keys":{},"SequenceNumber":"seq-account-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-accounts","Offset":"7"}},
-                {"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user-2","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"2"}},
-                {"SourceTableName":"source_accounts","Keys":{},"SequenceNumber":"seq-account-2","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-accounts","Offset":"8"}}
+                {"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"1"}},
+                {"SourceTableName":"source_accounts","Keys":{},"SequenceNumber":"seq-account-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-accounts","Offset":"7"}},
+                {"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user-2","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"2"}},
+                {"SourceTableName":"source_accounts","Keys":{},"SequenceNumber":"seq-account-2","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-accounts","Offset":"8"}}
             ],
             "SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},
             "Checkpoint":"v1.0123456789abcdef0123456789abcdef"
@@ -235,11 +235,11 @@ async fn given_unregistered_system_records_when_polled_then_selected_records_and
  {
     for (response, expected_records) in [
         (
-            r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-job","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-job","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+            r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-job","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-job","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
             0,
         ),
         (
-            r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-job","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-job","Offset":"1"}},{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"2"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+            r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-job","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-job","Offset":"1"}},{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-user","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-users","Offset":"2"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
             1,
         ),
     ] {
@@ -289,9 +289,9 @@ async fn given_unregistered_system_records_when_polled_then_selected_records_and
 async fn given_system_stream_record_without_logical_metadata_when_polled_then_no_batch_is_returned()
 {
     for response in [
-        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1"}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
-        r#"{"Records":[{"Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
-        r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-1"}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","Item":null}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+        r#"{"Records":[{"Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+        r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"seq-1","Item":null}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
     ] {
         let (base_url, requests) = serve_sequence_with_capture(vec![
             r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
@@ -608,7 +608,7 @@ async fn given_system_stream_response_without_scope_when_polling_repeatedly_then
 async fn given_nonempty_system_stream_page_without_checkpoint_when_polling_then_polling_fails_closed()
  {
     let (base_url, _) = serve_sequence_with_capture(vec![
-        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
+        r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
     ])
     .await;
     let mut poller = AuxStorageGlobalPoller {
@@ -644,7 +644,7 @@ async fn given_system_stream_provider_fault_when_polled_then_same_opaque_predece
 
     for (label, status, error_type, first_body) in cases {
         let token = system_checkpoint();
-        let valid_body = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#;
+        let valid_body = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#;
         let (base_url, requests) = serve_status_sequence_with_capture(vec![
             (status, error_type, first_body),
             (200, None, valid_body),
@@ -2641,7 +2641,7 @@ async fn given_paginated_closed_startup_shards_beyond_capacity_when_polling_to_e
 async fn given_registered_aux_storage_table_when_polled_by_name_then_scope_missing_fails_closed() {
     let (base_url, requests) = serve_sequence_with_capture(vec![
         r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
-        r#"{"Records":[{"SourceTableName":"source_accounts","Keys":{"pk":{"S":"ACCOUNT#1"}},"SequenceNumber":"seq-account-1"}]}"#,
+        r#"{"Records":[{"SourceTableName":"source_accounts","Keys":{"pk":{"S":"ACCOUNT#1"}},"SequenceNumber":"seq-account-1","Item":null}]}"#,
     ])
     .await;
     let mut poller = SourcePoller::from_plans(
