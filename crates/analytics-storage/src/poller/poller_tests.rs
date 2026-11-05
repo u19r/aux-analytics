@@ -582,6 +582,9 @@ async fn given_system_stream_response_without_scope_when_polling_repeatedly_then
         source_scope: system_scope(),
         checkpoint: None,
         scan_checkpoint: None,
+        pending_effect: None,
+        max_records_per_batch: crate::constants::MAX_SOURCE_BATCH_RECORDS,
+        max_batch_bytes: crate::PollerConfig::default().max_batch_bytes,
         max_records_per_response: 1_000,
         serialization_buffer: Vec::new(),
     };
@@ -617,6 +620,9 @@ async fn given_nonempty_system_stream_page_without_checkpoint_when_polling_then_
         source_scope: system_scope(),
         checkpoint: None,
         scan_checkpoint: None,
+        pending_effect: None,
+        max_records_per_batch: crate::constants::MAX_SOURCE_BATCH_RECORDS,
+        max_batch_bytes: crate::PollerConfig::default().max_batch_bytes,
         max_records_per_response: 8_192,
         serialization_buffer: Vec::new(),
     };
@@ -635,9 +641,9 @@ async fn given_system_stream_provider_fault_when_polled_then_same_opaque_predece
     let cases = [
         (
             "provider status failure",
-            503,
-            Some("ServiceUnavailable"),
-            r#"{"__type":"com.amazonaws.dynamodb.v20120810#ServiceUnavailable"}"#,
+            400,
+            Some("ValidationException"),
+            r#"{"__type":"com.amazon.coral.validate#ValidationException"}"#,
         ),
         ("malformed JSON", 200, None, "{malformed-json"),
     ];
@@ -657,6 +663,9 @@ async fn given_system_stream_provider_fault_when_polled_then_same_opaque_predece
             source_scope: system_scope(),
             checkpoint: Some(token.clone()),
             scan_checkpoint: Some(token.clone()),
+            pending_effect: None,
+            max_records_per_batch: crate::constants::MAX_SOURCE_BATCH_RECORDS,
+            max_batch_bytes: crate::PollerConfig::default().max_batch_bytes,
             max_records_per_response: 1_000,
             serialization_buffer: Vec::new(),
         };

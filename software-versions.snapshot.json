@@ -1,8 +1,8 @@
 {
   "generated_by": "aux-infra: just versions-sync",
-  "source_digest": "f5ae8bb07d47fafd5541f524eeb6ca0f261d026ef83cc4f2544a8077e379d07d",
+  "source_digest": "b3dedb1b746aaf6d2bf366997b687c7666d6c3062b9732bb5c3b4f1813d9bf74",
   "repository": "aux-analytics",
-  "payload_digest": "c8cd98427f91f392e117a91940b6c6925b4e102cdf468ac3bbae9c7eea7640fc",
+  "payload_digest": "f3bd86d4a495e2711a97ceb24305da441f0f1b271ec2fac4fb483a4b9184d5d9",
   "catalog": {
     "schema": 1,
     "tools": {
@@ -83,27 +83,6 @@
         "version": "9.8",
         "purpose": "Shared UBI 9 builder and runtime release",
         "downloads": {}
-      },
-      "infra_cli": {
-        "version": "infra-cli-d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e",
-        "purpose": "Checksum-bound first-party deployment CLI; publish the reviewed replacement before enabling canonical callers",
-        "downloads": {
-          "installer": {
-            "repository": "u19r/aux-infra",
-            "tag": "{version}",
-            "asset": "install-infra-cli-release.sh"
-          },
-          "linux_arm64": {
-            "repository": "u19r/aux-infra",
-            "tag": "{version}",
-            "asset": "infra-cli-linux-arm64"
-          },
-          "linux_x64": {
-            "repository": "u19r/aux-infra",
-            "tag": "{version}",
-            "asset": "infra-cli-linux-x64"
-          }
-        }
       }
     },
     "images": {
@@ -185,24 +164,6 @@
           "aarch64": {
             "url": "https://github.com/u19r/aux-ducklake/releases/download/v0.1.7/aux-ducklake-fdb-v417a9117-linux-arm64.tar.gz",
             "sha256": "88383e6ad65ffcdf16f2060a7c1351a707f81e0e6d98c356bcb7b79f9924bcfd"
-          }
-        }
-      },
-      "infra_cli": {
-        "selection": "infra-cli-d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e",
-        "revision": "d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e",
-        "downloads": {
-          "installer": {
-            "url": "https://github.com/u19r/aux-infra/releases/download/infra-cli-d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e/install-infra-cli-release.sh",
-            "sha256": "52c695a0aae24f524850b22c446c3a355fde2ffbaf1a76c6c213297d3b932195"
-          },
-          "linux_arm64": {
-            "url": "https://github.com/u19r/aux-infra/releases/download/infra-cli-d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e/infra-cli-linux-arm64",
-            "sha256": "c6f1039efd8da0db9b1dba94c3402e54974d80212c0ca1e7dc11aa8fd2134bd8"
-          },
-          "linux_x64": {
-            "url": "https://github.com/u19r/aux-infra/releases/download/infra-cli-d1ecfe2f3d24ff1dd2392f39bc277aaa8362539e/infra-cli-linux-x64",
-            "sha256": "8e1882af99fba6201225df53edc96de81aeb1b3f78115a8ab517911b4d0d0c84"
           }
         }
       }
@@ -444,7 +405,7 @@
         "template": "{{actions.actions_checkout.revision}}",
         "files": [
           "aux-analytics/.github/workflows/ci.yml",
-          "aux-analytics/.github/workflows/deploy.yml"
+          "aux-analytics/.github/workflows/publish.yml"
         ],
         "pattern": "actions/checkout@(?<value>[a-zA-Z0-9_.-]+)",
         "encoding": "plain"
@@ -454,7 +415,7 @@
         "key": "actions.actions_upload_artifact.revision",
         "template": "{{actions.actions_upload_artifact.revision}}",
         "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
+          "aux-analytics/.github/workflows/publish.yml"
         ],
         "pattern": "actions/upload\\-artifact@(?<value>[a-zA-Z0-9_.-]+)",
         "encoding": "plain"
@@ -474,7 +435,7 @@
         "key": "actions.aws_actions_configure_aws_credentials.revision",
         "template": "{{actions.aws_actions_configure_aws_credentials.revision}}",
         "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
+          "aux-analytics/.github/workflows/publish.yml"
         ],
         "pattern": "aws\\-actions/configure\\-aws\\-credentials@(?<value>[a-zA-Z0-9_.-]+)",
         "encoding": "plain"
@@ -595,49 +556,9 @@
         "key": "actions.actions_checkout.version",
         "template": "{{actions.actions_checkout.version}}",
         "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
+          "aux-analytics/.github/workflows/publish.yml"
         ],
         "pattern": "uses:\\s*actions/checkout@[\\w.-]+ # (?<value>v[\\d.]+)",
-        "encoding": "plain"
-      },
-      {
-        "kind": "text",
-        "key": "tools.infra_cli.version",
-        "template": "{{tools.infra_cli.version}}",
-        "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
-        ],
-        "pattern": "INFRA_CLI_VERSION: (?<value>[^\\s]+)",
-        "encoding": "plain"
-      },
-      {
-        "kind": "text",
-        "key": "lock.tools.infra_cli.installer.sha256",
-        "template": "{{lock.tools.infra_cli.installer.sha256}}",
-        "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
-        ],
-        "pattern": "INFRA_CLI_INSTALLER_SHA256: (?<value>[^\\s]+)",
-        "encoding": "plain"
-      },
-      {
-        "kind": "text",
-        "key": "lock.tools.infra_cli.linux_arm64.sha256",
-        "template": "{{lock.tools.infra_cli.linux_arm64.sha256}}",
-        "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
-        ],
-        "pattern": "INFRA_CLI_LINUX_ARM64_SHA256: (?<value>[^\\s]+)",
-        "encoding": "plain"
-      },
-      {
-        "kind": "text",
-        "key": "lock.tools.infra_cli.linux_x64.sha256",
-        "template": "{{lock.tools.infra_cli.linux_x64.sha256}}",
-        "files": [
-          "aux-analytics/.github/workflows/deploy.yml"
-        ],
-        "pattern": "INFRA_CLI_LINUX_X64_SHA256: (?<value>[^\\s]+)",
         "encoding": "plain"
       }
     ],

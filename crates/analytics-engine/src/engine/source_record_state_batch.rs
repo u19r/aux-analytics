@@ -1,18 +1,19 @@
-use std::collections::BTreeSet;
-
-use duckdb::Connection;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     AnalyticsEngine, AnalyticsEngineError, AnalyticsEngineResult, SourceBatchExecution,
-    SourceBatchFailureContext, placeholder_list, source_batch_failure_context,
+    SourceBatchFailureContext, source_batch_failure_context,
     source_record_key::source_key_digest,
+    source_record_state::{DirtyOwnerState, OwnerStateCache, SourceRecordState},
 };
 
-/// One bounded owner working set inside the source transaction. Native DuckLake
-/// has no point index, so read and publish the persistent owners once per
-/// batch.
+/// One bounded owner working set inside the source transaction.
+///
+/// The batch loads the persistent owners once, applies merge decisions in
+/// memory, and publishes only changed rows in one MERGE. Per-record SQL
+/// statements made up most of the source transaction time.
 pub(super) struct SourceRecordStateBatch<'a> {
-    connection: &'a Connection,
+    engine: &'a AnalyticsEngine,
     target: String,
 }
 
@@ -33,67 +34,74 @@ impl<'a> SourceRecordStateBatch<'a> {
         if keys.is_empty() {
             return Ok(None);
         }
-        let (database, schema): (String, String) =
-            engine
-                .conn
-                .query_row("SELECT current_database(), current_schema()", [], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?;
-        let target = format!(
-            "{}.{}.__analytics_source_record_states",
-            crate::sql::quote_identifier(&database),
-            crate::sql::quote_identifier(&schema)
-        );
-        Self::stage_owners(&engine.conn, target, &keys).map(Some)
-    }
-
-    fn stage_owners(
-        connection: &'a Connection,
-        target: String,
-        keys: &BTreeSet<String>,
-    ) -> AnalyticsEngineResult<Self> {
-        connection.execute(
-            &format!(
-                "CREATE TEMP TABLE __analytics_source_record_states AS
-                 SELECT *, FALSE AS __source_owner_dirty FROM {}
-                 WHERE source_key_digest IN ({})",
-                target,
-                placeholder_list(keys.len()),
-            ),
-            duckdb::params_from_iter(keys),
-        )?;
-        let batch = Self { connection, target };
-        connection.execute_batch(
-            "CREATE INDEX __analytics_source_record_states_batch_digest
-             ON temp.main.__analytics_source_record_states (source_key_digest)",
-        )?;
-        Ok(batch)
+        let target = load_owner_state_target(&engine.conn)?;
+        let states = load_owner_states(&engine.conn, &target, &keys)?;
+        *engine.owner_state_cache.borrow_mut() = Some(OwnerStateCache::new(states));
+        Ok(Some(Self { engine, target }))
     }
 
     pub(super) fn flush(self) -> AnalyticsEngineResult<()> {
-        let expected: usize = self.connection.query_row(
-            "SELECT count(*) FROM temp.main.__analytics_source_record_states WHERE \
-             __source_owner_dirty",
-            [],
-            |row| row.get(0),
+        let Some(mut cache) = self.engine.owner_state_cache.borrow_mut().take() else {
+            return Ok(());
+        };
+        let dirty = std::mem::take(&mut cache.dirty);
+        if dirty.is_empty() {
+            return Ok(());
+        }
+        self.stage_dirty_rows(&dirty)?;
+        self.merge_dirty_rows(dirty.len())
+    }
+
+    fn stage_dirty_rows(
+        &self,
+        dirty: &BTreeMap<String, DirtyOwnerState>,
+    ) -> AnalyticsEngineResult<()> {
+        let connection = &self.engine.conn;
+        connection.execute_batch(
+            "CREATE TEMP TABLE __analytics_source_record_states (
+                 analytics_table_name VARCHAR,
+                 source_table_name VARCHAR,
+                 source_key_digest VARCHAR,
+                 source_position_json VARCHAR,
+                 child_identities_json VARCHAR,
+                 updated_at_ms BIGINT
+             )",
         )?;
-        let changed = self.connection.execute(
+        {
+            let mut appender = connection.appender("__analytics_source_record_states")?;
+            for (digest, row) in dirty {
+                appender.append_row((
+                    row.analytics_table_name.as_str(),
+                    row.source_table_name.as_str(),
+                    digest.as_str(),
+                    row.source_position_json.as_str(),
+                    row.child_identities_json.as_str(),
+                    row.updated_at_ms,
+                ))?;
+            }
+            appender.flush()?;
+        }
+        Ok(())
+    }
+
+    fn merge_dirty_rows(&self, expected: usize) -> AnalyticsEngineResult<()> {
+        let connection = &self.engine.conn;
+        let changed = connection.execute(
             &format!(
                 "MERGE INTO {} AS target
-                 USING (SELECT * FROM temp.main.__analytics_source_record_states WHERE \
-                 __source_owner_dirty) AS source
+                 USING (SELECT * FROM temp.main.__analytics_source_record_states) AS source
                  ON target.source_key_digest = source.source_key_digest
                  WHEN MATCHED THEN UPDATE SET
-                   source_position_json = source.source_position_json,
-                   child_identities_json = source.child_identities_json,
+                   source_position_json = CAST(source.source_position_json AS JSON),
+                   child_identities_json = CAST(source.child_identities_json AS JSON),
                    updated_at_ms = source.updated_at_ms
                  WHEN NOT MATCHED THEN INSERT
                    (analytics_table_name, source_table_name, source_key_digest,
                     source_position_json, child_identities_json, updated_at_ms)
                  VALUES (source.analytics_table_name, source.source_table_name, \
                  source.source_key_digest,
-                         source.source_position_json, source.child_identities_json, \
-                 source.updated_at_ms)",
+                         CAST(source.source_position_json AS JSON), \
+                 CAST(source.child_identities_json AS JSON), source.updated_at_ms)",
                 self.target,
             ),
             [],
@@ -103,18 +111,84 @@ impl<'a> SourceRecordStateBatch<'a> {
                 "source owner batch did not affect exactly one row per changed key".into(),
             ));
         }
-        self.connection
-            .execute_batch("DROP TABLE temp.main.__analytics_source_record_states")?;
+        connection.execute_batch("DROP TABLE temp.main.__analytics_source_record_states")?;
         Ok(())
     }
 }
 
 impl Drop for SourceRecordStateBatch<'_> {
     fn drop(&mut self) {
-        let _ = self
-            .connection
-            .execute_batch("DROP TABLE IF EXISTS temp.main.__analytics_source_record_states");
+        // The transaction rolls back staging DDL on error. This guard owns
+        // only the in-memory working set, not existing caller tables.
+        self.engine.owner_state_cache.borrow_mut().take();
     }
+}
+
+fn load_owner_states(
+    connection: &duckdb::Connection,
+    target: &str,
+    keys: &BTreeSet<String>,
+) -> AnalyticsEngineResult<BTreeMap<String, SourceRecordState>> {
+    // Stage the digests through an appender instead of a generated
+    // `IN (?, ?, ...)` list. A 1,000-key IN list dominates batch planning.
+    connection.execute_batch(
+        "CREATE TEMP TABLE __analytics_source_record_state_keys (source_key_digest VARCHAR)",
+    )?;
+    {
+        let mut appender = connection.appender("__analytics_source_record_state_keys")?;
+        for key in keys {
+            appender.append_row([key.as_str()])?;
+        }
+        appender.flush()?;
+    }
+    let states = load_matching_owner_states(connection, target)?;
+    connection.execute_batch("DROP TABLE temp.main.__analytics_source_record_state_keys")?;
+    Ok(states)
+}
+
+fn load_matching_owner_states(
+    connection: &duckdb::Connection,
+    target: &str,
+) -> AnalyticsEngineResult<BTreeMap<String, SourceRecordState>> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT target.source_key_digest, target.source_position_json,
+                target.child_identities_json, target.source_table_name
+         FROM {target} AS target
+         WHERE target.source_key_digest IN (
+             SELECT source_key_digest FROM temp.main.__analytics_source_record_state_keys
+         )"
+    ))?;
+    let mut states = BTreeMap::new();
+    let mut rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in &mut rows {
+        let (digest, position, identities, source_table_name) = row?;
+        let state = SourceRecordState::parse(&position, &identities, &source_table_name)?;
+        if states.insert(digest, state).is_some() {
+            return Err(AnalyticsEngineError::CorruptSystemSourceRecordState(
+                "duplicate source owner state".to_string(),
+            ));
+        }
+    }
+    Ok(states)
+}
+
+fn load_owner_state_target(connection: &duckdb::Connection) -> AnalyticsEngineResult<String> {
+    let (database, schema): (String, String) =
+        connection.query_row("SELECT current_database(), current_schema()", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+    Ok(format!(
+        "{}.{}.__analytics_source_record_states",
+        crate::sql::quote_identifier(&database),
+        crate::sql::quote_identifier(&schema)
+    ))
 }
 
 fn collect_owner_keys(

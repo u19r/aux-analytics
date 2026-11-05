@@ -18,13 +18,59 @@ pub(crate) struct SourceRecordIdentity {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SourceRecordState {
+pub(super) struct SourceRecordState {
     pub(super) source_position: SourcePosition,
     pub(super) identities: Vec<SourceRecordIdentity>,
 }
 
+/// In-memory owner working set for one system source batch.
+///
+/// The previous implementation issued one SELECT, DELETE, and INSERT per
+/// record against a DuckDB temp table. That dominated the batch transaction.
+/// Load the bounded owner set once, apply decisions in memory, and publish only
+/// the changed rows in one MERGE.
+pub(super) struct OwnerStateCache {
+    states: std::collections::BTreeMap<String, SourceRecordState>,
+    pub(super) dirty: std::collections::BTreeMap<String, DirtyOwnerState>,
+}
+
+impl OwnerStateCache {
+    #[must_use]
+    pub(super) fn new(states: std::collections::BTreeMap<String, SourceRecordState>) -> Self {
+        Self {
+            states,
+            dirty: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn record_state(
+        &mut self,
+        digest: &str,
+        has_previous: bool,
+        state: SourceRecordState,
+        dirty: DirtyOwnerState,
+    ) -> AnalyticsEngineResult<()> {
+        if self.states.contains_key(digest) != has_previous {
+            return Err(AnalyticsEngineError::CorruptSystemSourceRecordState(
+                "source owner replacement did not match the loaded owner".to_string(),
+            ));
+        }
+        self.states.insert(digest.to_string(), state);
+        self.dirty.insert(digest.to_string(), dirty);
+        Ok(())
+    }
+}
+
+pub(super) struct DirtyOwnerState {
+    pub(super) analytics_table_name: String,
+    pub(super) source_table_name: String,
+    pub(super) source_position_json: String,
+    pub(super) child_identities_json: String,
+    pub(super) updated_at_ms: i64,
+}
+
 impl SourceRecordState {
-    fn parse(
+    pub(super) fn parse(
         position: &str,
         identities: &str,
         source_table_name: &str,
@@ -103,46 +149,33 @@ struct SourceRecordStateWrite<'a> {
 }
 
 impl SourceRecordStateWrite<'_> {
-    fn write_owner_state(self, connection: &duckdb::Connection) -> AnalyticsEngineResult<()> {
+    fn write_owner_state(self, engine: &AnalyticsEngine) -> AnalyticsEngineResult<()> {
         // The fenced transaction loaded and validated this owner before
         // applying its plan.
         let position = serde_json::to_string(self.source_position)?;
         let identities = serde_json::to_string(self.identities)?;
         let updated_at_ms = current_time_millis();
-        let removed = connection
-            .prepare_cached(
-                "DELETE FROM temp.main.__analytics_source_record_states WHERE source_key_digest = \
-                 ?",
-            )?
-            .execute([&self.plan.source_key_digest])?;
-        if removed != usize::from(self.plan.previous.is_some()) {
-            return Err(AnalyticsEngineError::CorruptSystemSourceRecordState(
-                "source owner replacement did not remove the expected previous row".to_string(),
-            ));
-        }
-        let changed = connection
-            .prepare_cached(
-                "INSERT INTO temp.main.__analytics_source_record_states
-
-             (source_position_json, child_identities_json, updated_at_ms,
-              analytics_table_name, source_table_name, source_key_digest, __source_owner_dirty)
-             VALUES (CAST(? AS JSON), CAST(? AS JSON), ?, ?, ?, ?, TRUE)",
-            )?
-            .execute(duckdb::params![
-                position,
-                identities,
+        let mut owners = engine.owner_state_cache.borrow_mut();
+        let cache = owners.as_mut().ok_or_else(|| {
+            AnalyticsEngineError::CorruptSystemSourceRecordState(
+                "source owner write requires an active batch".to_string(),
+            )
+        })?;
+        cache.record_state(
+            &self.plan.source_key_digest,
+            self.plan.previous.is_some(),
+            SourceRecordState {
+                source_position: self.source_position.clone(),
+                identities: self.identities.to_vec(),
+            },
+            DirtyOwnerState {
+                analytics_table_name: self.analytics_table_name.to_string(),
+                source_table_name: self.source_table_name.to_string(),
+                source_position_json: position,
+                child_identities_json: identities,
                 updated_at_ms,
-                self.analytics_table_name,
-                self.source_table_name,
-                self.plan.source_key_digest,
-            ])?;
-
-        if changed != 1 {
-            return Err(AnalyticsEngineError::CorruptSystemSourceRecordState(
-                "source owner write did not affect exactly one row".to_string(),
-            ));
-        }
-        Ok(())
+            },
+        )
     }
 }
 
@@ -150,7 +183,6 @@ impl AnalyticsEngine {
     pub(super) fn source_record_mutation_plan_for_record(
         &self,
         table: &TableRegistration,
-        source_table_name: &str,
         source_position: Option<&SourcePosition>,
         source_key_digest: &str,
         allow_cross_lane: bool,
@@ -161,7 +193,7 @@ impl AnalyticsEngine {
         if !matches!(source_position, SourcePosition::SystemStream { .. }) {
             return Ok(None);
         }
-        let previous = self.load_source_record_state(source_table_name, source_key_digest)?;
+        let previous = self.find_source_record_state(source_key_digest)?;
         if let Some(previous) = &previous {
             previous.validate_scope(source_position)?;
         }
@@ -202,7 +234,7 @@ impl AnalyticsEngine {
             source_position,
             identities,
         }
-        .write_owner_state(&self.conn)?;
+        .write_owner_state(self)?;
         Ok(())
     }
 
@@ -224,7 +256,7 @@ impl AnalyticsEngine {
             source_position,
             identities,
         }
-        .write_owner_state(&self.conn)
+        .write_owner_state(self)
     }
 
     pub(super) fn delete_source_record_identity(
@@ -328,31 +360,17 @@ impl AnalyticsEngine {
         writes.apply_upsert(table, row, outcome, Some(position))
     }
 
-    fn load_source_record_state(
+    fn find_source_record_state(
         &self,
-        source_table_name: &str,
         source_key_digest: &str,
     ) -> AnalyticsEngineResult<Option<SourceRecordState>> {
-        // The source transaction stages this bounded working set in native
-        // DuckDB memory with an index, including each earlier in-batch write.
-        let mut statement = self.conn.prepare_cached(
-            "SELECT source_position_json, child_identities_json
-             FROM temp.main.__analytics_source_record_states
-             WHERE source_key_digest = ?
-             LIMIT 2",
-        )?;
-        let mut rows = statement.query_map([source_key_digest], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        let owners = self.owner_state_cache.borrow();
+        let cache = owners.as_ref().ok_or_else(|| {
+            AnalyticsEngineError::CorruptSystemSourceRecordState(
+                "source owner read requires an active batch".to_string(),
+            )
         })?;
-        let Some((position, identities)) = rows.next().transpose()? else {
-            return Ok(None);
-        };
-        if rows.next().transpose()?.is_some() {
-            return Err(AnalyticsEngineError::CorruptSystemSourceRecordState(
-                "duplicate source owner state".to_string(),
-            ));
-        }
-        SourceRecordState::parse(&position, &identities, source_table_name).map(Some)
+        Ok(cache.states.get(source_key_digest).cloned())
     }
 }
 

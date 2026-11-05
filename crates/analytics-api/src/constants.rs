@@ -13,7 +13,7 @@ pub(crate) const SOURCE_PAYLOAD_HEADER: &[u8; 4] = b"ASJ1";
 // Two maximum-sized images may expand sixfold when JSON escapes control bytes.
 // Keep decoding bounded while admitting one complete source event.
 pub(crate) const MAX_SOURCE_DECODED_BYTES: usize = 8 * 1_024 * 1_024;
-pub(crate) const MAX_SOURCE_RECORDS: usize = 1_024;
+pub(crate) const MAX_SOURCE_RECORDS: usize = analytics_storage::MAX_SOURCE_BATCH_RECORDS;
 pub(crate) const MAX_SOURCE_CHECKPOINTS: usize = 8;
 pub(crate) const MAX_SOURCE_FIELD_BYTES: usize = 1_024;
 pub(crate) const MAX_SOURCE_SCOPE_BYTES: usize = 512;

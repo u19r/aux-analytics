@@ -18,6 +18,12 @@ pub struct AnalyticsCatalogConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
     pub duckdb_threads: Option<usize>,
+    /// Maximum rows DuckLake may inline for one insert. SQLite and aux catalogs
+    /// default to 100; MotherDuck defaults to zero. This does not bound the
+    /// total inline state or the bytes of a later catalog transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub data_inlining_row_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

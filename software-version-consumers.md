@@ -14,7 +14,7 @@ schema/protocol numbers, and deliberately fixed test fixtures are outside this c
 | --- | --- |
 | [.cargo/config.toml](.cargo/config.toml) | `tools.mold.version` |
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | `actions.actions_checkout.revision`<br>`actions.actions_setup_node.revision`<br>`tools.mold.version`<br>`tools.node.version` |
-| [.github/workflows/deploy.yml](.github/workflows/deploy.yml) | `actions.actions_checkout.revision`<br>`actions.actions_checkout.version`<br>`actions.actions_upload_artifact.revision`<br>`actions.aws_actions_configure_aws_credentials.revision`<br>`lock.tools.infra_cli.installer.sha256`<br>`lock.tools.infra_cli.linux_arm64.sha256`<br>`lock.tools.infra_cli.linux_x64.sha256`<br>`tools.infra_cli.version` |
+| [.github/workflows/publish.yml](.github/workflows/publish.yml) | `actions.actions_checkout.revision`<br>`actions.actions_checkout.version`<br>`actions.actions_upload_artifact.revision`<br>`actions.aws_actions_configure_aws_credentials.revision` |
 | [Cargo.toml](Cargo.toml) | `tools.rust.version` |
 | [docker-bake.hcl](docker-bake.hcl) | `images.ubi.reference`<br>`images.ubi_micro.reference`<br>`lock.tools.ducklake_tag.revision`<br>`tools.ducklake_tag.version`<br>`tools.foundationdb.version`<br>`tools.protoc.version`<br>`tools.rust.version` |
 | [docker/analytics-canary.Dockerfile](docker/analytics-canary.Dockerfile) | `images.dockerfile.tag`<br>`images.ubi.reference`<br>`images.ubi_micro.reference`<br>`lock.tools.ducklake_tag.revision`<br>`tools.ducklake_tag.version`<br>`tools.mold.version`<br>`tools.rust.version` |

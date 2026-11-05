@@ -220,6 +220,14 @@ fn record_slow_table_phase(
     staged_rows: usize,
     elapsed: Duration,
 ) {
+    tracing::debug!(
+        operation = "analytics_ingest_batch",
+        phase,
+        analytics_table_name,
+        staged_rows,
+        elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        "DuckLake table write phase"
+    );
     if !ducklake_table_phase_is_slow(elapsed) {
         return;
     }

@@ -1170,7 +1170,7 @@ dependencies = [
 [[package]]
 name = "bg-job-store"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "bg-jobs",
  "bytes",
@@ -1498,7 +1498,7 @@ dependencies = [
 [[package]]
 name = "config"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "chrono",
  "clap",
@@ -2289,7 +2289,7 @@ dependencies = [
 [[package]]
 name = "http-error"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "axum",
  "serde",
@@ -2571,7 +2571,7 @@ dependencies = [
 [[package]]
 name = "infrastructure-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "serde",
  "storage-types",
@@ -2797,7 +2797,7 @@ dependencies = [
 [[package]]
 name = "kv-backend"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "bg-job-store",
@@ -3578,9 +3578,10 @@ dependencies = [
 [[package]]
 name = "pubsub-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "futures",
  "http-error",
  "serde",
@@ -3610,7 +3611,7 @@ dependencies = [
 [[package]]
 name = "queue-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3942,7 +3943,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "replication-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "infrastructure-provider",
  "replication-types",
@@ -3958,7 +3959,7 @@ dependencies = [
 [[package]]
 name = "replication-types"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "infrastructure-provider",
  "serde",
@@ -4528,7 +4529,7 @@ dependencies = [
 [[package]]
 name = "sql-backend"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -4579,7 +4580,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "storage"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4625,7 +4626,7 @@ dependencies = [
 [[package]]
 name = "storage-backfill"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "bg-jobs",
@@ -4647,7 +4648,7 @@ dependencies = [
 [[package]]
 name = "storage-common"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "bg-jobs",
  "metrics",
@@ -4666,7 +4667,7 @@ dependencies = [
 [[package]]
 name = "storage-condition"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "serde_json",
  "smallvec",
@@ -4677,7 +4678,7 @@ dependencies = [
 [[package]]
 name = "storage-derive"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4688,7 +4689,7 @@ dependencies = [
 [[package]]
 name = "storage-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "bg-jobs",
@@ -4714,7 +4715,7 @@ dependencies = [
 [[package]]
 name = "storage-remote"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "aws-sigv4-signing",
@@ -4743,7 +4744,7 @@ dependencies = [
 [[package]]
 name = "storage-types"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "base64 0.23.1",
  "bg-jobs",
@@ -4769,7 +4770,7 @@ dependencies = [
 [[package]]
 name = "stream"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "sql-backend",
  "storage-provider",
@@ -4782,7 +4783,7 @@ dependencies = [
 [[package]]
 name = "stream-provider"
 version = "0.1.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5075,7 +5076,7 @@ dependencies = [
 [[package]]
 name = "tokio-rusqlite"
 version = "0.6.0"
-source = "git+https://github.com/u19r/aux-storage?rev=87ee121df7463124f97be15b86ecc0450b96ff1c#87ee121df7463124f97be15b86ecc0450b96ff1c"
+source = "git+https://github.com/u19r/aux-storage?rev=b1805bf3677fe2920ae31aad2bd6c608e5b0bd49#b1805bf3677fe2920ae31aad2bd6c608e5b0bd49"
 dependencies = [
  "crossbeam-channel",
  "rusqlite",

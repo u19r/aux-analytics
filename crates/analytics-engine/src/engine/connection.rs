@@ -55,6 +55,7 @@ impl AnalyticsEngine {
             supports_table_layout: matches!(backend, StorageBackend::DuckLake { .. }),
             object_storage_credentials: RefCell::new(object_storage_credentials),
             caches: RefCell::new(EngineCaches::new()),
+            owner_state_cache: RefCell::new(None),
             tenant_resolver: crate::TenantResolver::default(),
             #[cfg(test)]
             repair_receipt_barrier: None,

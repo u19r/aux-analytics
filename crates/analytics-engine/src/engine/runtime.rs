@@ -26,6 +26,7 @@ pub struct AnalyticsEngine {
     pub(super) object_storage_credentials:
         RefCell<Option<connection::DuckLakeObjectStorageCredentials>>,
     pub(crate) caches: RefCell<EngineCaches>,
+    pub(super) owner_state_cache: RefCell<Option<super::source_record_state::OwnerStateCache>>,
     pub(crate) tenant_resolver: crate::TenantResolver,
     #[cfg(test)]
     pub(super) repair_receipt_barrier: Option<Arc<std::sync::Barrier>>,

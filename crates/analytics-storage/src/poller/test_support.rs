@@ -6,14 +6,11 @@ use tokio::{
 };
 
 pub(crate) async fn serve_sequence_with_capture(
-    bodies: Vec<&'static str>,
+    bodies: Vec<impl Into<String>>,
 ) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let bodies = bodies
-        .into_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let bodies = bodies.into_iter().map(Into::into).collect::<Vec<_>>();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured_requests = Arc::clone(&requests);
     tokio::spawn(async move {

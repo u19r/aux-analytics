@@ -12,6 +12,9 @@ pub(crate) struct BackgroundJobRuntime<S: JobStore = ScheduledJobStore> {
     pub(super) shared: Arc<SourceJobShared>,
     pub(crate) source_job_timeout: Duration,
     pub(super) driver_started: AtomicBool,
+    // Enqueue is the only producer of new source work. Wake the driver
+    // immediately instead of waiting for its bounded safety poll.
+    pub(super) driver_wake: tokio::sync::Notify,
     pub(super) feeder_shutdown_requested: AtomicBool,
     pub(super) feeder_shutdown: tokio::sync::Notify,
     pub(super) feeder_handles: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -74,6 +77,7 @@ impl BackgroundJobRuntime<ScheduledJobStore> {
             shared,
             source_job_timeout,
             driver_started: AtomicBool::new(false),
+            driver_wake: tokio::sync::Notify::new(),
             feeder_shutdown_requested: AtomicBool::new(false),
             feeder_shutdown: tokio::sync::Notify::new(),
             feeder_handles: tokio::sync::Mutex::new(Vec::new()),
@@ -147,6 +151,7 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
             shared,
             source_job_timeout,
             driver_started: AtomicBool::new(false),
+            driver_wake: tokio::sync::Notify::new(),
             feeder_shutdown_requested: AtomicBool::new(false),
             feeder_shutdown: tokio::sync::Notify::new(),
             feeder_handles: tokio::sync::Mutex::new(Vec::new()),

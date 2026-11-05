@@ -22,11 +22,13 @@ pub(crate) fn configure_connection(
 ) -> AnalyticsEngineResult<()> {
     disable_automatic_extensions(conn)?;
     configure_extension_directory(conn)?;
+    configure_catalog_threads(conn, backend)?;
     if let StorageBackend::DuckLake {
         catalog,
         catalog_path,
         data_path,
         object_storage,
+        catalog_settings,
         ..
     } = backend
     {
@@ -42,7 +44,7 @@ pub(crate) fn configure_connection(
         {
             secret.create_or_replace_secret(conn, resolved_credentials)?;
         }
-        attach_ducklake_catalog(conn, *catalog, catalog_path, data_path)?;
+        attach_ducklake_catalog(conn, *catalog, catalog_path, data_path, catalog_settings)?;
         conn.execute("USE dlake;", [])?;
     }
     Ok(())
@@ -60,11 +62,31 @@ fn attach_ducklake_catalog(
     catalog: CatalogType,
     catalog_path: &str,
     data_path: &str,
+    settings: &config::DuckLakeCatalogSettings,
 ) -> AnalyticsEngineResult<()> {
     conn.execute(
-        attach_ducklake(catalog, catalog_path, data_path).as_str(),
+        attach_ducklake(catalog, catalog_path, data_path, settings).as_str(),
         [],
     )?;
+    Ok(())
+}
+
+pub(crate) fn configure_catalog_threads(
+    conn: &Connection,
+    backend: &StorageBackend,
+) -> AnalyticsEngineResult<()> {
+    let threads = match backend {
+        StorageBackend::DuckLake {
+            catalog_settings, ..
+        } => catalog_settings.duckdb_threads,
+        StorageBackend::DuckDb { .. } => None,
+    };
+    let Some(threads) = threads else {
+        return Ok(());
+    };
+    // A zero worker count is invalid for DuckDB. Treat it as one so a bad
+    // deployment value cannot stop the engine from opening.
+    conn.execute("SET threads TO ?", duckdb::params![threads.max(1)])?;
     Ok(())
 }
 
@@ -400,10 +422,16 @@ pub(crate) fn alter_table_sorted_by(
     ))
 }
 
-pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_path: &str) -> String {
+pub(crate) fn attach_ducklake(
+    catalog: CatalogType,
+    catalog_path: &str,
+    data_path: &str,
+    settings: &config::DuckLakeCatalogSettings,
+) -> String {
     let catalog_reference = ducklake_catalog_reference(catalog, catalog_path);
     let metadata_options = ducklake_metadata_options(catalog);
-    let data_inlining_row_limit = ducklake_data_inlining_row_limit(catalog);
+    let data_inlining_row_limit =
+        ducklake_data_inlining_row_limit(catalog, settings.data_inlining_row_limit);
     format!(
         "ATTACH 'ducklake:{}' AS dlake (DATA_PATH '{}'{metadata_options}, ENCRYPTED, \
          DATA_INLINING_ROW_LIMIT {data_inlining_row_limit}, AUTOMATIC_MIGRATION true);",
@@ -412,7 +440,10 @@ pub(crate) fn attach_ducklake(catalog: CatalogType, catalog_path: &str, data_pat
     )
 }
 
-const fn ducklake_data_inlining_row_limit(catalog: CatalogType) -> usize {
+fn ducklake_data_inlining_row_limit(catalog: CatalogType, configured: Option<usize>) -> usize {
+    if let Some(configured) = configured {
+        return configured;
+    }
     match catalog {
         CatalogType::AuxCatalog | CatalogType::Sqlite => 100,
         CatalogType::MotherDuck => 0,

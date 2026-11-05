@@ -1,9 +1,10 @@
 use analytics_contract::{
-    AnalyticsColumn, AnalyticsColumnType, ClusteringKey, PrimitiveColumnType, SortOrder,
+    AnalyticsColumn, AnalyticsColumnType, ClusteringKey, PartitionBucket, PartitionKey,
+    PrimitiveColumnType, SortOrder, TimeBucketUnit,
 };
 use config::{
-    AnalyticsObjectStorageConfig, CatalogType, RemoteCredentialsConfig,
-    RemoteStaticCredentialsConfig,
+    AnalyticsObjectStorageConfig, CatalogType, DuckLakeCatalogSettings, RemoteCredentialsConfig,
+    RemoteStaticCredentialsConfig, StorageBackend,
 };
 use duckdb::Connection;
 use tempfile::tempdir;
@@ -12,10 +13,32 @@ use crate::{
     constants::SOURCE_POSITION_COLUMN,
     sql::{
         ObjectStorageSecret, alter_table_partitioned_by, alter_table_sorted_by, attach_ducklake,
-        create_table, load_extension_for_test, manifest_column_statements, quote_identifier,
-        source_position_column_statement,
+        configure_catalog_threads, create_table, load_extension_for_test,
+        manifest_column_statements, quote_identifier, source_position_column_statement,
     },
 };
+
+#[test]
+fn given_catalog_threads_when_configured_then_duckdb_uses_the_configured_worker_count() {
+    let connection = Connection::open_in_memory().expect("memory DuckDB");
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::Sqlite,
+        catalog_path: "unused.sqlite".to_string(),
+        data_path: "unused".to_string(),
+        object_storage: None,
+        catalog_settings: DuckLakeCatalogSettings {
+            duckdb_threads: Some(2),
+            ..Default::default()
+        },
+    };
+    configure_catalog_threads(&connection, &backend).expect("configure threads");
+    let threads: i64 = connection
+        .query_row("SELECT current_setting('threads')::BIGINT", [], |row| {
+            row.get(0)
+        })
+        .expect("threads setting");
+    assert_eq!(threads, 2);
+}
 
 #[test]
 fn given_identifier_with_quote_when_quoted_then_sql_identifier_is_escaped() {
@@ -186,7 +209,12 @@ fn given_clustering_keys_when_sorted_sql_is_created_then_default_order_is_ascend
 
 #[test]
 fn given_ducklake_paths_with_quotes_when_attach_sql_is_built_then_literals_are_escaped() {
-    let sql = attach_ducklake(CatalogType::Sqlite, "catalog's.db", "s3://bucket/data's");
+    let sql = attach_ducklake(
+        CatalogType::Sqlite,
+        "catalog's.db",
+        "s3://bucket/data's",
+        &DuckLakeCatalogSettings::default(),
+    );
 
     assert_eq!(
         sql,
@@ -202,6 +230,7 @@ fn given_aux_catalog_when_attach_sql_is_built_then_statement_sets_meta_type() {
         CatalogType::AuxCatalog,
         "/var/lib/aux-analytics/metadata.duckdb",
         "s3://bucket/data",
+        &DuckLakeCatalogSettings::default(),
     );
 
     assert_eq!(
@@ -210,6 +239,21 @@ fn given_aux_catalog_when_attach_sql_is_built_then_statement_sets_meta_type() {
          's3://bucket/data', META_TYPE 'aux_catalog', ENCRYPTED, DATA_INLINING_ROW_LIMIT 100, \
          AUTOMATIC_MIGRATION true);"
     );
+}
+
+#[test]
+fn given_configured_inline_limit_when_aux_attach_sql_is_built_then_configured_value_is_used() {
+    let sql = attach_ducklake(
+        CatalogType::AuxCatalog,
+        "/var/lib/aux-analytics/metadata.duckdb",
+        "s3://bucket/data",
+        &DuckLakeCatalogSettings {
+            data_inlining_row_limit: Some(8),
+            ..Default::default()
+        },
+    );
+
+    assert!(sql.contains("DATA_INLINING_ROW_LIMIT 8"));
 }
 
 #[test]
@@ -379,4 +423,72 @@ fn given_resolved_credentials_when_secret_sql_is_built_then_override_is_escaped_
             .access_key,
         "previous-key"
     );
+}
+
+#[test]
+fn given_partition_hints_when_native_layout_is_configured_then_rows_remain_queryable_after_flush() {
+    let directory = tempdir().unwrap();
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::Sqlite,
+        catalog_path: directory
+            .path()
+            .join("catalog.sqlite")
+            .to_string_lossy()
+            .into_owned(),
+        data_path: directory.path().join("data").to_string_lossy().into_owned(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    };
+    let engine = crate::AnalyticsEngine::connect(&backend).unwrap();
+    for (index, bucket) in [
+        PartitionBucket::Hash { buckets: 8 },
+        PartitionBucket::Time {
+            unit: TimeBucketUnit::Hour,
+            size: 1,
+        },
+        PartitionBucket::Time {
+            unit: TimeBucketUnit::Day,
+            size: 1,
+        },
+        PartitionBucket::Time {
+            unit: TimeBucketUnit::Month,
+            size: 1,
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let table = format!("partition_probe_{index}");
+        engine
+            .connection()
+            .execute_batch(&format!(
+                "CREATE TABLE {table} (occurred TIMESTAMP, amount INTEGER)"
+            ))
+            .unwrap();
+        let sql = alter_table_partitioned_by(
+            &table,
+            &[PartitionKey {
+                column_name: "occurred".to_string(),
+                bucket: Some(bucket),
+            }],
+        )
+        .unwrap();
+        engine.connection().execute_batch(&sql).unwrap();
+        engine
+            .connection()
+            .execute_batch(&format!(
+                "INSERT INTO {table} VALUES ('2026-11-05 01:00:00', 7), ('2026-11-05 02:00:00', \
+                 11); CALL ducklake_flush_inlined_data('dlake', table_name => '{table}')"
+            ))
+            .unwrap();
+        let sum: i32 = engine
+            .connection()
+            .query_row(
+                &format!("SELECT sum(amount)::INTEGER FROM {table}"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(sum, 18);
+    }
 }

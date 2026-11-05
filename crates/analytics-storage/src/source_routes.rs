@@ -56,6 +56,18 @@ impl CompiledSourceRoutes {
         Ok(Self { routes })
     }
 
+    /// Largest number of analytical tables one source record can route to.
+    ///
+    /// A poller uses this to keep a routed batch inside its record bound: one
+    /// source record can produce more routed records than the page limit.
+    pub(crate) fn max_fanout(&self) -> usize {
+        self.routes
+            .iter()
+            .map(|route| route.analytics_table_names.len())
+            .max()
+            .unwrap_or(0)
+    }
+
     pub(crate) fn contains_source(&self, source_table_name: &str) -> bool {
         self.analytics_tables_for_source(source_table_name)
             .is_ok_and(|tables| !tables.is_empty())

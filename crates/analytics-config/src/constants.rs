@@ -7,6 +7,9 @@ pub(crate) const DEFAULT_POLL_INTERVAL_MS: u64 = 100;
 pub(crate) const DEFAULT_POLL_MAX_SHARDS: usize = 16;
 pub(crate) const DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL: usize = 4;
 pub(crate) const DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE: u32 = 8_192;
+// Serialized routed-record budget. Destination expansion and catalog metadata
+// have separate costs; this is not a native-transaction byte guarantee.
+pub(crate) const DEFAULT_MAX_SOURCE_BATCH_BYTES: usize = 1_500_000;
 pub(crate) const DEFAULT_POLL_REQUEST_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const DEFAULT_JOB_STORE_REQUEST_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const DEFAULT_INGEST_PROCESSOR_ENABLED: bool = true;

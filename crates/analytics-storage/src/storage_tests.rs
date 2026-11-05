@@ -74,6 +74,7 @@ fn given_four_shards_and_capacity_three_when_requests_are_planned_then_first_thr
         max_shards: 3,
         max_responses_per_interval: 30,
         max_records_per_response: 1_000,
+        max_batch_bytes: 1_500_000,
     };
 
     let requests = config.plan_requests(["a", "b", "c", "d"]);
@@ -136,6 +137,45 @@ fn given_configured_source_table_when_plans_are_built_then_manifest_destination_
     assert_eq!(plans[0].source_table_name, "tenant_entities");
     assert_eq!(plans[0].analytics_table_names, vec!["users"]);
     assert_eq!(plans[0].stream_type, AnalyticsStreamType::AuxStorage);
+}
+
+#[test]
+fn given_configured_source_in_prefix_family_when_planned_then_destination_registration_is_used() {
+    let manifest: AnalyticsManifest = serde_json::from_value(serde_json::json!({
+        "version": 1,
+        "tables": [{
+            "source_table_name": "events_00_00",
+            "source_table_name_prefix": "events_00_",
+            "analytics_table_name": "events_00",
+            "tenant_selector": { "kind": "none" },
+            "row_identity": { "kind": "stream_keys" },
+            "columns": []
+        }]
+    }))
+    .expect("manifest");
+    let source = AnalyticsSourceConfig {
+        stream_type: Some(AnalyticsStreamType::AuxStorage),
+        endpoint_url: Some("http://127.0.0.1:39124/storage".to_string()),
+        tables: vec![AnalyticsSourceTableConfig {
+            table_name: "events_00_07".to_string(),
+            stream_type: None,
+            stream_identifier: None,
+        }],
+        ..AnalyticsSourceConfig::default()
+    };
+
+    let plans = SourceTablePlan::from_source(&source, &manifest).expect("plans");
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].source_table_name, "events_00_07");
+    assert_eq!(plans[0].analytics_table_names, vec!["events_00"]);
+    assert_eq!(plans[0].registrations.len(), 1);
+    assert_eq!(
+        plans[0].registrations[0]
+            .source_table_name_prefix
+            .as_deref(),
+        Some("events_00_")
+    );
 }
 
 #[test]

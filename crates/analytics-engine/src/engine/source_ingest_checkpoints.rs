@@ -126,7 +126,6 @@ impl AnalyticsEngine {
         let allow_cross_lane = system_owner_keys_seen.insert(digest.clone());
         let plan = self.source_record_mutation_plan_for_record(
             table,
-            &item.source_table_name,
             Some(&position),
             &digest,
             allow_cross_lane,

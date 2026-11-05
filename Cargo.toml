@@ -60,9 +60,9 @@ schemars = { version = "1.2.3", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
-storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "87ee121df7463124f97be15b86ecc0450b96ff1c", default-features = false, features = ["remote"] }
-storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "87ee121df7463124f97be15b86ecc0450b96ff1c" }
-storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "87ee121df7463124f97be15b86ecc0450b96ff1c", default-features = false }
+storage = { git = "https://github.com/u19r/aux-storage", package = "storage", rev = "b1805bf3677fe2920ae31aad2bd6c608e5b0bd49", default-features = false, features = ["remote"] }
+storage-condition = { git = "https://github.com/u19r/aux-storage", package = "storage-condition", rev = "b1805bf3677fe2920ae31aad2bd6c608e5b0bd49" }
+storage-types = { git = "https://github.com/u19r/aux-storage", package = "storage-types", rev = "b1805bf3677fe2920ae31aad2bd6c608e5b0bd49", default-features = false }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "tracing"] }

@@ -4,6 +4,7 @@ mod discovery;
 mod runtime;
 mod state;
 mod system_stream;
+mod system_stream_batch;
 
 #[cfg(test)]
 mod aws_response_performance_tests;

@@ -165,6 +165,65 @@ fn given_repeated_system_updates_when_native_batch_commits_then_latest_rows_and_
 }
 
 #[test]
+fn given_equal_system_replay_when_caller_temp_table_exists_then_batch_preserves_it() {
+    let (engine, manifest) = memory_engine();
+    apply_system(
+        &engine,
+        &manifest,
+        authority(1, 1),
+        system_scope(1),
+        None,
+        system_checkpoint('a'),
+        vec![system_source_record(
+            "user-1",
+            "original",
+            system_position("shard", "lane", "1"),
+        )],
+    )
+    .unwrap();
+    engine
+        .connection()
+        .execute_batch(
+            "CREATE TEMP TABLE __analytics_source_record_states (sentinel INTEGER);
+         INSERT INTO temp.main.__analytics_source_record_states VALUES (42)",
+        )
+        .unwrap();
+    let result = apply_system(
+        &engine,
+        &manifest,
+        authority(2, 2),
+        system_scope(1),
+        Some(system_checkpoint('a')),
+        system_checkpoint('b'),
+        vec![system_source_record(
+            "user-1",
+            "stale",
+            system_position("shard", "lane", "1"),
+        )],
+    )
+    .unwrap();
+    let SourceEffectDisposition::Applied { summary } = result else {
+        panic!("new execution must commit its checkpoint");
+    };
+    assert_eq!(summary.skipped(), 1);
+    let sentinel: i64 = engine
+        .connection()
+        .query_row(
+            "SELECT sentinel FROM temp.main.__analytics_source_record_states",
+            [],
+            |row| row.get(0),
+        )
+        .expect("successful skipped batch must preserve the caller's table");
+    assert_eq!(sentinel, 42);
+    assert_eq!(
+        engine
+            .query_unscoped_sql_json("SELECT email FROM users")
+            .unwrap(),
+        vec![serde_json::json!({"email":"original@example.test"})]
+    );
+}
+
+#[test]
 fn given_existing_temporary_owner_table_when_system_batch_staging_collides_then_table_and_durable_state_are_preserved()
  {
     let (engine, manifest) = memory_engine();
@@ -3420,4 +3479,143 @@ fn given_ducklake_mixed_batch_when_committed_then_deletes_and_upserts_are_atomic
         )
         .expect("temporary stages");
     assert_eq!(stages, 0);
+}
+
+#[test]
+#[ignore = "requires an explicitly isolated FoundationDB catalog and matching DuckLake runtime"]
+fn given_native_system_owner_cache_when_failed_batch_replays_and_reopens_then_rows_and_frontier_are_atomic()
+ {
+    assert!(std::env::var_os("AUX_ANALYTICS_DUCKLAKE_FDB_LIVE").is_some());
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let backend = StorageBackend::DuckLake {
+        catalog: CatalogType::AuxCatalog,
+        catalog_path: directory
+            .path()
+            .join("metadata.aux")
+            .to_string_lossy()
+            .into_owned(),
+        data_path: data.to_string_lossy().into_owned(),
+        object_storage: None,
+        catalog_settings: Default::default(),
+    };
+    let mut manifest = users_manifest();
+    manifest.tables[0].row_identity = RowIdentity::StreamKeys;
+    let engine = AnalyticsEngine::connect(&backend).unwrap();
+    engine.ensure_manifest(&manifest).unwrap();
+    engine.verify_destination_fence().unwrap();
+    engine
+        .connection()
+        .execute_batch(
+            "CREATE TEMP TABLE __analytics_source_record_states (sentinel INTEGER); INSERT INTO \
+             temp.main.__analytics_source_record_states VALUES (42)",
+        )
+        .unwrap();
+    let records = || {
+        vec![
+            system_source_record("user-1", "first", system_position("shard", "lane", "1")),
+            system_source_record("user-1", "latest", system_position("shard", "lane", "2")),
+        ]
+    };
+    assert!(
+        apply_system(
+            &engine,
+            &manifest,
+            authority(1, 1),
+            system_scope(7),
+            None,
+            system_checkpoint('a'),
+            records()
+        )
+        .is_err()
+    );
+    let state = system_destination_state(&engine).unwrap();
+    assert!(state.rows.is_empty());
+    assert!(state.receipts.is_empty());
+    assert!(state.checkpoint.is_none());
+    let sentinel: i32 = engine
+        .connection()
+        .query_row(
+            "SELECT sentinel FROM temp.main.__analytics_source_record_states",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sentinel, 42);
+    engine
+        .connection()
+        .execute_batch("DROP TABLE temp.main.__analytics_source_record_states")
+        .unwrap();
+    assert!(matches!(
+        apply_system(
+            &engine,
+            &manifest,
+            authority(1, 1),
+            system_scope(7),
+            None,
+            system_checkpoint('a'),
+            records()
+        )
+        .unwrap(),
+        SourceEffectDisposition::Applied { .. }
+    ));
+    engine
+        .connection()
+        .execute_batch("CALL ducklake_flush_inlined_data('dlake')")
+        .unwrap();
+    drop(engine);
+    let reopened = AnalyticsEngine::connect(&backend).unwrap();
+    assert_eq!(
+        reopened
+            .query_unscoped_sql_json("SELECT email FROM users")
+            .unwrap(),
+        vec![serde_json::json!({"email":"latest@example.test"})]
+    );
+    assert!(matches!(
+        apply_system(
+            &reopened,
+            &manifest,
+            authority(1, 1),
+            system_scope(7),
+            None,
+            system_checkpoint('a'),
+            records()
+        )
+        .unwrap(),
+        SourceEffectDisposition::AlreadyApplied { .. }
+    ));
+    let owners = reopened
+        .query_unscoped_sql_json("SELECT * FROM __analytics_source_record_states")
+        .unwrap();
+    assert_eq!(owners.len(), 1);
+    assert!(matches!(
+        apply_system(
+            &reopened,
+            &manifest,
+            authority(2, 2),
+            system_scope(7),
+            Some(system_checkpoint('a')),
+            system_checkpoint('b'),
+            vec![system_record_with_images(
+                ANALYTICS_TABLE_NAME,
+                SOURCE_TABLE_NAME,
+                "user-1",
+                Some(user_item("user-1", "latest@example.test", "org-a")),
+                None,
+                system_position("shard", "lane", "3")
+            )]
+        )
+        .unwrap(),
+        SourceEffectDisposition::Applied { .. }
+    ));
+    assert!(
+        reopened
+            .query_unscoped_sql_json("SELECT email FROM users")
+            .unwrap()
+            .is_empty()
+    );
+    let state = system_destination_state(&reopened).unwrap();
+    assert_eq!(state.receipts.len(), 2);
+    assert!(state.checkpoint.is_some());
 }

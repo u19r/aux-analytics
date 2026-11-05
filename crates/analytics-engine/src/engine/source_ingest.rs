@@ -57,6 +57,14 @@ impl AnalyticsEngine {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn ingest_source_batch_for_test(
+        &self,
+        execution: SourceBatchExecution<'_>,
+    ) -> AnalyticsEngineResult<SourceBatchCommit> {
+        self.ingest_source_batch_core(execution)
+    }
+
     pub(super) fn ingest_source_batch_core(
         &self,
         execution: SourceBatchExecution<'_>,

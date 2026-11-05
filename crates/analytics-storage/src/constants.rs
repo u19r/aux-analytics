@@ -1,5 +1,10 @@
 use std::time::Duration;
 
+// Retry policy for idempotent SystemStream source reads.
+pub(crate) const SOURCE_READ_MAX_ATTEMPTS: u32 = 5;
+pub(crate) const SOURCE_READ_BASE_DELAY: Duration = Duration::from_millis(20);
+pub(crate) const SOURCE_READ_MAX_DELAY: Duration = Duration::from_millis(500);
+
 // Retention remote lookup retry policy.
 pub(crate) const AUX_STORAGE_POLICY_ATTEMPTS: u32 = 3;
 pub(crate) const BASE_BACKOFF_MS: u64 = 50;
@@ -9,9 +14,19 @@ pub(crate) const AWS_GET_RECORDS_MAX_RECORDS: u32 = 1_000;
 pub(crate) const AWS_DESCRIBE_STREAM_MAX_SHARDS: usize = 100;
 pub(crate) const RETENTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Maximum routed records combined into one durable SystemStream job.
+/// Ordered pages share this record bound and a separate serialized-byte budget.
+/// Payload encoding independently enforces the decoded job-size limit.
+pub const MAX_SOURCE_BATCH_RECORDS: usize = 4_096;
+
 // AWS stream discovery retry schedule.
 pub(crate) const DISCOVERY_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 pub(crate) const DISCOVERY_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+
+// A routed SystemStream page stays pending until its durable effect commits.
+// The source job timeout is 60 seconds; after that a dead-lettered job must
+// not stop the feeder forever.
+pub(crate) const PENDING_EFFECT_TIMEOUT: Duration = Duration::from_secs(60);
 
 // Conversion performance test fixtures and measurement bounds.
 #[cfg(test)]
@@ -48,6 +63,8 @@ pub(crate) const DESCRIBE: &str =
 pub(crate) const JOB_PAGE: &str = r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"job-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"job-lineage","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.11111111111111111111111111111111"}"#;
 #[cfg(test)]
 pub(crate) const SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"2"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.22222222222222222222222222222222"}"#;
+#[cfg(test)]
+pub(crate) const NEXT_SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-2","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"3"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.33333333333333333333333333333333"}"#;
 #[cfg(test)]
 pub(crate) const EMPTY_SELECTED_PAGE: &str = r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.22222222222222222222222222222222"}"#;
 #[cfg(test)]

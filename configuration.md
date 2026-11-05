@@ -35,8 +35,9 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.source.poll_interval_ms` | `100` | Poll loop interval. The poller should keep issuing background requests inside the interval budget. |
 | `analytics.source.poll_request_timeout_ms` | `5000` | Per-request timeout for source polling. |
 | `analytics.source.poll_max_shards` | `16` | Maximum shards or stream partitions polled concurrently. |
-| `analytics.source.poll_max_responses_per_interval` | `160` | Maximum 1 MB stream responses to fetch per interval across all shards. At the default 100 ms interval this budgets up to 1600 responses/s, enough headroom for 100 MB/s when responses are below the 1 MB service maximum. |
+| `analytics.source.poll_max_responses_per_interval` | `4` | Maximum source responses combined into one durable batch. The poller combines this many ordered pages, bounded by the record and byte budgets. Raise it when pages are small and the writer can accept larger batches. |
 | `analytics.source.poll_max_records_per_response` | `8192` | Maximum records accepted from one source response. |
+| `analytics.source.max_batch_bytes` | `1500000` | Serialized routed-record byte budget for one durable source batch. Destination expansion and catalog metadata have separate costs; this does not guarantee a native transaction fits. |
 | `analytics.job_store.endpoint_url` | none | Public AuxStorage scheduled JobStore endpoint. When set, the bg-jobs runtime uses the unauthenticated bounded-timeout library facade over ordinary DynamoDB API actions. |
 | `analytics.job_store.request_timeout_ms` | `5000` | Per-request timeout for the scheduled JobStore facade. |
 | `analytics.source.tables[].table_name` | required | Source storage table name. |
@@ -59,6 +60,8 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | `analytics.catalog.backend` | none | `duckdb`, `ducklake_sqlite`, `ducklake_aux_catalog`, or `ducklake_motherduck`. |
 | `analytics.catalog.connection_string` | none | DuckDB path or DuckLake catalog connection string. |
 | `analytics.catalog.motherduck_token` | none | MotherDuck service token for `ducklake_motherduck`. Use `${ENV_VAR}` expansion instead of committing a token. |
+| `analytics.catalog.duckdb_threads` | DuckDB default | Worker threads for the writer connection. Set this to the CPU budget for ingest and query work. |
+| `analytics.catalog.data_inlining_row_limit` | `100` for SQLite and aux catalogs, `0` for MotherDuck | Maximum rows DuckLake may inline for one insert. This is a per-insert row threshold, not a bound on total inline data or native transaction bytes. |
 | `analytics.object_storage.provider` | `s3` | Object store provider: `s3`, `r2`, or `generic`. |
 | `analytics.object_storage.scheme` | `s3` | URI scheme used in DuckLake `DATA_PATH`, for example `s3`. |
 | `analytics.object_storage.bucket` | none | Bucket/container name. If omitted, `path` is used directly. |

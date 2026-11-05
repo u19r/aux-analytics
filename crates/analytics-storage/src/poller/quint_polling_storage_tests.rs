@@ -365,6 +365,9 @@ fn poll_aux_storage_rejection(
                 .as_deref()
                 .map(SystemStreamCheckpointToken::try_from)
                 .transpose()?,
+            pending_effect: None,
+            max_records_per_batch: crate::constants::MAX_SOURCE_BATCH_RECORDS,
+            max_batch_bytes: crate::PollerConfig::default().max_batch_bytes,
             max_records_per_response: 1_000,
             serialization_buffer: Vec::new(),
         };

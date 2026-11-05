@@ -38,3 +38,6 @@ mod query_materialization_tests;
 
 #[cfg(test)]
 mod digest_tests;
+
+#[cfg(test)]
+mod ingest_pipeline_tests;

@@ -1,0 +1,78 @@
+{
+  "generated_by": "aux-infra: just versions-sync",
+  "schema_version": 1,
+  "targets": {
+    "aws-dev-us-east-1": {
+      "artifact": {
+        "analytics_lambda_repository": "614073402005.dkr.ecr.us-east-1.amazonaws.com/aux-analytics-lambda",
+        "arguments": {
+          "BUILD_PROFILE": "release",
+          "UBI_IMAGE": "registry.access.redhat.com/ubi9/ubi:9.8@sha256:217dd5692d369799d34d09ffb6f5f3404efebc7900834490fdf9ae92fd6721d4"
+        },
+        "bake_target": "publication-set",
+        "kind": "container",
+        "platform": "linux/arm64",
+        "private_inputs": {},
+        "repository": "614073402005.dkr.ecr.us-east-1.amazonaws.com/aux-analytics"
+      },
+      "component": "aux-analytics",
+      "identity": {
+        "account_id": "614073402005",
+        "profile": "build-poweruser",
+        "region": "us-east-1",
+        "repository": "u19r/aux-analytics-private",
+        "role_arn": "arn:aws:iam::614073402005:role/aux-build-eu-north-1-aux-analytics-private-github-ecr-publish"
+      },
+      "repository": "u19r/aux-analytics-private",
+      "schema_version": 1
+    },
+    "aws-preprod-us-east-1": {
+      "artifact": {
+        "analytics_lambda_repository": "614073402005.dkr.ecr.us-east-1.amazonaws.com/aux-analytics-lambda",
+        "arguments": {
+          "BUILD_PROFILE": "release",
+          "UBI_IMAGE": "registry.access.redhat.com/ubi9/ubi:9.8@sha256:217dd5692d369799d34d09ffb6f5f3404efebc7900834490fdf9ae92fd6721d4"
+        },
+        "bake_target": "publication-set",
+        "kind": "container",
+        "platform": "linux/arm64",
+        "private_inputs": {},
+        "repository": "614073402005.dkr.ecr.us-east-1.amazonaws.com/aux-analytics"
+      },
+      "component": "aux-analytics",
+      "identity": {
+        "account_id": "614073402005",
+        "profile": "build-poweruser",
+        "region": "us-east-1",
+        "repository": "u19r/aux-analytics-private",
+        "role_arn": "arn:aws:iam::614073402005:role/aux-build-eu-north-1-aux-analytics-private-github-ecr-publish"
+      },
+      "repository": "u19r/aux-analytics-private",
+      "schema_version": 1
+    },
+    "hetzner-single-node": {
+      "artifact": {
+        "analytics_lambda_repository": null,
+        "arguments": {
+          "BUILD_PROFILE": "release",
+          "UBI_IMAGE": "registry.access.redhat.com/ubi9/ubi:9.8@sha256:217dd5692d369799d34d09ffb6f5f3404efebc7900834490fdf9ae92fd6721d4"
+        },
+        "bake_target": "publication-set",
+        "kind": "container",
+        "platform": "linux/amd64",
+        "private_inputs": {},
+        "repository": "614073402005.dkr.ecr.us-east-1.amazonaws.com/aux-analytics"
+      },
+      "component": "aux-analytics",
+      "identity": {
+        "account_id": "614073402005",
+        "profile": "build-poweruser",
+        "region": "us-east-1",
+        "repository": "u19r/aux-analytics-private",
+        "role_arn": "arn:aws:iam::614073402005:role/aux-build-eu-north-1-aux-analytics-private-github-ecr-publish"
+      },
+      "repository": "u19r/aux-analytics-private",
+      "schema_version": 1
+    }
+  }
+}

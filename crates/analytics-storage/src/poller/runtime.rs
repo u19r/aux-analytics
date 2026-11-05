@@ -1,22 +1,15 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use analytics_contract::AnalyticsManifest;
 use config::{AnalyticsSourceConfig, AnalyticsStreamType};
 
-use super::state::{
-    AuxStorageGlobalPoller, AwsDiscoverySchedule, AwsStreamTablePoller, SourcePoller,
-    SourceTablePoller,
+use super::{
+    construction::AwsStreamRegistration,
+    state::{AuxStorageGlobalPoller, SourcePoller, SourceTablePoller},
 };
 use crate::{
-    aws_stream::{AwsShardDiscoveryRequest, AwsStreams},
     constants::AWS_GET_RECORDS_MAX_RECORDS,
-    error::{
-        AnalyticsStorageError, AnalyticsStorageErrorDebug, AnalyticsStorageErrorKind,
-        AnalyticsStorageResult,
-    },
+    error::{AnalyticsStorageError, AnalyticsStorageErrorKind, AnalyticsStorageResult},
     execution::StreamCatchupSource,
     planning::SourceTablePlan,
     poller_config::PollerConfig,
@@ -105,6 +98,15 @@ impl SourcePoller {
             .find_map(SourceTablePoller::system_stream_scope)
     }
 
+    /// Returns the durable SystemStream frontier this poller has acknowledged.
+    #[must_use]
+    pub fn system_stream_checkpoint(&self) -> Option<&storage_types::SystemStreamCheckpointToken> {
+        self.tables.iter().find_map(|table| match table {
+            SourceTablePoller::AuxStorage(poller) => poller.checkpoint.as_ref(),
+            SourceTablePoller::AwsStream(_) => None,
+        })
+    }
+
     pub async fn poll_once(&mut self) -> AnalyticsStorageResult<PollBatch> {
         self.poll_once_with_now(Instant::now()).await
     }
@@ -150,11 +152,19 @@ impl SourcePoller {
             return Ok(false);
         }
         let limit = self.config.max_records_per_response / 2;
+        tracing::warn!(
+            previous_limit = self.config.max_records_per_response,
+            next_limit = limit,
+            "reducing source page limit"
+        );
         for table in &mut self.tables {
             match table {
                 SourceTablePoller::AuxStorage(poller) => {
                     poller.max_records_per_response = limit;
+                    poller.max_records_per_batch =
+                        (poller.max_records_per_batch / 2).max(poller.routes.max_fanout().max(1));
                     poller.scan_checkpoint = poller.checkpoint.clone();
+                    poller.pending_effect = None;
                 }
                 SourceTablePoller::AwsStream(poller) => {
                     let checkpoints = poller.durable_checkpoints.clone();
@@ -206,6 +216,7 @@ impl SourcePoller {
         };
         poller.checkpoint = checkpoint.clone();
         poller.scan_checkpoint = checkpoint;
+        poller.pending_effect = None;
         Ok(())
     }
 
@@ -330,6 +341,17 @@ impl SourcePoller {
             .iter()
             .find_map(|table| table.current_record_checkpoint(source_table_name, shard_id))
     }
+
+    /// Release the single pending SystemStream page after a payload rejection
+    /// or enqueue failure so the feeder can retry from the durable frontier.
+    pub fn clear_pending_effect(&mut self) {
+        for table in &mut self.tables {
+            if let SourceTablePoller::AuxStorage(poller) = table {
+                poller.pending_effect = None;
+                poller.scan_checkpoint = poller.checkpoint.clone();
+            }
+        }
+    }
 }
 
 impl StreamCatchupSource for SourcePoller {
@@ -382,6 +404,7 @@ impl SourceTablePoller {
         match self {
             Self::AuxStorage(poller) => {
                 poller.scan_checkpoint = poller.checkpoint.clone();
+                poller.pending_effect = None;
                 Ok(())
             }
             Self::AwsStream(poller) => poller.reload_checkpoints(checkpoints).await,
@@ -417,84 +440,7 @@ impl SourceTablePoller {
         {
             poller.checkpoint = Some(batch.checkpoint.clone());
             poller.scan_checkpoint = poller.checkpoint.clone();
+            poller.pending_effect = None;
         }
-    }
-}
-
-struct AwsStreamRegistration {
-    client: AwsStreams,
-    stream_arn: String,
-    plan: SourceTablePlan,
-    durable_checkpoints: Vec<SourceCheckpoint>,
-}
-
-impl AwsStreamRegistration {
-    async fn try_new(
-        source: &AnalyticsSourceConfig,
-        mut plan: SourceTablePlan,
-        checkpoints: &[SourceCheckpoint],
-    ) -> AnalyticsStorageResult<Self> {
-        let stream_arn = plan.stream_identifier.take().ok_or_else(|| {
-            AnalyticsStorageError::with_debug(
-                AnalyticsStorageErrorKind::MissingStreamIdentifier,
-                AnalyticsStorageErrorDebug::SourceTableName(plan.source_table_name.clone()),
-            )
-        })?;
-        let client = AwsStreams::from_source(source).await;
-        let durable_checkpoints = checkpoints
-            .iter()
-            .filter(|checkpoint| {
-                checkpoint.source_table_name == plan.source_table_name && checkpoint.is_record()
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        Ok(Self {
-            client,
-            stream_arn,
-            plan,
-            durable_checkpoints,
-        })
-    }
-
-    async fn open_poller(
-        self,
-        config: &PollerConfig,
-    ) -> AnalyticsStorageResult<AwsStreamTablePoller> {
-        let Self {
-            client,
-            stream_arn,
-            plan,
-            durable_checkpoints,
-        } = self;
-        let discovery = client
-            .initial_shard_iterators(AwsShardDiscoveryRequest {
-                stream_arn: stream_arn.as_str(),
-                max_shards: config.max_shards,
-                checkpoints: &durable_checkpoints,
-                source_table_name: plan.source_table_name.as_str(),
-                include_closed_shards: true,
-            })
-            .await?;
-        Ok(AwsStreamTablePoller {
-            client,
-            stream_arn,
-            source_table_name: plan.source_table_name,
-            analytics_table_names: plan.analytics_table_names,
-            max_shards: config.max_shards,
-            max_records_per_response: config
-                .max_records_per_response
-                .min(AWS_GET_RECORDS_MAX_RECORDS),
-            durable_checkpoints,
-            shard_iterators: discovery.shard_iterators,
-            pending_batches: VecDeque::new(),
-            pending_shard_ids: discovery.pending_shard_ids,
-            pending_expired_shard_ids: VecDeque::new(),
-            next_exclusive_start_shard_id: discovery.next_exclusive_start_shard_id,
-            startup_exhausted: discovery.startup_exhausted,
-            pending_terminal_shards: BTreeSet::new(),
-            next_shard_id: None,
-            discovery_schedule: AwsDiscoverySchedule::Initial,
-            serialization_buffer: Vec::new(),
-        })
     }
 }

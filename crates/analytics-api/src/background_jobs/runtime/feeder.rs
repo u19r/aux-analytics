@@ -85,6 +85,7 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
                     .deduplicate(deduplication),
             )
             .await?;
+        self.driver_wake.notify_one();
         Ok(())
     }
     pub(super) async fn recover_source_enqueue(
@@ -170,6 +171,7 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
         let deadline_at_ms = match source_deadline_at_ms(now_ms(), timeout) {
             Ok(deadline_at_ms) => deadline_at_ms,
             Err(_) => {
+                poller.lock().await.clear_pending_effect();
                 source_poll_failure(&self.shared, "background source deadline rejected").await;
                 return;
             }
@@ -182,6 +184,7 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
             match SourceJobPayload::from_batch(kind, batch, deadline_at_ms, manifest_digest) {
                 Ok(payload) => payload,
                 Err(error) => {
+                    poller.lock().await.clear_pending_effect();
                     tracing::warn!(error = %error, "background source payload rejected");
                     source_poll_failure(&self.shared, "background source payload rejected").await;
                     return;

@@ -6,7 +6,7 @@ use crate::{
     error::{AnalyticsStorageError, AnalyticsStorageErrorKind},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PolledRecord {
     pub source_table_name: String,
     /// The source stream shard or partition that produced this record.

@@ -58,11 +58,18 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
                 .ok()
                 .map(WakeHint::At)
         });
-        match self
+        let wait = self
             .runtime
-            .wait_for(report, retention_hint.unwrap_or(WakeHint::None))
-            .await
-        {
+            .wait_for(report, retention_hint.unwrap_or(WakeHint::None));
+        tokio::pin!(wait);
+        // A source enqueue is a durable wake hint that the remote job store
+        // cannot push to this process. Wake immediately instead of sleeping
+        // for the bounded safety poll.
+        let outcome = tokio::select! {
+            outcome = &mut wait => outcome,
+            _ = self.driver_wake.notified() => return true,
+        };
+        match outcome {
             Ok(WaitOutcome::Woken) => true,
             Ok(WaitOutcome::Shutdown) => false,
             Err(error) => {

@@ -103,12 +103,13 @@ impl SourceTablePlan {
         manifest: &AnalyticsManifest,
         table: &AnalyticsSourceTableConfig,
     ) -> AnalyticsStorageResult<Self> {
-        let analytics_table_names = manifest
-            .tables
-            .iter()
-            .filter(|manifest_table| manifest_table.source_table_name == table.table_name)
-            .map(|manifest_table| manifest_table.analytics_table_name.clone())
-            .collect::<Vec<_>>();
+        let registrations = Self::find_source_registrations(manifest, &table.table_name);
+        let mut analytics_table_names = Vec::new();
+        for registration in &registrations {
+            if !analytics_table_names.contains(&registration.analytics_table_name) {
+                analytics_table_names.push(registration.analytics_table_name.clone());
+            }
+        }
         if analytics_table_names.is_empty() {
             return Err(AnalyticsStorageError::with_debug(
                 AnalyticsStorageErrorKind::UnregisteredSourceTable,
@@ -119,17 +120,40 @@ impl SourceTablePlan {
             source_table_name: table.table_name.clone(),
             source_table_name_prefix: None,
             analytics_table_names,
-            registrations: manifest
-                .tables
-                .iter()
-                .filter(|manifest_table| manifest_table.source_table_name == table.table_name)
-                .cloned()
-                .collect(),
+            registrations,
             stream_type: table
                 .stream_type
                 .or(source.stream_type)
                 .unwrap_or(AnalyticsStreamType::AuxStorage),
             stream_identifier: table.stream_identifier.clone(),
         })
+    }
+    fn find_source_registrations(
+        manifest: &AnalyticsManifest,
+        source_table_name: &str,
+    ) -> Vec<TableRegistration> {
+        // An exact registration wins. A source table family can otherwise
+        // share one registration through `source_table_name_prefix`, which is
+        // how many streams write into one destination table.
+        let mut registrations = manifest
+            .tables
+            .iter()
+            .filter(|manifest_table| manifest_table.source_table_name == source_table_name)
+            .cloned()
+            .collect::<Vec<_>>();
+        if registrations.is_empty() {
+            registrations = manifest
+                .tables
+                .iter()
+                .filter(|manifest_table| {
+                    manifest_table
+                        .source_table_name_prefix
+                        .as_deref()
+                        .is_some_and(|prefix| source_table_name.starts_with(prefix))
+                })
+                .cloned()
+                .collect();
+        }
+        registrations
     }
 }

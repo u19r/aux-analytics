@@ -41,6 +41,7 @@
           "tables": []
         },
         "source": {
+          "max_batch_bytes": 1500000,
           "poll_interval_ms": 100,
           "poll_max_records_per_response": 8192,
           "poll_max_responses_per_interval": 4,
@@ -115,6 +116,15 @@
             "string",
             "null"
           ]
+        },
+        "data_inlining_row_limit": {
+          "description": "Maximum rows DuckLake may inline for one insert. SQLite and aux catalogs\ndefault to 100; MotherDuck defaults to zero. This does not bound the\ntotal inline state or the bytes of a later catalog transaction.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
         },
         "duckdb_threads": {
           "type": [
@@ -200,6 +210,7 @@
         "source": {
           "$ref": "#/$defs/AnalyticsSourceConfig",
           "default": {
+            "max_batch_bytes": 1500000,
             "poll_interval_ms": 100,
             "poll_max_records_per_response": 8192,
             "poll_max_responses_per_interval": 4,
@@ -449,6 +460,13 @@
             "string",
             "null"
           ]
+        },
+        "max_batch_bytes": {
+          "description": "Serialized routed-record byte budget for one durable batch. Destination\nrow expansion and catalog metadata can require additional bytes.",
+          "type": "integer",
+          "format": "uint",
+          "default": 1500000,
+          "minimum": 0
         },
         "poll_interval_ms": {
           "type": "integer",

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::RemoteCredentialsConfig;
 use crate::constants::{
-    DEFAULT_INGEST_PROCESSOR_ENABLED, DEFAULT_POLL_INTERVAL_MS,
+    DEFAULT_INGEST_PROCESSOR_ENABLED, DEFAULT_MAX_SOURCE_BATCH_BYTES, DEFAULT_POLL_INTERVAL_MS,
     DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE, DEFAULT_POLL_MAX_RESPONSES_PER_INTERVAL,
     DEFAULT_POLL_MAX_SHARDS, DEFAULT_POLL_REQUEST_TIMEOUT_MS,
 };
@@ -40,6 +40,11 @@ pub struct AnalyticsSourceConfig {
     #[serde(default = "default_poll_max_records_per_response")]
     #[schemars(default = "default_poll_max_records_per_response")]
     pub poll_max_records_per_response: u32,
+    /// Serialized routed-record byte budget for one durable batch. Destination
+    /// row expansion and catalog metadata can require additional bytes.
+    #[serde(default = "default_max_batch_bytes")]
+    #[schemars(default = "default_max_batch_bytes")]
+    pub max_batch_bytes: usize,
     #[serde(default)]
     #[schemars(default)]
     pub tables: Vec<AnalyticsSourceTableConfig>,
@@ -77,6 +82,7 @@ impl Default for AnalyticsSourceConfig {
             poll_max_shards: default_poll_max_shards(),
             poll_max_responses_per_interval: default_poll_max_responses_per_interval(),
             poll_max_records_per_response: default_poll_max_records_per_response(),
+            max_batch_bytes: default_max_batch_bytes(),
             tables: Vec::new(),
         }
     }
@@ -96,6 +102,10 @@ fn default_poll_max_responses_per_interval() -> usize {
 }
 fn default_poll_max_records_per_response() -> u32 {
     DEFAULT_POLL_MAX_RECORDS_PER_RESPONSE
+}
+
+fn default_max_batch_bytes() -> usize {
+    DEFAULT_MAX_SOURCE_BATCH_BYTES
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

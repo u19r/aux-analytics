@@ -112,6 +112,7 @@ pub enum CatalogType {
 pub struct DuckLakeCatalogSettings {
     pub motherduck_token: Option<String>,
     pub duckdb_threads: Option<usize>,
+    pub data_inlining_row_limit: Option<usize>,
 }
 
 impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
@@ -119,6 +120,7 @@ impl From<&AnalyticsCatalogConfig> for DuckLakeCatalogSettings {
         Self {
             motherduck_token: config.motherduck_token.clone(),
             duckdb_threads: config.duckdb_threads,
+            data_inlining_row_limit: config.data_inlining_row_limit,
         }
     }
 }

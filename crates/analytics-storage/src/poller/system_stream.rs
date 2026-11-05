@@ -1,9 +1,14 @@
+use std::time::Instant;
+
 use storage_types::{GetStreamRecordsResponse, StreamRecord, SystemStreamCheckpointToken};
 
-use super::state::{AuxStorageGlobalPoller, empty_poll_batch, logical_record_key};
+use super::{
+    state::{AuxStorageGlobalPoller, empty_poll_batch, logical_record_key},
+    system_stream_batch::{SystemStreamPage, SystemStreamReadBatch},
+};
 use crate::{
     error::{AnalyticsStorageError, AnalyticsStorageErrorKind, AnalyticsStorageResult},
-    source_batch::{PollBatch, PolledRecord, SystemStreamBatch},
+    source_batch::{PollBatch, PolledRecord},
 };
 
 impl AuxStorageGlobalPoller {
@@ -14,43 +19,104 @@ impl AuxStorageGlobalPoller {
         if max_responses == 0 {
             return Ok(empty_poll_batch());
         }
-        let response = self
-            .client
-            .get_system_stream_records(
-                self.source_scope.clone(),
-                self.scan_checkpoint.clone(),
-                self.max_records_per_response,
-            )
-            .await?;
-        let Some(response_checkpoint) = self.validate_response_checkpoint(&response)? else {
-            return Ok(empty_poll_batch());
-        };
-        self.serialization_buffer.clear();
-        serde_json::to_writer(&mut self.serialization_buffer, response.records())?;
-        let source_encoded_bytes = self.serialization_buffer.len();
-        let source_record_count = response.records().len();
-        let (source_records, _) = response.into_parts();
-        let records = self.route_system_records(source_records)?;
-        let system_stream = if records.is_empty() {
-            self.scan_checkpoint = Some(response_checkpoint);
-            None
+        if let Some(started) = self.pending_effect {
+            if started.elapsed() < crate::constants::PENDING_EFFECT_TIMEOUT {
+                return Ok(empty_poll_batch());
+            }
+            self.pending_effect = None;
+            self.scan_checkpoint = self.checkpoint.clone();
+        }
+
+        let batch = self.fetch_batch(max_responses).await?;
+        if batch.system_stream.is_some() {
+            self.pending_effect = Some(Instant::now());
+        }
+        Ok(batch)
+    }
+
+    async fn fetch_batch(&mut self, max_responses: usize) -> AnalyticsStorageResult<PollBatch> {
+        let mut read = SystemStreamReadBatch::new(
+            self.scan_checkpoint.clone(),
+            self.max_records_per_batch,
+            self.max_batch_bytes,
+            self.routes.max_fanout(),
+        );
+        for _ in 0..max_responses {
+            let page_limit = read.calculate_page_limit(self.max_records_per_response);
+            if page_limit == 0 {
+                break;
+            }
+            let response = self
+                .client
+                .get_system_stream_records(
+                    self.source_scope.clone(),
+                    read.cursor.clone(),
+                    page_limit,
+                )
+                .await?;
+            read.record_response();
+            let Some(checkpoint) = self.validate_response_checkpoint(&response)? else {
+                break;
+            };
+            let page = self.route_page(response, checkpoint)?;
+            self.resize_oversized_page(page_limit, page.job_bytes);
+            if !read.admit_page(page)? {
+                break;
+            }
+        }
+        let (cursor, batch) =
+            read.into_poll_batch(self.source_scope.clone(), self.checkpoint.clone());
+        self.scan_checkpoint = cursor;
+        Ok(batch)
+    }
+
+    fn route_page(
+        &mut self,
+        response: GetStreamRecordsResponse,
+        checkpoint: SystemStreamCheckpointToken,
+    ) -> AnalyticsStorageResult<SystemStreamPage> {
+        let source_records = response.records().len();
+        let source_bytes = if source_records == 0 {
+            0
         } else {
-            Some(SystemStreamBatch {
-                source_scope: self.source_scope.clone(),
-                previous_checkpoint: self.checkpoint.clone(),
-                checkpoint: response_checkpoint,
-            })
+            self.measure_serialized_bytes(response.records())?
         };
-        Ok(PollBatch {
-            source_response_count: 1,
-            source_nonempty_response_count: usize::from(source_record_count != 0),
-            source_record_count,
-            source_encoded_bytes,
+        let (records, _) = response.into_parts();
+        let records = self.route_system_records(records)?;
+        let job_bytes = if records.is_empty() {
+            0
+        } else {
+            self.measure_serialized_bytes(&records)?
+        };
+        Ok(SystemStreamPage {
+            checkpoint,
+            source_records,
+            source_bytes,
+            job_bytes,
             records,
-            checkpoints: Vec::new(),
-            source_predecessor: None,
-            system_stream,
         })
+    }
+
+    fn measure_serialized_bytes<T: serde::Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+    ) -> AnalyticsStorageResult<usize> {
+        self.serialization_buffer.clear();
+        serde_json::to_writer(&mut self.serialization_buffer, value)?;
+        Ok(self.serialization_buffer.len())
+    }
+
+    fn resize_oversized_page(&mut self, page_limit: u32, page_bytes: usize) {
+        if page_limit <= 1 || page_bytes <= self.max_batch_bytes {
+            return;
+        }
+        let scaled = u64::from(page_limit)
+            .saturating_mul(self.max_batch_bytes as u64)
+            .saturating_div(page_bytes as u64)
+            .max(1);
+        self.max_records_per_response = u32::try_from(scaled)
+            .unwrap_or(u32::MAX)
+            .min(page_limit - 1);
     }
 
     fn validate_response_checkpoint(

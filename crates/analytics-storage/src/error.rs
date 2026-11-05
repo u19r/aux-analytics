@@ -63,6 +63,31 @@ impl AnalyticsStorageError {
     pub fn category(&self) -> &'static str {
         self.kind.as_str()
     }
+
+    /// A source page read can be repeated from the same checkpoint. Retry
+    /// transport failures and provider conflicts, but never retry a contract
+    /// rejection such as an unknown checkpoint.
+    #[must_use]
+    pub(crate) fn is_retryable_source_read(&self) -> bool {
+        match (&self.kind, &self.debug) {
+            (
+                AnalyticsStorageErrorKind::HttpStatus,
+                AnalyticsStorageErrorDebug::HttpStatus { status, body },
+            ) => {
+                status.is_server_error()
+                    || matches!(
+                        *status,
+                        StatusCode::TOO_MANY_REQUESTS
+                            | StatusCode::REQUEST_TIMEOUT
+                            | StatusCode::LOCKED
+                            | StatusCode::TOO_EARLY
+                    )
+                    || (status.as_u16() == 400 && body.contains("TransactionConflictException"))
+            }
+            (AnalyticsStorageErrorKind::Http, _) => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -105,6 +130,8 @@ pub(crate) enum AnalyticsStorageErrorKind {
     InvalidSourceBatchScope,
     #[error("source poll batch contains multiple source scopes")]
     MixedSourceBatchScope,
+    #[error("source page exceeds the configured batch budget")]
+    SourceBatchExceedsBudget,
     #[error("aws stream attribute value variant is unsupported")]
     UnsupportedAwsAttributeValue,
     #[error("analytics retention tenant_policy.endpoint_url is required")]
@@ -137,6 +164,7 @@ impl AnalyticsStorageErrorKind {
             Self::MissingRecordSystemPosition => "missing_record_system_position",
             Self::InvalidSourceBatchScope => "invalid_source_batch_scope",
             Self::MixedSourceBatchScope => "mixed_source_batch_scope",
+            Self::SourceBatchExceedsBudget => "source_batch_exceeds_budget",
             Self::UnsupportedAwsAttributeValue => "unsupported_aws_attribute_value",
             Self::MissingRetentionPolicyEndpoint => "missing_retention_policy_endpoint",
             Self::RetentionPolicyLookup => "retention_policy_lookup",

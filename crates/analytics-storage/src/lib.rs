@@ -14,6 +14,7 @@ mod source_batch;
 mod source_routes;
 mod stream_conversion;
 
+pub use constants::MAX_SOURCE_BATCH_RECORDS;
 pub use current_row::{
     AuxStorageCurrentRowClient, AuxStorageCurrentRowPageReader, AuxStorageCurrentRowScanRequest,
     DynamoDbCurrentRowClient, DynamoDbCurrentRowPageReader, DynamoDbCurrentRowScanRequest,

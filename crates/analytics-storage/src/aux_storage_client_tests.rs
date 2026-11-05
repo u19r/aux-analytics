@@ -104,7 +104,7 @@ async fn given_system_stream_response_with_legacy_cursor_when_decoded_then_it_fa
 
 #[tokio::test]
 async fn given_stream_error_when_polling_then_http_status_and_body_are_preserved() {
-    let (base_url, requests) = serve_responses(vec![(503, "unavailable")]).await;
+    let (base_url, requests) = serve_responses(vec![(400, "unavailable")]).await;
     let client =
         AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
 
@@ -113,9 +113,31 @@ async fn given_stream_error_when_polling_then_http_status_and_body_are_preserved
         .await
         .expect_err("error status should fail");
 
-    assert!(error.to_string().contains("503 Service Unavailable"));
+    assert!(error.to_string().contains("400 Bad Request"));
     assert!(error.to_string().contains("body=unavailable"));
     assert_eq!(requests.lock().expect("requests").len(), 1);
+}
+
+#[tokio::test]
+async fn given_retryable_stream_error_when_polling_then_the_read_is_retried() {
+    let (base_url, requests) = serve_responses(vec![
+        (503, "unavailable"),
+        (
+            200,
+            r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+        ),
+    ])
+    .await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
+
+    let response = client
+        .get_system_stream_records(scope(), None, 25)
+        .await
+        .expect("retryable error should retry");
+
+    assert!(response.records().is_empty());
+    assert_eq!(requests.lock().expect("requests").len(), 2);
 }
 
 #[tokio::test]

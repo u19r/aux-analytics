@@ -103,53 +103,23 @@ impl AnalyticsEngine {
         records: impl Iterator<Item = &'records StreamRecordBatchItem>,
         checkpoints: &[RecordCheckpoint],
     ) -> AnalyticsEngineResult<()> {
-        let mut source_scopes = BTreeSet::new();
-        for item in records {
-            let failure_context = source_batch_failure_context(item, checkpoints)?;
-            source_scopes.insert(match failure_context {
-                Some(context) => (context.source_table_name, Some(context.shard_id)),
-                None => (bounded_failure_text(item.source_table_name.as_str()), None),
-            });
+        // The failure table is empty in the healthy path. Checking it once
+        // avoids building a failure context and issuing one query per source
+        // scope for every batch.
+        let has_unrepaired_failure: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM analytics_source_batch_failures
+                 WHERE repaired_at_ms IS NULL
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_unrepaired_failure {
+            return Ok(());
         }
-        source_scopes.extend(checkpoints.iter().map(|checkpoint| {
-            (
-                bounded_failure_text(checkpoint.source_table_name()),
-                Some(bounded_failure_text(checkpoint.shard_id())),
-            )
-        }));
-        for (source_table_name, shard_id) in source_scopes {
-            let failure = if let Some(shard_id) = shard_id {
-                self.conn
-                    .query_row(
-                        "SELECT source_table_name, shard_id, record_position,
-                                analytics_table_name, error_class, error_message,
-                                failed_at_ms, repaired_at_ms
-                         FROM analytics_source_batch_failures
-                         WHERE source_table_name = ?
-                           AND shard_id = ?
-                           AND repaired_at_ms IS NULL
-                         ORDER BY failed_at_ms DESC
-                         LIMIT 1",
-                        duckdb::params![source_table_name, shard_id],
-                        source_batch_failure_from_row,
-                    )
-                    .optional()?
-            } else {
-                self.conn
-                    .query_row(
-                        "SELECT source_table_name, shard_id, record_position,
-                                analytics_table_name, error_class, error_message,
-                                failed_at_ms, repaired_at_ms
-                         FROM analytics_source_batch_failures
-                         WHERE source_table_name = ?
-                           AND repaired_at_ms IS NULL
-                         ORDER BY failed_at_ms DESC
-                         LIMIT 1",
-                        duckdb::params![source_table_name],
-                        source_batch_failure_from_row,
-                    )
-                    .optional()?
-            };
+        for (source_table_name, shard_id) in collect_failure_scopes(records, checkpoints)? {
+            let failure =
+                self.find_unrepaired_source_failure(&source_table_name, shard_id.as_deref())?;
             if let Some(failure) = failure {
                 return Err(AnalyticsEngineError::SourceBatchBlocked {
                     source_table_name: failure.source_table_name,
@@ -159,6 +129,27 @@ impl AnalyticsEngine {
             }
         }
         Ok(())
+    }
+
+    fn find_unrepaired_source_failure(
+        &self,
+        source_table_name: &str,
+        shard_id: Option<&str>,
+    ) -> AnalyticsEngineResult<Option<SourceBatchFailure>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT source_table_name, shard_id, record_position,
+                    analytics_table_name, error_class, error_message,
+                    failed_at_ms, repaired_at_ms
+             FROM analytics_source_batch_failures
+             WHERE source_table_name = ? AND (? IS NULL OR shard_id = ?)
+               AND repaired_at_ms IS NULL
+             ORDER BY failed_at_ms DESC LIMIT 1",
+                duckdb::params![source_table_name, shard_id, shard_id],
+                source_batch_failure_from_row,
+            )
+            .optional()?)
     }
 
     pub(super) fn record_source_batch_error<T>(
@@ -398,4 +389,25 @@ pub(crate) const fn source_batch_error_class(error: &AnalyticsEngineError) -> &'
         AnalyticsEngineError::InvalidSystemSourceKey(_) => "invalid_system_source_key",
         _ => "record_contract",
     }
+}
+
+fn collect_failure_scopes<'records>(
+    records: impl Iterator<Item = &'records StreamRecordBatchItem>,
+    checkpoints: &[RecordCheckpoint],
+) -> AnalyticsEngineResult<BTreeSet<(String, Option<String>)>> {
+    let mut source_scopes = BTreeSet::new();
+    for item in records {
+        let failure_context = source_batch_failure_context(item, checkpoints)?;
+        source_scopes.insert(match failure_context {
+            Some(context) => (context.source_table_name, Some(context.shard_id)),
+            None => (bounded_failure_text(item.source_table_name.as_str()), None),
+        });
+    }
+    source_scopes.extend(checkpoints.iter().map(|checkpoint| {
+        (
+            bounded_failure_text(checkpoint.source_table_name()),
+            Some(bounded_failure_text(checkpoint.shard_id())),
+        )
+    }));
+    Ok(source_scopes)
 }

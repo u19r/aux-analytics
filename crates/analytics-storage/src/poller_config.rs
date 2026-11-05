@@ -9,6 +9,7 @@ pub struct PollerConfig {
     pub max_shards: usize,
     pub max_responses_per_interval: usize,
     pub max_records_per_response: u32,
+    pub max_batch_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,13 +20,7 @@ pub struct PollRequest {
 
 impl Default for PollerConfig {
     fn default() -> Self {
-        Self {
-            poll_interval: Duration::from_millis(100),
-            request_timeout: Duration::from_millis(5_000),
-            max_shards: 16,
-            max_responses_per_interval: 4,
-            max_records_per_response: 8_192,
-        }
+        Self::from_source_config(&AnalyticsSourceConfig::default())
     }
 }
 
@@ -38,6 +33,7 @@ impl PollerConfig {
             max_shards: source.poll_max_shards,
             max_responses_per_interval: source.poll_max_responses_per_interval,
             max_records_per_response: source.poll_max_records_per_response,
+            max_batch_bytes: source.max_batch_bytes.max(1),
         }
     }
 

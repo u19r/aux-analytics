@@ -36,7 +36,14 @@ pub(crate) struct AuxStorageGlobalPoller {
     pub(crate) checkpoint: Option<storage_types::SystemStreamCheckpointToken>,
     // Unrouted pages advance scanning without creating a durable job effect.
     pub(crate) scan_checkpoint: Option<storage_types::SystemStreamCheckpointToken>,
+    // A routed page becomes a durable job effect. Do not read the same page
+    // again until that effect commits; the durable checkpoint still gates
+    // replay after a restart or failed enqueue. The start time is a safety
+    // valve for a dead-lettered job, not a normal retry path.
+    pub(crate) pending_effect: Option<Instant>,
     pub(crate) max_records_per_response: u32,
+    pub(crate) max_records_per_batch: usize,
+    pub(crate) max_batch_bytes: usize,
     pub(crate) serialization_buffer: Vec<u8>,
 }
 

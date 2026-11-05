@@ -11,11 +11,20 @@ pub fn run() -> ApiResult<()> {
 }
 
 fn async_worker_threads() -> usize {
-    async_worker_threads_for(
-        std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(2),
-    )
+    worker_thread_override().unwrap_or_else(|| {
+        async_worker_threads_for(
+            std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(2),
+        )
+    })
+}
+
+fn worker_thread_override() -> Option<usize> {
+    std::env::var("TOKIO_WORKER_THREADS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
 }
 
 pub(crate) fn async_worker_threads_for(available: usize) -> usize {
