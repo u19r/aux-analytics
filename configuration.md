@@ -21,7 +21,33 @@ cargo run -p analytics-cli -- openapi > openapi.json
 | Config file | `--config config/analytics.json` | Main deployment config |
 | Defaults | omitted fields | Lowest |
 
+## Deployment-selected registration
+
+API and Lambda deployments can set `AUX_ANALYTICS_REGISTRATION` to an immutable S3 reference encoded as JSON.
+The deployment owner selects the reference before activation; startup never resolves a mutable latest object.
+
+| Field | Required value |
+| --- | --- |
+| `schema_version` | `1` |
+| `region`, `bucket`, `key` | The selected S3 object's location |
+| `version` | An exact, nonempty S3 version ID other than `null` |
+| `sha256` | Lowercase SHA256 of the complete object bytes |
+| `bytes` | Exact object size in bytes |
+| `source.repository` | The caller's source repository |
+| `source.revision`, `source.tree` | Exact lowercase 40-character Git object IDs |
+
+The object contains `source` with that same identity and `manifest` with the caller's analytics-contract document.
+Startup uses the AWS SDK credential chain and reads that exact version once before readiness. It verifies the version,
+size, checksum, source and manifest. The read has at most three SDK attempts and a 30-second deadline including body streaming.
+The runtime role needs `s3:GetObjectVersion` for the selected registration prefix; it needs no registration listing or write access.
+
+A remote selection cannot be combined with an explicit `--manifest` or Lambda `AUX_ANALYTICS_MANIFEST` selection.
+Remote retrieval or validation failure stops startup; it does not fall back to a local or image-bundled file.
+Without `AUX_ANALYTICS_REGISTRATION`, existing local-file configuration works as before. The standalone CLI uses local files.
+Registration references and documents are runtime configuration and are excluded from generic published images.
+
 ## Analytics Config Fields
+
 
 | Field | Default | Description |
 | --- | --- | --- |

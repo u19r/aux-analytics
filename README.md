@@ -273,6 +273,7 @@ Environment variables:
 
 - `AUX_ANALYTICS_CONFIG`: optional standard config file path.
 - `AUX_ANALYTICS_MANIFEST`: optional manifest path override.
+- `AUX_ANALYTICS_REGISTRATION`: optional deployment-selected S3 reference; see [configuration](configuration.md#deployment-selected-registration). It replaces explicit manifest-file selection.
 - `AUX_ANALYTICS_DUCKDB`: optional DuckDB path override.
 - `AUX_ANALYTICS_DUCKLAKE_SQLITE_CATALOG`: optional DuckLake SQLite catalog override.
 - `AUX_ANALYTICS_DUCKLAKE_AUX_CATALOG`: optional DuckLake aux catalog metadata path override.

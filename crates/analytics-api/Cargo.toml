@@ -24,12 +24,15 @@ analytics-contract = { workspace = true }
 analytics-engine = { workspace = true, default-features = false }
 analytics-operations = { workspace = true }
 analytics-storage = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 axum = { workspace = true }
 bg-jobs = { workspace = true }
 bg-jobs-tokio = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 config = { workspace = true }
+hex = { workspace = true }
 http-body-util = { workspace = true }
 jsonschema = { workspace = true }
 lambda-web-runtime = { workspace = true }
@@ -38,7 +41,7 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }
 storage = { workspace = true }
 storage-types = { workspace = true }

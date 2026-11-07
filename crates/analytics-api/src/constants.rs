@@ -1,5 +1,11 @@
 use std::time::Duration;
 
+pub(crate) const ENV_REGISTRATION_REFERENCE: &str = "AUX_ANALYTICS_REGISTRATION";
+pub(crate) const REGISTRATION_MAX_ATTEMPTS: u32 = 3;
+// Registration is startup metadata (the published document is about 98 KiB).
+// Bound network startup; the native runtime can restart after a failed fetch.
+pub(crate) const REGISTRATION_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
 // Durable source and retention job identity.
 pub(crate) const SOURCE_AUX_JOB_KIND: &str = "analytics.source.aux_storage.v1";
 pub(crate) const SOURCE_STREAM_JOB_KIND: &str = "analytics.source.storage_stream.v1";

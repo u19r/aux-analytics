@@ -12,7 +12,7 @@ use crate::{
     AppState, EndpointConfig, MetricsEndpointConfig,
     cli::ApiCli,
     error::ApiResult,
-    runtime_config::{load_privacy_policy, resolve_serve_config},
+    runtime_config::{load_privacy_policy, build_serve_request},
     server_router_with_config,
     source_polling::spawn_source_polling,
 };
@@ -20,7 +20,9 @@ use crate::{
 pub(crate) async fn serve(args: ApiCli) -> ApiResult<()> {
     let endpoint = lambda_web_runtime::LambdaWebEnvironment::load()?;
     let duty = args.process_duty.resolve_for_endpoint(endpoint.as_ref())?;
-    let resolved = resolve_serve_config(&args)?;
+    let request = build_serve_request(&args);
+    let request = crate::prepare_runtime_registration(request).await?;
+    let resolved = config::resolve_config(request)?;
     let endpoint_config = EndpointConfig {
         ingest_enabled: resolved.routes.ingest_enabled,
         async_operations_enabled: duty.can_run_background_work(),

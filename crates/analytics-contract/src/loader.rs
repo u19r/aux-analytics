@@ -15,10 +15,20 @@ pub fn read_manifest(path: impl AsRef<Path>) -> ManifestLoadResult<AnalyticsMani
             source,
         )
     })?;
-    let value = serde_json::from_str::<serde_json::Value>(contents.as_str()).map_err(|source| {
+    parse_manifest(contents.as_bytes()).map_err(|mut error| {
+        if error.kind == ManifestLoadErrorKind::Json {
+            error.debug = ManifestLoadErrorDebug::Path(path.display().to_string());
+        }
+        error
+    })
+}
+
+/// Parse the same contract for caller-provided bytes and local files.
+pub fn parse_manifest(contents: &[u8]) -> ManifestLoadResult<AnalyticsManifest> {
+    let value = serde_json::from_slice::<serde_json::Value>(contents).map_err(|source| {
         ManifestLoadError::with_source(
             ManifestLoadErrorKind::Json,
-            ManifestLoadErrorDebug::Path(path.display().to_string()),
+            ManifestLoadErrorDebug::None,
             source,
         )
     })?;

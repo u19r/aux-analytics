@@ -14,6 +14,8 @@ pub enum AnalyticsLambdaError {
     EngineAccess(#[from] analytics_api::AnalyticsEngineAccessError),
     #[error("config error: {0}")]
     Config(#[from] config::ConfigError),
+    #[error("analytics registration startup error: {0}")]
+    RuntimeRegistration(#[from] analytics_api::ApiError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]

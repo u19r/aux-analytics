@@ -12,6 +12,7 @@ pub mod retention;
 mod router;
 mod run;
 mod runtime_config;
+mod runtime_registration;
 mod server;
 mod source_polling;
 
@@ -40,6 +41,8 @@ mod router_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]
+mod runtime_registration_tests;
+#[cfg(test)]
 mod server_tests;
 #[cfg(test)]
 mod source_health_performance_tests;
@@ -59,6 +62,7 @@ pub use router::{
     server_router_with_config, server_router_with_metrics,
 };
 pub use run::run;
+pub use runtime_registration::prepare_runtime_registration;
 
 #[cfg(feature = "bdd-test-support")]
 #[doc(hidden)]

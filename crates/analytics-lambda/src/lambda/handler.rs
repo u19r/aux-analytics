@@ -11,7 +11,9 @@ pub struct AnalyticsLambdaHandler {
 
 impl AnalyticsLambdaHandler {
     pub async fn from_env() -> Result<Self, AnalyticsLambdaError> {
-        let resolved = resolve_config(ConfigRequest::lambda(LambdaEnvironment::from_process()))?;
+        let request = ConfigRequest::lambda(LambdaEnvironment::from_process());
+        let request = analytics_api::prepare_runtime_registration(request).await?;
+        let resolved = resolve_config(request)?;
         let backend = resolved.require_storage_backend()?.clone();
         let ingest_enabled = resolved.routes.ingest_enabled;
         let root = resolved.root;
