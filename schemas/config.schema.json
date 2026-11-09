@@ -461,6 +461,13 @@
             "null"
           ]
         },
+        "internal_service_token_file": {
+          "description": "File holding the shared secret sent as `x-aux-internal-token` to\n`aux_storage` stream endpoints that restrict callers to internal\nservices.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "max_batch_bytes": {
           "description": "Serialized routed-record byte budget for one durable batch. Destination\nrow expansion and catalog metadata can require additional bytes.",
           "type": "integer",

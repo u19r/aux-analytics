@@ -27,7 +27,10 @@ impl AuxStorageGlobalPoller {
         let endpoint_url = source.endpoint_url.as_deref().ok_or_else(|| {
             AnalyticsStorageError::new(AnalyticsStorageErrorKind::MissingAuxStorageEndpoint)
         })?;
-        let client = AuxStorageStreamClient::try_new(endpoint_url, config.request_timeout)?;
+        let mut client = AuxStorageStreamClient::try_new(endpoint_url, config.request_timeout)?;
+        if let Some(path) = source.internal_service_token_file.as_deref() {
+            client = client.with_service_token(&load_service_token(path)?)?;
+        }
         let routes = CompiledSourceRoutes::from_plans(plans)?;
         if routes.max_fanout() > crate::constants::MAX_SOURCE_BATCH_RECORDS {
             return Err(AnalyticsStorageError::new(
@@ -141,4 +144,20 @@ impl AwsStreamRegistration {
             serialization_buffer: Vec::new(),
         })
     }
+}
+
+fn load_service_token(path: &std::path::Path) -> AnalyticsStorageResult<String> {
+    let token = std::fs::read_to_string(path).map_err(|source| {
+        AnalyticsStorageError::with_source(
+            AnalyticsStorageErrorKind::InvalidServiceTokenFile,
+            source,
+        )
+    })?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(AnalyticsStorageError::new(
+            AnalyticsStorageErrorKind::InvalidServiceTokenFile,
+        ));
+    }
+    Ok(token.to_owned())
 }

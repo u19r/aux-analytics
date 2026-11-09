@@ -25,6 +25,12 @@ pub struct AnalyticsSourceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
     pub credentials: Option<RemoteCredentialsConfig>,
+    /// File holding the shared secret sent as `x-aux-internal-token` to
+    /// `aux_storage` stream endpoints that restrict callers to internal
+    /// services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub internal_service_token_file: Option<std::path::PathBuf>,
     #[serde(default = "default_poll_interval_ms")]
     #[schemars(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
@@ -77,6 +83,7 @@ impl Default for AnalyticsSourceConfig {
             endpoint_url: None,
             region: None,
             credentials: None,
+            internal_service_token_file: None,
             poll_interval_ms: default_poll_interval_ms(),
             poll_request_timeout_ms: default_poll_request_timeout_ms(),
             poll_max_shards: default_poll_max_shards(),

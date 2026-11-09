@@ -58,6 +58,7 @@ Registration references and documents are runtime configuration and are excluded
 | `analytics.source.endpoint_url` | none | Source endpoint override for supported AWS-compatible standard stream polling. |
 | `analytics.source.region` | AWS SDK default | Region for standard stream polling. |
 | `analytics.source.credentials` | AWS SDK default | Credential chain for source polling. Uses the same shape as aux-storage remote credentials. |
+| `analytics.source.internal_service_token_file` | unset | File holding the shared secret sent as `x-aux-internal-token` to `aux_storage` endpoints that admit only internal services. Set it when a trusted proxy shares the analytics service's address. |
 | `analytics.source.poll_interval_ms` | `100` | Poll loop interval. The poller should keep issuing background requests inside the interval budget. |
 | `analytics.source.poll_request_timeout_ms` | `5000` | Per-request timeout for source polling. |
 | `analytics.source.poll_max_shards` | `16` | Maximum shards or stream partitions polled concurrently. |

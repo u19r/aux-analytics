@@ -32,7 +32,7 @@ impl AnalyticsStorageError {
         }
     }
 
-    fn with_source(
+    pub(crate) fn with_source(
         kind: AnalyticsStorageErrorKind,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
@@ -102,6 +102,8 @@ pub(crate) enum AnalyticsStorageErrorKind {
     InvalidUrl,
     #[error("invalid analytics source header")]
     InvalidHeader,
+    #[error("analytics source internal service token file is unreadable or invalid")]
+    InvalidServiceTokenFile,
     #[error("analytics source http request failed")]
     Http,
     #[error("analytics source http request returned an error status")]
@@ -150,6 +152,7 @@ impl AnalyticsStorageErrorKind {
             Self::MissingAuxStorageEndpoint => "missing_aux_storage_endpoint",
             Self::InvalidUrl => "invalid_url",
             Self::InvalidHeader => "invalid_header",
+            Self::InvalidServiceTokenFile => "invalid_service_token_file",
             Self::Http => "http",
             Self::HttpStatus => "http_status",
             Self::Json => "json",

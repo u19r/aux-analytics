@@ -33,6 +33,12 @@ impl AuxStorageStreamClient {
         })
     }
 
+    pub(crate) fn with_service_token(self, token: &str) -> AnalyticsStorageResult<Self> {
+        Ok(Self {
+            client: self.client.with_service_token(token)?,
+        })
+    }
+
     pub(crate) async fn describe_system_stream(
         &self,
     ) -> AnalyticsStorageResult<DescribeSystemStreamResponse> {

@@ -11,6 +11,8 @@ use crate::error::{
     AnalyticsStorageResult,
 };
 
+const INTERNAL_SERVICE_TOKEN_HEADER: &str = "x-aux-internal-token";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponseBodyPolicy {
     Bounded,
@@ -33,6 +35,7 @@ pub(crate) struct AuxStorageHttpClient {
     client: HttpClient,
     base_url: Url,
     body_policy: ResponseBodyPolicy,
+    service_token: Option<HeaderValue>,
 }
 
 impl AuxStorageHttpClient {
@@ -52,7 +55,16 @@ impl AuxStorageHttpClient {
                 .build()?,
             base_url,
             body_policy,
+            service_token: None,
         })
+    }
+
+    /// Sends the shared internal-service secret with every request.
+    pub(crate) fn with_service_token(mut self, token: &str) -> AnalyticsStorageResult<Self> {
+        let mut value = HeaderValue::from_str(token)?;
+        value.set_sensitive(true);
+        self.service_token = Some(value);
+        Ok(self)
     }
 
     pub(crate) async fn send_action<TRequest, TResponse>(
@@ -67,7 +79,7 @@ impl AuxStorageHttpClient {
         let response = self
             .client
             .post(self.base_url.clone())
-            .headers(Self::build_action_headers(action)?)
+            .headers(self.build_action_headers(action)?)
             .json(request)
             .send()
             .await?;
@@ -88,8 +100,11 @@ impl AuxStorageHttpClient {
         }
         Ok(serde_json::from_slice(&body)?)
     }
-    fn build_action_headers(action: &str) -> AnalyticsStorageResult<HeaderMap> {
+    fn build_action_headers(&self, action: &str) -> AnalyticsStorageResult<HeaderMap> {
         let mut headers = HeaderMap::new();
+        if let Some(token) = &self.service_token {
+            headers.insert(INTERNAL_SERVICE_TOKEN_HEADER, token.clone());
+        }
         headers.insert(
             CONTENT_TYPE,
             HeaderValue::from_static("application/x-amz-json-1.0"),

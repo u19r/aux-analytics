@@ -83,6 +83,44 @@ async fn given_system_stream_scope_and_checkpoint_when_polling_then_typed_reques
 }
 
 #[tokio::test]
+async fn given_service_token_when_describing_system_stream_then_request_carries_token_header() {
+    let (base_url, requests) = serve_responses(vec![(
+        200,
+        r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
+    )])
+    .await;
+    let client = AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1))
+        .expect("client")
+        .with_service_token("local-service-token")
+        .expect("token");
+
+    client.describe_system_stream().await.expect("scope");
+
+    let requests = requests.lock().expect("requests");
+    assert!(
+        requests[0]
+            .headers
+            .contains("x-aux-internal-token: local-service-token")
+    );
+}
+
+#[tokio::test]
+async fn given_no_service_token_when_describing_system_stream_then_request_has_no_token_header() {
+    let (base_url, requests) = serve_responses(vec![(
+        200,
+        r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#,
+    )])
+    .await;
+    let client =
+        AuxStorageStreamClient::try_new(&base_url, Duration::from_secs(1)).expect("client");
+
+    client.describe_system_stream().await.expect("scope");
+
+    let requests = requests.lock().expect("requests");
+    assert!(!requests[0].headers.contains("x-aux-internal-token"));
+}
+
+#[tokio::test]
 async fn given_system_stream_response_with_legacy_cursor_when_decoded_then_it_fails_closed() {
     let (base_url, _requests) = serve_responses(vec![
         (
