@@ -4,9 +4,7 @@ use analytics_contract::PrivacyPolicy;
 
 use crate::{cli::ApiCli, constants::PRIVACY_POLICY_LOAD_FAILURES_METRIC, error::ApiResult};
 
-pub(crate) fn build_serve_request(
-    args: &ApiCli,
-) -> config::ConfigRequest {
+pub(crate) fn build_serve_request(args: &ApiCli) -> config::ConfigRequest {
     let mut overrides = Vec::new();
     if let Some(port) = args.port.as_ref() {
         overrides.push(format!("http.bind_addr=0.0.0.0:{port}"));

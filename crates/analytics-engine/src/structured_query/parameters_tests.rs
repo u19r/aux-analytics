@@ -55,3 +55,38 @@ fn count_query() -> StructuredQuery {
         offset: None,
     }
 }
+
+#[test]
+fn given_equal_parameter_values_when_fingerprinted_then_hashes_match() {
+    let first = duckdb::types::Value::List(vec![
+        duckdb::types::Value::Text("a".to_string()),
+        duckdb::types::Value::BigInt(7),
+    ]);
+    let second = first.clone();
+    assert_eq!(
+        parameter_fingerprint(&first),
+        parameter_fingerprint(&second)
+    );
+    assert_eq!(
+        parameter_fingerprint(&duckdb::types::Value::Double(0.0)),
+        parameter_fingerprint(&duckdb::types::Value::Double(-0.0))
+    );
+}
+
+#[test]
+fn given_different_types_with_same_text_when_fingerprinted_then_hashes_differ() {
+    use duckdb::types::Value;
+
+    let all = [
+        parameter_fingerprint(&Value::Text("1".to_string())),
+        parameter_fingerprint(&Value::Blob(b"1".to_vec())),
+        parameter_fingerprint(&Value::Enum("1".to_string())),
+        parameter_fingerprint(&Value::BigInt(1)),
+        parameter_fingerprint(&Value::UBigInt(1)),
+    ];
+    for (index, left) in all.iter().enumerate() {
+        for right in &all[index + 1..] {
+            assert_ne!(left, right);
+        }
+    }
+}

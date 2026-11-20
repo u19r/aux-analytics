@@ -64,11 +64,11 @@ fn given_system_scope_when_batch_identity_is_derived_then_v3_id_matches() {
         source_scope: SystemStreamScope::try_new("system-events", 7).expect("valid system scope"),
         previous_checkpoint: super::SystemStreamCheckpointPredecessor::Token {
             checkpoint: SystemStreamCheckpointToken::try_from(
-                "v1.0123456789abcdef0123456789abcdef",
+                "v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA",
             )
             .expect("valid previous checkpoint"),
         },
-        checkpoint: SystemStreamCheckpointToken::try_from("v1.abcdef0123456789abcdef0123456789")
+        checkpoint: SystemStreamCheckpointToken::try_from("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgYWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODkAAAAAAAAGpA")
             .expect("valid checkpoint"),
     };
     let manifest_digest = [0x2a; analytics_engine::MANIFEST_DIGEST_BYTES];

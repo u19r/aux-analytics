@@ -109,7 +109,8 @@ impl AuxStoragePolicyClient {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct GetItemRequest<'a> {
     pub(super) table_name: &'a str,
@@ -122,14 +123,16 @@ pub(super) struct GetItemRequest<'a> {
     pub(super) expression_attribute_names: Option<&'a VecMap<String, String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct GetItemResponse {
     #[serde(default)]
     pub(super) item: Option<AttributeMap>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct QueryRequest<'a> {
     pub(super) table_name: &'a str,
@@ -146,7 +149,8 @@ pub(super) struct QueryRequest<'a> {
     pub(super) limit: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename_all = "PascalCase")]
 pub(super) struct QueryResponse {
     #[serde(default)]
@@ -349,7 +353,7 @@ fn attribute_value_to_aws(value: AttributeValue) -> DynamoDbAttributeValue {
         AttributeValue::M(values) => DynamoDbAttributeValue::M(
             values
                 .into_iter()
-                .map(|(key, value)| (key, attribute_value_to_aws(value)))
+                .map(|entry| (entry.name, attribute_value_to_aws(entry.value)))
                 .collect(),
         ),
     }

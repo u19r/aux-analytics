@@ -245,7 +245,7 @@ fn source_handler_system_batch() -> PollBatch {
                 .expect("source handler system scope is valid"),
             previous_checkpoint: None,
             checkpoint: SystemStreamCheckpointToken::try_from(
-                "v1.0123456789abcdef0123456789abcdef",
+                "v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA",
             )
             .expect("source handler system checkpoint is valid"),
         }),
@@ -1331,7 +1331,7 @@ async fn given_one_logical_event_with_two_policies_when_registered_job_applies_a
         .unwrap();
     assert_eq!(checkpoint.0.scope_id().as_str(), "aux-system");
     assert_eq!(checkpoint.0.generation(), 7);
-    assert_eq!(checkpoint.1.as_str(), "v1.0123456789abcdef0123456789abcdef");
+    assert_eq!(checkpoint.1.as_str(), "v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA");
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
@@ -1403,7 +1403,7 @@ async fn given_worker_with_older_local_frontier_when_it_applies_another_workers_
     let mut batch = source_handler_system_batch();
     let previous = batch.system_stream.as_ref().unwrap().checkpoint.clone();
     let next =
-        SystemStreamCheckpointToken::try_from("v1.22222222222222222222222222222222").unwrap();
+        SystemStreamCheckpointToken::try_from("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA").unwrap();
     batch.system_stream.as_mut().unwrap().previous_checkpoint = Some(previous);
     batch.system_stream.as_mut().unwrap().checkpoint = next.clone();
     batch.records[0].system_position =
@@ -1485,7 +1485,7 @@ async fn given_registered_source_handler_replay_when_executed_then_only_applied_
     let (scope, checkpoint) = checkpoint;
     assert_eq!(scope.scope_id().as_str(), "aux-system");
     assert_eq!(scope.generation(), 7);
-    assert_eq!(checkpoint.as_str(), "v1.0123456789abcdef0123456789abcdef");
+    assert_eq!(checkpoint.as_str(), "v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA");
 }
 
 #[tokio::test]
@@ -2633,7 +2633,7 @@ async fn serve_shutdown_source_endpoint() -> (
         let _ = release_poll_rx.await;
         write_source_response(
             &mut poll_socket,
-            r#"{"Records":[{"SourceTableName":"tenant_01","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"logical-shard","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.0123456789abcdef0123456789abcdef"}"#,
+            r#"{"Records":[{"SourceTableName":"tenant_01","Keys":{},"SequenceNumber":"seq-1","Item":null,"SystemPosition":{"ShardId":"logical-shard","LineageId":"lineage-a","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA"}"#,
         )
         .await;
     });

@@ -40,6 +40,7 @@ pub use query_execution::QueryCancellation;
 #[cfg(test)]
 mod query_tests;
 mod query_validation;
+mod recovery;
 mod repair;
 mod repair_contract;
 mod repair_receipts;

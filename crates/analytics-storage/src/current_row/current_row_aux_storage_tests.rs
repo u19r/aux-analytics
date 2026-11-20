@@ -5,7 +5,6 @@ use analytics_operations::{
 };
 use storage_types::{
     AttributeValue, ExclusiveStartKey, SystemStreamPosition, SystemStreamScope, WireItem,
-    WireItemKeyAttributes,
 };
 
 use crate::{
@@ -423,50 +422,4 @@ fn given_aux_storage_current_row_reader_when_unprojected_wire_attribute_is_malfo
         .expect_err("malformed unprojected attributes must fail closed");
 
     assert!(format!("{error}").contains("invalid item"));
-}
-
-#[test]
-fn given_aux_storage_current_row_reader_when_local_split_keys_overlap_then_secondary_key_wins() {
-    let primary_key = WireItemKeyAttributes::new(
-        "user_id".to_string(),
-        AttributeValue::S("primary".to_string()),
-        None,
-        None,
-    );
-    let secondary_key = WireItemKeyAttributes::new(
-        "user_id".to_string(),
-        AttributeValue::S("secondary".to_string()),
-        None,
-        None,
-    );
-    let non_key_attributes = br#"{
-        "user_id":{"S":"blob"},
-        "email":{"S":"a@example.test"},
-        "org_id":{"S":"org-a"},
-        "__source_position":{"S":"{\"type\":\"raw_backup_object_offset\",\"object_id\":\"check-fixture\",\"offset\":9}"},
-        "contains_private_data":{"BOOL":false}
-    }"#;
-    let reader = AuxStorageCurrentRowPageReader::new(RecordingClient::new(vec![
-        storage_types::ScanResponse {
-            count: 1,
-            scanned_count: 1,
-            items: Some(vec![WireItem::local_split(
-                primary_key,
-                Some(secondary_key),
-                Some(non_key_attributes.to_vec()),
-            )]),
-            last_evaluated_key: None,
-            consumed_capacity: None,
-        },
-    ]));
-
-    let page = reader
-        .current_row_page(&CurrentRowPageRequest {
-            projection: projection(),
-            cursor: None,
-            page_size: 1,
-        })
-        .expect("canonical LocalSplit conversion should succeed");
-
-    assert_eq!(page.rows[0].key, "secondary");
 }

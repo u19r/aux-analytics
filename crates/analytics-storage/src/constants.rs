@@ -49,7 +49,7 @@ pub(crate) const LOGICAL_KEY_REPETITIONS: usize = 32;
 
 // Aux storage client test fixtures and measurement bounds.
 #[cfg(test)]
-pub(crate) const CHECKPOINT: &str = "v1.0123456789abcdef0123456789abcdef";
+pub(crate) const CHECKPOINT: &str = "v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA";
 
 // Quint polling storage test fixtures and measurement bounds.
 #[cfg(test)]
@@ -60,17 +60,17 @@ pub(crate) const AUX_RESPONSE_WITHOUT_SCOPE: &str = r#"{"Records":[]}"#;
 pub(crate) const DESCRIBE: &str =
     r#"{"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7}}"#;
 #[cfg(test)]
-pub(crate) const JOB_PAGE: &str = r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"job-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"job-lineage","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.11111111111111111111111111111111"}"#;
+pub(crate) const JOB_PAGE: &str = r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"job-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"job-lineage","Offset":"1"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEAAAAAAAAGpA"}"#;
 #[cfg(test)]
-pub(crate) const SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"2"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.22222222222222222222222222222222"}"#;
+pub(crate) const SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-1","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"2"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"}"#;
 #[cfg(test)]
-pub(crate) const NEXT_SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-2","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"3"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.33333333333333333333333333333333"}"#;
+pub(crate) const NEXT_SELECTED_PAGE: &str = r#"{"Records":[{"SourceTableName":"source_users","Keys":{},"SequenceNumber":"user-2","Item":null,"SystemPosition":{"ShardId":"shard-a","LineageId":"user-lineage","Offset":"3"}}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA"}"#;
 #[cfg(test)]
-pub(crate) const EMPTY_SELECTED_PAGE: &str = r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.22222222222222222222222222222222"}"#;
+pub(crate) const EMPTY_SELECTED_PAGE: &str = r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"}"#;
 #[cfg(test)]
-pub(crate) const MALFORMED_JOB_PAGE: &str = r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"job-2","Item":null}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.33333333333333333333333333333333"}"#;
+pub(crate) const MALFORMED_JOB_PAGE: &str = r#"{"Records":[{"SourceTableName":"job","Keys":{},"SequenceNumber":"job-2","Item":null}],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA"}"#;
 #[cfg(test)]
-pub(crate) const EMPTY_PAGE: &str = r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.11111111111111111111111111111111"}"#;
+pub(crate) const EMPTY_PAGE: &str = r#"{"Records":[],"SourceScope":{"Version":1,"ScopeId":"aux-system","Generation":7},"Checkpoint":"v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEAAAAAAAAGpA"}"#;
 
 // Retention performance test fixtures and measurement bounds.
 #[cfg(test)]

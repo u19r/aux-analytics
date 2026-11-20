@@ -15,7 +15,7 @@ fn given_snapshot_and_delete_marker_when_converted_then_keys_and_snapshot_values
         sequence_number: "1".to_string(),
         item: Some(storage_types::AttributeMap::from_iter([(
             "profile".to_string(),
-            storage_types::AttributeValue::M(std::collections::HashMap::from([(
+            storage_types::AttributeValue::M(storage_types::AttributeMap::from_distinct([(
                 "email".to_string(),
                 storage_types::AttributeValue::S("a@example.com".to_string()),
             )])),

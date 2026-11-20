@@ -52,7 +52,7 @@ impl AnalyticsEngine {
         let mut statement = scan_connection.prepare(&sql)?;
         let mut scan = statement.stream_arrow([])?;
         let result = (|| {
-            while let Some(batch) = PrivacyRemediation::fetch_batch(&mut scan)? {
+            while let Some(batch) = scan.next().transpose()? {
                 remediation.apply_batch(self, &batch)?;
             }
             remediation.report.destination_mutated =
@@ -107,26 +107,6 @@ impl<'a, 'policy> PrivacyRemediation<'a, 'policy> {
                 destination_mutated: false,
                 policy_version: policy.version.clone(),
             },
-        })
-    }
-
-    fn fetch_batch(
-        scan: &mut duckdb::ArrowStream<'_>,
-    ) -> AnalyticsEngineResult<Option<RecordBatch>> {
-        // The dependency exposes late fetch failures as panics rather than a
-        // fallible iterator. Preserve their message as a maintenance scan
-        // error.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scan.next())).map_err(|error| {
-            let message = error
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| error.downcast_ref::<&str>().copied());
-            match message {
-                Some(message) => {
-                    AnalyticsEngineError::Io(std::io::Error::other(message.to_owned()))
-                }
-                None => std::panic::resume_unwind(error),
-            }
         })
     }
 

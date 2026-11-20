@@ -1,16 +1,17 @@
-use std::collections::HashMap;
-
 use analytics_contract::{StorageItem, StorageValue, TableRegistration};
 use lru_ttl_cache::CacheRead;
-use storage_condition::{Condition, evaluate_condition, parse_condition_expression_typed};
-use storage_types::{AttributeMap, AttributeValue, VecMap};
+use storage_types::{
+    AttributeMap, AttributeValue, VecMap,
+    condition::{Condition, evaluate_condition, parse_condition_expression_typed},
+};
 
 use crate::{
     cache::EngineCaches,
     engine::{AnalyticsEngineError, AnalyticsEngineResult},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct CachedCondition {
     signature: ConditionSignature,
     condition: Condition,
@@ -123,10 +124,7 @@ pub(crate) fn performance_cached_condition(
 
 fn collect_condition_root_names(condition: &Condition) -> Vec<String> {
     let mut names = Vec::new();
-    condition.visit_attribute_paths(&mut |path| {
-        let root = path.split(['.', '[']).next().unwrap_or(path);
-        names.push(root.to_string());
-    });
+    condition.visit_root_names(&mut |name| names.push(name.to_owned()));
     names.sort_unstable();
     names.dedup();
     names
@@ -155,18 +153,20 @@ pub(crate) fn performance_cached_condition_matches(
     cached.signature.matches(table)
 }
 
-#[cfg(test)]
 fn storage_item_to_attribute_values(item: &StorageItem) -> AttributeMap {
-    let mut values = AttributeMap::with_capacity(item.len() + 1);
-    for (name, value) in item {
-        values.insert(name.clone(), storage_value_to_attribute_value(value));
-    }
-    if !values.contains_key("entity_type")
-        && let Some(entity_type) = values.get("et").cloned()
-    {
-        values.insert("entity_type".to_string(), entity_type);
-    }
-    values
+    let attributes = item
+        .iter()
+        .map(|(name, value)| (name.clone(), storage_value_to_attribute_value(value)));
+    let entity_type_alias = item
+        .get("et")
+        .filter(|_| !item.contains_key("entity_type"))
+        .map(|value| {
+            (
+                "entity_type".to_owned(),
+                storage_value_to_attribute_value(value),
+            )
+        });
+    AttributeMap::from_distinct(attributes.chain(entity_type_alias))
 }
 
 #[cfg(test)]
@@ -179,23 +179,11 @@ pub(crate) fn performance_evaluate_cached_condition(
 }
 
 fn storage_values_to_attribute_map(values: &VecMap<String, StorageValue>) -> AttributeMap {
-    values
-        .iter()
-        .map(|(name, value)| (name.clone(), storage_value_to_attribute_value(value)))
-        .collect()
-}
-
-fn storage_item_to_attribute_hash_map(item: &StorageItem) -> HashMap<String, AttributeValue> {
-    let mut values = HashMap::with_capacity(item.len() + 1);
-    for (name, value) in item {
-        values.insert(name.clone(), storage_value_to_attribute_value(value));
-    }
-    if !values.contains_key("entity_type")
-        && let Some(entity_type) = values.get("et").cloned()
-    {
-        values.insert("entity_type".to_string(), entity_type);
-    }
-    values
+    AttributeMap::from_distinct(
+        values
+            .iter()
+            .map(|(name, value)| (name.clone(), storage_value_to_attribute_value(value))),
+    )
 }
 
 fn storage_value_to_attribute_value(value: &StorageValue) -> AttributeValue {
@@ -214,6 +202,6 @@ fn storage_value_to_attribute_value(value: &StorageValue) -> AttributeValue {
                 .map(storage_value_to_attribute_value)
                 .collect(),
         ),
-        StorageValue::M(values) => AttributeValue::M(storage_item_to_attribute_hash_map(values)),
+        StorageValue::M(values) => AttributeValue::M(storage_item_to_attribute_values(values)),
     }
 }

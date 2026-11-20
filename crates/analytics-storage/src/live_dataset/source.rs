@@ -16,7 +16,8 @@ pub struct ApplicationSource {
 }
 
 /// A complete indexed application record. Fields cannot replace protocol keys.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub struct ApplicationRecord {
     pub id: String,
     pub status: String,
@@ -25,7 +26,8 @@ pub struct ApplicationRecord {
 }
 
 /// Expected previous state makes retries and concurrent changes conditional.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub struct ApplicationMutation {
     pub previous: Option<ApplicationRecord>,
     pub next: Option<ApplicationRecord>,

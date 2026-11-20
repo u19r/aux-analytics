@@ -19,7 +19,7 @@ use analytics_operations::{
 };
 use storage_types::{
     AttributeMap, AttributeValue, ExclusiveStartKey, KeyAttributes, ScanResponse, StreamRecord,
-    SystemStreamPosition, TableName, WireItem, WireItemKeyAttributes,
+    SystemStreamPosition, TableName, WireItem,
 };
 
 use crate::{
@@ -797,8 +797,7 @@ fn stream_records() -> Vec<StreamRecord> {
 fn wire_items() -> Vec<WireItem> {
     stream_records()
         .into_iter()
-        .enumerate()
-        .map(|(index, record)| {
+        .map(|record| {
             let mut image = record.item.expect("snapshot");
             for index in 0..16 {
                 image.insert(
@@ -806,17 +805,7 @@ fn wire_items() -> Vec<WireItem> {
                     AttributeValue::S("y".repeat(300)),
                 );
             }
-            if index % 2 == 0 {
-                WireItem::try_from(image).expect("wire item")
-            } else {
-                let key = image.remove("id").expect("wire item key");
-                let blob = serde_json::to_vec(&image).expect("local split attributes");
-                WireItem::local_split(
-                    WireItemKeyAttributes::new("id".to_string(), key, None, None),
-                    None,
-                    Some(blob),
-                )
-            }
+            WireItem::try_from(image).expect("wire item")
         })
         .collect()
 }

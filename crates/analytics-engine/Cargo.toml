@@ -26,7 +26,6 @@ regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-storage-condition = { workspace = true }
 storage-types = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -40,6 +39,7 @@ anyhow = { workspace = true }
 bg-jobs = { workspace = true, features = ["test-support"] }
 quint-connect = { workspace = true }
 serde = { workspace = true }
+storage-types = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 
 [lints]

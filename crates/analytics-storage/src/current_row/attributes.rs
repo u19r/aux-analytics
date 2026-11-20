@@ -30,7 +30,8 @@ pub(super) fn storage_attribute_to_string(value: &AttributeValue) -> Result<Stri
         AttributeValue::NULL(true) => return Ok(String::new()),
         other => {
             return Err(CheckError::InvalidBackendConfiguration(format!(
-                "aux-storage current-row projected scalar cannot use attribute variant {other:?}"
+                "aux-storage current-row projected scalar cannot use attribute variant {}",
+                other.variant_name()
             )));
         }
     })
@@ -55,8 +56,8 @@ pub(super) fn bool_attribute(value: &AttributeValue) -> Result<bool, CheckError>
         AttributeValue::S(value) if value == "true" => Ok(true),
         AttributeValue::S(value) if value == "false" => Ok(false),
         other => Err(CheckError::InvalidBackendConfiguration(format!(
-            "aux-storage current-row private-data column must be BOOL or boolean string, got \
-             {other:?}"
+            "aux-storage current-row private-data column must be BOOL or boolean string, got {}",
+            other.variant_name()
         ))),
     }
 }
@@ -81,7 +82,8 @@ pub(super) fn dynamodb_attribute_to_string(
         DynamoDbAttributeValue::Null(true) => String::new(),
         other => {
             return Err(CheckError::InvalidBackendConfiguration(format!(
-                "DynamoDB current-row projected scalar cannot use attribute variant {other:?}"
+                "DynamoDB current-row projected scalar cannot use attribute variant {}",
+                dynamodb_attribute_type_name(other)
             )));
         }
     })
@@ -93,8 +95,24 @@ pub(super) fn dynamodb_bool_attribute(value: &DynamoDbAttributeValue) -> Result<
         DynamoDbAttributeValue::S(value) if value == "true" => Ok(true),
         DynamoDbAttributeValue::S(value) if value == "false" => Ok(false),
         other => Err(CheckError::InvalidBackendConfiguration(format!(
-            "DynamoDB current-row private-data column must be BOOL or boolean string, got \
-             {other:?}"
+            "DynamoDB current-row private-data column must be BOOL or boolean string, got {}",
+            dynamodb_attribute_type_name(other)
         ))),
+    }
+}
+
+pub(super) fn dynamodb_attribute_type_name(value: &DynamoDbAttributeValue) -> &'static str {
+    match value {
+        DynamoDbAttributeValue::S(_) => "S",
+        DynamoDbAttributeValue::N(_) => "N",
+        DynamoDbAttributeValue::B(_) => "B",
+        DynamoDbAttributeValue::Ss(_) => "SS",
+        DynamoDbAttributeValue::Ns(_) => "NS",
+        DynamoDbAttributeValue::Bs(_) => "BS",
+        DynamoDbAttributeValue::Bool(_) => "BOOL",
+        DynamoDbAttributeValue::Null(_) => "NULL",
+        DynamoDbAttributeValue::L(_) => "L",
+        DynamoDbAttributeValue::M(_) => "M",
+        _ => "unknown",
     }
 }

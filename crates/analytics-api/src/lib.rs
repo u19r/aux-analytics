@@ -39,9 +39,9 @@ mod retention_tests;
 #[cfg(test)]
 mod router_tests;
 #[cfg(test)]
-mod runtime_tests;
-#[cfg(test)]
 mod runtime_registration_tests;
+#[cfg(test)]
+mod runtime_tests;
 #[cfg(test)]
 mod server_tests;
 #[cfg(test)]

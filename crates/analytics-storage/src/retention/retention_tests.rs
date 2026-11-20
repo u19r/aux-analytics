@@ -208,7 +208,7 @@ fn given_remote_key_and_expression_values_when_templated_then_dynamo_wire_shape_
         ),
         (
             ":nested".to_string(),
-            AttributeValue::M(HashMap::from([(
+            AttributeValue::M(storage_types::AttributeMap::from_distinct([(
                 "tenant".to_string(),
                 AttributeValue::S("${tenant_id}".to_string()),
             )])),

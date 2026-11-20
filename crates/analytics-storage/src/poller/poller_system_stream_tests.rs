@@ -34,7 +34,7 @@ async fn given_pending_effect_when_polled_then_read_waits_until_commit() {
     );
     assert_eq!(
         next_stream.checkpoint,
-        checkpoint("v1.33333333333333333333333333333333")
+        checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA")
     );
     assert_eq!(next.records.len(), 1);
 
@@ -47,7 +47,7 @@ async fn given_pending_effect_when_polled_then_read_waits_until_commit() {
 async fn given_committed_destination_frontier_when_pending_then_next_page_starts_at_commit() {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, SELECTED_PAGE, NEXT_SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial)).await;
 
     let first = poller.poll_once().await.expect("first page");
@@ -83,7 +83,7 @@ async fn given_committed_destination_frontier_when_pending_then_next_page_starts
 async fn given_rewound_destination_frontier_when_pending_then_first_page_is_replayed() {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, SELECTED_PAGE, SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
 
     let first = poller.poll_once().await.expect("first page");
@@ -116,7 +116,7 @@ async fn given_rewound_destination_frontier_when_pending_then_first_page_is_repl
     assert_eq!(replay.records.len(), 1);
     let captured = requests.lock().expect("requests");
     assert_eq!(captured.len(), 3);
-    assert!(captured[2].contains("v1.00000000000000000000000000000000"));
+    assert!(captured[2].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA"));
 }
 
 #[tokio::test]
@@ -124,7 +124,7 @@ async fn given_committed_destination_frontier_when_local_progress_reloads_then_p
  {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, SELECTED_PAGE, EMPTY_SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     let batch = poller.poll_once().await.expect("selected page");
     let stream = batch.system_stream.expect("system stream batch");
@@ -149,11 +149,11 @@ async fn given_committed_destination_frontier_when_local_progress_reloads_then_p
 #[tokio::test]
 async fn given_another_source_scope_when_local_progress_reloads_then_both_cursors_are_preserved() {
     let (url, requests) = serve_sequence_with_capture(vec![DESCRIBE, SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     let resume = SystemStreamResume::new(
         SystemStreamScope::try_new("another-system", 1).expect("scope"),
-        checkpoint("v1.22222222222222222222222222222222"),
+        checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"),
     );
     let error = poller
         .reload_system_resume(Some(resume))
@@ -179,7 +179,7 @@ async fn given_job_only_page_when_polled_then_no_job_effect_is_created_and_selec
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, JOB_PAGE, SELECTED_PAGE, EMPTY_SELECTED_PAGE])
             .await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
 
     let ignored = poller.poll_once().await.expect("job-only page");
@@ -196,7 +196,7 @@ async fn given_job_only_page_when_polled_then_no_job_effect_is_created_and_selec
     assert_eq!(stream.previous_checkpoint.as_ref(), Some(&initial));
     assert_eq!(
         stream.checkpoint,
-        checkpoint("v1.22222222222222222222222222222222")
+        checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA")
     );
     assert_eq!(selected.records.len(), 1);
 
@@ -211,15 +211,15 @@ async fn given_job_only_page_when_polled_then_no_job_effect_is_created_and_selec
     assert!(empty.system_stream.is_none());
     let requests = requests.lock().expect("requests");
     assert!(requests[1].contains(initial.as_str()));
-    assert!(requests[2].contains("v1.11111111111111111111111111111111"));
-    assert!(requests[3].contains("v1.22222222222222222222222222222222"));
+    assert!(requests[2].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEAAAAAAAAGpA"));
+    assert!(requests[3].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"));
 }
 
 #[tokio::test]
 async fn given_unrouted_transient_progress_when_restarted_then_scan_restarts_at_durable_frontier() {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, JOB_PAGE, DESCRIBE, SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut before = build_poller(&url, Some(initial.clone())).await;
     let ignored = before.poll_once().await.expect("unrouted page");
     assert!(ignored.system_stream.is_none());
@@ -255,7 +255,7 @@ async fn given_transient_scan_progress_when_checkpoints_reload_then_scan_resets_
  {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, JOB_PAGE, SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     assert!(
         poller
@@ -289,7 +289,7 @@ async fn given_transient_scan_progress_when_next_page_is_malformed_then_durable_
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, JOB_PAGE, MALFORMED_JOB_PAGE, SELECTED_PAGE])
             .await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     assert!(
         poller
@@ -312,8 +312,8 @@ async fn given_transient_scan_progress_when_next_page_is_malformed_then_durable_
         Some(initial)
     );
     let requests = requests.lock().expect("requests");
-    assert!(requests[2].contains("v1.11111111111111111111111111111111"));
-    assert!(requests[3].contains("v1.11111111111111111111111111111111"));
+    assert!(requests[2].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEAAAAAAAAGpA"));
+    assert!(requests[3].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTEAAAAAAAAGpA"));
 }
 
 async fn build_poller(url: &str, checkpoint: Option<SystemStreamCheckpointToken>) -> SourcePoller {
@@ -357,7 +357,7 @@ async fn given_uncommitted_page_when_limit_is_reduced_then_repoll_preserves_dura
         EMPTY_SELECTED_PAGE,
     ])
     .await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     let first = poller.poll_once().await.expect("first page");
     assert!(poller.reduce_page_limit().await.expect("reduce limit"));
@@ -387,7 +387,7 @@ async fn given_uncommitted_page_when_limit_is_reduced_then_repoll_preserves_dura
     assert!(captured[1].contains("\"Limit\":4096"));
     assert!(captured[2].contains("\"Limit\":2048"));
     assert!(captured[2].contains(initial.as_str()));
-    assert!(captured[3].contains("v1.22222222222222222222222222222222"));
+    assert!(captured[3].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"));
 }
 
 #[tokio::test]
@@ -458,7 +458,7 @@ async fn given_valid_page_then_malformed_page_when_batch_retries_then_no_records
         SELECTED_PAGE,
     ])
     .await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     poller.config.max_responses_per_interval = 2;
     assert!(poller.poll_once().await.is_err());
@@ -473,7 +473,7 @@ async fn given_valid_page_then_malformed_page_when_batch_retries_then_no_records
         Some(initial.clone())
     );
     let captured = requests.lock().unwrap();
-    assert!(captured[2].contains("v1.22222222222222222222222222222222"));
+    assert!(captured[2].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIAAAAAAAAGpA"));
     assert!(
         captured[3].contains(initial.as_str()),
         "rejected batch must restart before its first page"
@@ -485,7 +485,7 @@ async fn given_single_record_above_byte_budget_when_polled_then_error_is_explici
  {
     let (url, requests) =
         serve_sequence_with_capture(vec![DESCRIBE, SELECTED_PAGE, SELECTED_PAGE]).await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     let super::state::SourceTablePoller::AuxStorage(source) = &mut poller.tables[0] else {
         panic!("system source");
@@ -528,7 +528,7 @@ async fn given_two_routed_pages_when_batched_then_order_and_last_checkpoint_comm
     assert_eq!(batch.source_record_count, 2);
     assert_eq!(
         batch.system_stream.as_ref().unwrap().checkpoint,
-        checkpoint("v1.33333333333333333333333333333333")
+        checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA")
     );
     assert!(poller.system_stream_checkpoint().is_none());
     assert!(poller.poll_once().await.unwrap().records.is_empty());
@@ -536,11 +536,11 @@ async fn given_two_routed_pages_when_batched_then_order_and_last_checkpoint_comm
     poller.commit_batch(&batch);
     assert_eq!(
         poller.system_stream_checkpoint(),
-        Some(&checkpoint("v1.33333333333333333333333333333333"))
+        Some(&checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA"))
     );
     poller.config.max_responses_per_interval = 1;
     assert!(poller.poll_once().await.unwrap().records.is_empty());
-    assert!(requests.lock().unwrap()[3].contains("v1.33333333333333333333333333333333"));
+    assert!(requests.lock().unwrap()[3].contains("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMAAAAAAAAGpA"));
 }
 
 #[tokio::test]
@@ -555,7 +555,7 @@ async fn given_oversized_page_when_resized_then_replay_uses_original_cursor_and_
         SELECTED_PAGE.to_string(),
     ])
     .await;
-    let initial = checkpoint("v1.00000000000000000000000000000000");
+    let initial = checkpoint("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAAAAAAAAAGpA");
     let mut poller = build_poller(&url, Some(initial.clone())).await;
     let super::state::SourceTablePoller::AuxStorage(source) = &mut poller.tables[0] else {
         panic!("system source");

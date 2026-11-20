@@ -2,24 +2,165 @@ use super::*;
 
 pub(crate) fn parameter_fingerprint(value: &duckdb::types::Value) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::mem::discriminant(value).hash(&mut hasher);
+    hash_parameter_value(value, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_parameter_value(value: &duckdb::types::Value, hasher: &mut impl Hasher) {
+    use duckdb::types::Value;
+
     match value {
-        duckdb::types::Value::Null => {}
-        duckdb::types::Value::Boolean(value) => value.hash(&mut hasher),
-        duckdb::types::Value::BigInt(value) => value.hash(&mut hasher),
-        duckdb::types::Value::UBigInt(value) => value.hash(&mut hasher),
-        duckdb::types::Value::Double(value) => {
+        Value::Null => hasher.write_u8(0),
+        Value::Boolean(value) => {
+            hasher.write_u8(1);
+            hasher.write_u8(u8::from(*value));
+        }
+        Value::TinyInt(value) => {
+            hasher.write_u8(2);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::SmallInt(value) => {
+            hasher.write_u8(3);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::Int(value) => {
+            hasher.write_u8(4);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::BigInt(value) => {
+            hasher.write_u8(5);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::HugeInt(value) => {
+            hasher.write_u8(6);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::UHugeInt(value) => {
+            hasher.write_u8(7);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::UTinyInt(value) => {
+            hasher.write_u8(8);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::USmallInt(value) => {
+            hasher.write_u8(9);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::UInt(value) => {
+            hasher.write_u8(10);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::UBigInt(value) => {
+            hasher.write_u8(11);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::Float(value) => {
+            hasher.write_u8(12);
+            let bits = if *value == 0.0 {
+                0.0_f32.to_bits()
+            } else {
+                value.to_bits()
+            };
+            hasher.write(&bits.to_le_bytes());
+        }
+        Value::Double(value) => {
+            hasher.write_u8(13);
             let bits = if *value == 0.0 {
                 0.0_f64.to_bits()
             } else {
                 value.to_bits()
             };
-            bits.hash(&mut hasher);
+            hasher.write(&bits.to_le_bytes());
         }
-        duckdb::types::Value::Text(value) => value.hash(&mut hasher),
-        other => format!("{other:?}").hash(&mut hasher),
+        Value::Decimal(value) => {
+            hasher.write_u8(14);
+            value.hash(hasher);
+        }
+        Value::Timestamp(unit, value) => {
+            hasher.write_u8(15);
+            unit.hash(hasher);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::Text(value) => {
+            hasher.write_u8(16);
+            hash_length_prefixed(value.as_bytes(), hasher);
+        }
+        Value::Blob(value) => {
+            hasher.write_u8(17);
+            hash_length_prefixed(value, hasher);
+        }
+        Value::Geometry(value) => {
+            hasher.write_u8(18);
+            hash_length_prefixed(value, hasher);
+        }
+        Value::Date32(value) => {
+            hasher.write_u8(19);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::Time64(unit, value) => {
+            hasher.write_u8(20);
+            unit.hash(hasher);
+            hasher.write(&value.to_le_bytes());
+        }
+        Value::Interval {
+            months,
+            days,
+            nanos,
+        } => {
+            hasher.write_u8(21);
+            hasher.write(&months.to_le_bytes());
+            hasher.write(&days.to_le_bytes());
+            hasher.write(&nanos.to_le_bytes());
+        }
+        Value::List(values) => {
+            hasher.write_u8(22);
+            hash_value_sequence(values, hasher);
+        }
+        Value::Enum(value) => {
+            hasher.write_u8(23);
+            hash_length_prefixed(value.as_bytes(), hasher);
+        }
+        Value::Struct(fields) => {
+            hasher.write_u8(24);
+            hasher.write(&fields.iter().count().to_le_bytes());
+            for (name, field) in fields.iter() {
+                hash_length_prefixed(name.as_bytes(), hasher);
+                hash_parameter_value(field, hasher);
+            }
+        }
+        Value::Array(values) => {
+            hasher.write_u8(25);
+            hash_value_sequence(values, hasher);
+        }
+        Value::Map(entries) => {
+            hasher.write_u8(26);
+            hasher.write(&entries.iter().count().to_le_bytes());
+            for (key, entry) in entries.iter() {
+                hash_parameter_value(key, hasher);
+                hash_parameter_value(entry, hasher);
+            }
+        }
+        Value::Union(inner) => {
+            hasher.write_u8(27);
+            hash_parameter_value(inner, hasher);
+        }
+        // `Value` is non-exhaustive; a collision is safe because equality
+        // controls reuse.
+        _ => hasher.write_u8(u8::MAX),
     }
-    hasher.finish()
+}
+
+fn hash_length_prefixed(bytes: &[u8], hasher: &mut impl Hasher) {
+    hasher.write(&bytes.len().to_le_bytes());
+    hasher.write(bytes);
+}
+
+fn hash_value_sequence(values: &[duckdb::types::Value], hasher: &mut impl Hasher) {
+    hasher.write(&values.len().to_le_bytes());
+    for value in values {
+        hash_parameter_value(value, hasher);
+    }
 }
 
 pub(crate) fn prepared_metadata(

@@ -525,7 +525,7 @@ fn representative_attributes() -> KeyAttributes {
         ),
         (
             "metadata".to_string(),
-            AttributeValue::M(HashMap::from([
+            AttributeValue::M(storage_types::AttributeMap::from_distinct([
                 (
                     "tenant".to_string(),
                     AttributeValue::S("${tenant_id}".to_string()),

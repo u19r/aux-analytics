@@ -57,6 +57,20 @@ impl<'a> EngineTransaction<'a> {
             .apply_registered_stream_record(table, request, &mut self.row_writes)
     }
 
+    pub(super) fn stage_inspection_row(
+        &mut self,
+        table: &analytics_contract::TableRegistration,
+        row: crate::row::batch::BatchRow,
+    ) -> AnalyticsEngineResult<()> {
+        self.row_writes.apply_upsert(
+            table,
+            row,
+            crate::batch_writer::BatchUpsertOutcome::Inserted,
+            None,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn commit(mut self) -> AnalyticsEngineResult<()> {
         self.row_writes.flush()?;
         self.engine.conn.execute_batch("COMMIT")?;

@@ -112,11 +112,19 @@ impl ConfigRequest {
     /// A deployment-selected document takes precedence over file defaults.
     /// An explicit file argument remains a conflicting operator selection.
     pub fn with_manifest_json(mut self, bytes: &[u8]) -> Result<Self, ConfigError> {
-        if self.manifest_argument.is_some() || self.lambda_environment.as_ref()
-            .and_then(|environment| environment.get(ENV_MANIFEST_PATH)).is_some() {
-            return Err(ConfigError::argument("a registration reference conflicts with an explicit manifest file"));
+        if self.manifest_argument.is_some()
+            || self
+                .lambda_environment
+                .as_ref()
+                .and_then(|environment| environment.get(ENV_MANIFEST_PATH))
+                .is_some()
+        {
+            return Err(ConfigError::argument(
+                "a registration reference conflicts with an explicit manifest file",
+            ));
         }
-        self.manifest_document = Some(analytics_contract::parse_manifest(bytes).map_err(ConfigError::manifest)?);
+        self.manifest_document =
+            Some(analytics_contract::parse_manifest(bytes).map_err(ConfigError::manifest)?);
         Ok(self)
     }
 }
@@ -205,13 +213,19 @@ impl ResolvedConfig {
 pub fn resolve_config(request: ConfigRequest) -> Result<ResolvedConfig, ConfigError> {
     let (manifest_argument, backend_override, root) = load_request_root(&request)?;
     let manifest = if let Some(value) = request.manifest_document {
-        ResolvedManifest { source: ManifestSource::ExplicitArgument, path: None, value }
-    } else { resolve_manifest(
-        request.caller,
-        manifest_argument.as_deref(),
-        &root,
-        request.manifest_required,
-    )? };
+        ResolvedManifest {
+            source: ManifestSource::ExplicitArgument,
+            path: None,
+            value,
+        }
+    } else {
+        resolve_manifest(
+            request.caller,
+            manifest_argument.as_deref(),
+            &root,
+            request.manifest_required,
+        )?
+    };
     validate_source_config(&root.analytics.source)?;
     validate_retention_config(&root.analytics.retention)?;
     validate_operations_config(&root.analytics.operations)?;

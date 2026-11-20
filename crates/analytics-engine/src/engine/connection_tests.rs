@@ -115,16 +115,22 @@ fn given_bucketless_static_environment_and_expiring_configuration_when_native_co
                 command.env_remove(name);
             }
         }
+        // The credentials chain stops on a configured profile failure. Hide
+        // the host profile files from the child while retaining DuckDB's
+        // extensions.
+        if std::env::var_os("DUCKDB_EXTENSION_DIRECTORY").is_none()
+            && let Some(home_directory) = std::env::var_os("HOME")
+        {
+            command.env(
+                "DUCKDB_EXTENSION_DIRECTORY",
+                std::path::Path::new(&home_directory).join(".duckdb/extensions"),
+            );
+        }
         command
+            .env_remove("HOME")
             .env("ANALYTICS_CONNECTION_CREDENTIAL_MODE", mode)
             .env("AWS_CONTAINER_CREDENTIALS_FULL_URI", endpoint)
-            .env("AWS_EC2_METADATA_DISABLED", "true")
-            .env("AWS_CONFIG_FILE", "/dev/null")
-            .env("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
-            .env(
-                "AWS_PROFILE",
-                "analytics-nonexistent-credential-test-profile",
-            );
+            .env("AWS_EC2_METADATA_DISABLED", "true");
         if mode != "refresh" {
             command.env("AWS_ACCESS_KEY_ID", "environment-key");
         }

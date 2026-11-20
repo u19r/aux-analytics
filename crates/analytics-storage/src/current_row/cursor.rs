@@ -49,7 +49,8 @@ fn dynamodb_cursor_value(
         DynamoDbAttributeValue::B(value) => CursorAttributeValue::B(value.as_ref().to_vec()),
         other => {
             return Err(CheckError::InvalidBackendConfiguration(format!(
-                "DynamoDB current-row cursor cannot encode attribute variant {other:?}"
+                "DynamoDB current-row cursor cannot encode attribute variant {}",
+                super::attributes::dynamodb_attribute_type_name(other)
             )));
         }
     })

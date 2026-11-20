@@ -50,6 +50,6 @@ fn convert_wire_value(value: AttributeValue) -> StorageValue {
                 .map(convert_wire_value)
                 .collect::<Vec<_>>(),
         ),
-        AttributeValue::M(values) => StorageValue::M(convert_wire_attributes(values)),
+        AttributeValue::M(values) => StorageValue::M(convert_attribute_map(values)),
     }
 }

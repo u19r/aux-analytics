@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::{
     cli::{ApiCli, BackendArgs},
-    runtime_config::{load_privacy_policy, build_serve_request},
+    runtime_config::{build_serve_request, load_privacy_policy},
     server::{
         AppStateStartupInput, CorsOrigins, FilterSource, ProcessDuty, cors_origins,
         metrics_endpoint_config, parse_shutdown_grace_period, resolve_filter,
@@ -152,7 +152,8 @@ fn given_over_bound_retention_batch_when_api_runtime_config_resolves_then_startu
         ],
     };
 
-    let error = config::resolve_config(build_serve_request(&args)).expect_err("over-bound batch should fail startup");
+    let error = config::resolve_config(build_serve_request(&args))
+        .expect_err("over-bound batch should fail startup");
 
     assert_eq!(
         error.kind(),

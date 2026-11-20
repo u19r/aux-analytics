@@ -8,7 +8,10 @@ use analytics_contract::{
 use analytics_fixtures::{user_item, users_manifest};
 use config::{CatalogType, StorageBackend};
 use duckdb::types::Value;
-use storage_types::{SystemStreamCheckpointToken, SystemStreamPosition, SystemStreamScope, VecMap};
+use storage_types::{
+    SystemStreamCheckpoint, SystemStreamCheckpointToken, SystemStreamPosition, SystemStreamScope,
+    TimestampMillis, VecMap,
+};
 
 use super::{
     AnalyticsEngine, AnalyticsEngineError, AnalyticsEngineResult, RecordCheckpoint,
@@ -2953,8 +2956,17 @@ fn system_scope(generation: u64) -> SystemStreamScope {
 }
 
 fn system_checkpoint(nibble: char) -> SystemStreamCheckpointToken {
-    let encoded = format!("{:02x}", u32::from(nibble));
-    SystemStreamCheckpointToken::try_from(format!("v1.{}", encoded.repeat(16)))
+    let offset = format!("{:020}", u32::from(nibble));
+    let checkpoint = SystemStreamCheckpoint::try_new(
+        system_scope(1),
+        vec![system_position(
+            "checkpoint-shard",
+            "checkpoint-lineage",
+            &offset,
+        )],
+    )
+    .expect("valid system checkpoint frontier");
+    SystemStreamCheckpointToken::encode(&checkpoint, TimestampMillis::from_timestamp(1_700))
         .expect("valid system checkpoint")
 }
 

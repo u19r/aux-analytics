@@ -17,7 +17,7 @@ pub struct RetentionPolicyLookup {
 
 #[derive(Debug)]
 enum RetentionPolicyClient {
-    AuxStorage(remote::AuxStoragePolicyClient),
+    AuxStorage(Box<remote::AuxStoragePolicyClient>),
     DynamoDb(aws::DynamoDbPolicyClient),
 }
 
@@ -30,10 +30,9 @@ impl RetentionPolicyLookup {
                         AnalyticsStorageErrorKind::MissingRetentionPolicyEndpoint,
                     )
                 })?;
-                RetentionPolicyClient::AuxStorage(remote::AuxStoragePolicyClient::try_new(
-                    endpoint,
-                    RETENTION_REQUEST_TIMEOUT,
-                )?)
+                RetentionPolicyClient::AuxStorage(Box::new(
+                    remote::AuxStoragePolicyClient::try_new(endpoint, RETENTION_REQUEST_TIMEOUT)?,
+                ))
             }
             TenantRetentionPolicySource::DynamoDb => RetentionPolicyClient::DynamoDb(
                 aws::DynamoDbPolicyClient::from_policy(policy).await,

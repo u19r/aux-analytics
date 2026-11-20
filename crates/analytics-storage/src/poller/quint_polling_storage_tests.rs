@@ -320,7 +320,7 @@ fn observe_aws_batch(
 }
 
 fn check_aux_scope_rejected(driver: &mut StoragePollingDriver) -> Result<()> {
-    let prior_checkpoint = Some("v1.0123456789abcdef0123456789abcdef".to_string());
+    let prior_checkpoint = Some("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA".to_string());
     let retained_checkpoint =
         poll_aux_storage_rejection(prior_checkpoint.clone(), AUX_RESPONSE_WITHOUT_SCOPE)?;
     if retained_checkpoint != prior_checkpoint {
@@ -418,7 +418,7 @@ fn test_routes() -> Result<CompiledSourceRoutes> {
 
 #[test]
 fn given_system_response_without_scope_when_polled_then_error_preserves_checkpoint() -> Result<()> {
-    let checkpoint = Some("v1.0123456789abcdef0123456789abcdef".to_string());
+    let checkpoint = Some("v1.AQAKYXV4LXN5c3RlbQAAAAAAAAAHAAEAB3NoYXJkLWEACWxpbmVhZ2UtYQAgMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYAAAAAAAAGpA".to_string());
     let retained_checkpoint =
         poll_aux_storage_rejection(checkpoint.clone(), AUX_RESPONSE_WITHOUT_SCOPE)?;
     assert_eq!(retained_checkpoint, checkpoint);

@@ -36,6 +36,8 @@ pub enum AnalyticsEngineError {
     UnsupportedRepairReceiptExpansion(String),
     #[error("stream record was skipped for repair of analytics table {0}")]
     RepairRecordSkipped(String),
+    #[error("inspection recovery page did not match its projected destination rows")]
+    RecoveryPageMismatch,
     #[error("repair receipt {0} is ambiguous because multiple rows share its key")]
     AmbiguousRepairReceipt(String),
     #[error("repair receipt {0} could not be consumed uniquely")]

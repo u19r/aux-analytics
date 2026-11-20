@@ -105,7 +105,26 @@ pub enum TenantRetentionPolicyRequest {
     QueryTable(TenantRetentionQueryTableRequest),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+impl std::fmt::Debug for TenantRetentionGetItemRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TenantRetentionGetItemRequest")
+            .field("table_name", &self.table_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for TenantRetentionQueryTableRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TenantRetentionQueryTableRequest")
+            .field("table_name", &self.table_name)
+            .field("index_name", &self.index_name)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TenantRetentionGetItemRequest {
     pub table_name: String,
@@ -123,7 +142,7 @@ pub struct TenantRetentionGetItemRequest {
     pub expression_attribute_names: Option<VecMap<String, String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TenantRetentionQueryTableRequest {
     pub table_name: String,

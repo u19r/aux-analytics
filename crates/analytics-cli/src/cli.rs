@@ -6,7 +6,8 @@ use clap_complete::Shell;
 use crate::{
     backend_args::BackendArgs, backfill::args::BackfillCommand, check_args::CheckCommand,
     constants::ROOT_LONG_ABOUT, fix_args::FixCommand, operations_args::OperationsCommand,
-    privacy_fix_args::PrivacyFixCommand, raw_backup_args::RawBackupCommand, trim_args::TrimCommand,
+    privacy_fix_args::PrivacyFixCommand, raw_backup_args::RawBackupCommand,
+    recovery::RecoveryCommand, trim_args::TrimCommand,
 };
 
 #[derive(Debug, Parser)]
@@ -23,6 +24,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    #[command(
+        subcommand,
+        about = "Inspect or rebuild a current-state source archive"
+    )]
+    Recovery(RecoveryCommand),
     #[command(about = "Print the analytics manifest JSON Schema")]
     Schema,
     #[command(about = "Print the runtime configuration JSON Schema")]

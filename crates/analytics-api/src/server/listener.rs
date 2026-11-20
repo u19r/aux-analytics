@@ -12,7 +12,7 @@ use crate::{
     AppState, EndpointConfig, MetricsEndpointConfig,
     cli::ApiCli,
     error::ApiResult,
-    runtime_config::{load_privacy_policy, build_serve_request},
+    runtime_config::{build_serve_request, load_privacy_policy},
     server_router_with_config,
     source_polling::spawn_source_polling,
 };

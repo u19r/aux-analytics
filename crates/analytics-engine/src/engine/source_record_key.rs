@@ -1,6 +1,6 @@
 use analytics_contract::{SourcePosition, StorageItem, StorageValue};
 use sha2::{Digest, Sha256};
-use storage_types::{AttributeValue as StorageAttributeValue, KeyAttributes};
+use storage_types::{AttributeValue as StorageAttributeValue, KeyAttributes, SystemStreamScope};
 
 use super::{AnalyticsEngineError, AnalyticsEngineResult};
 use crate::constants::HEX_DIGITS;
@@ -11,8 +11,30 @@ pub(super) fn source_key_digest(
     source_position: &SourcePosition,
     record_keys: &StorageItem,
 ) -> AnalyticsEngineResult<String> {
+    let SourcePosition::SystemStream { source_scope, .. } = source_position else {
+        return Err(AnalyticsEngineError::IncompleteSourceEffectState);
+    };
+    source_key_digest_for_scope(
+        analytics_table_name,
+        source_table_name,
+        source_scope,
+        record_keys,
+    )
+}
+
+pub(super) fn source_key_digest_for_scope(
+    analytics_table_name: &str,
+    source_table_name: &str,
+    source_scope: &SystemStreamScope,
+    record_keys: &StorageItem,
+) -> AnalyticsEngineResult<String> {
     let canonical_keys = canonical_source_keys(record_keys)?;
-    let scope = source_position_scope(source_position)?;
+    let scope = format!(
+        "system:{}:{}:{}",
+        source_scope.version(),
+        source_scope.scope_id(),
+        source_scope.generation()
+    );
     let mut digest = Sha256::new();
     digest.update(b"analytics-engine:source-record-owner:v1");
     append_digest_field(&mut digest, analytics_table_name.as_bytes());
@@ -49,18 +71,6 @@ fn canonical_source_keys(record_keys: &StorageItem) -> AnalyticsEngineResult<Str
     }
     key.canonical_dynamo_json()
         .map_err(|error| AnalyticsEngineError::InvalidSystemSourceKey(error.to_string()))
-}
-
-fn source_position_scope(source_position: &SourcePosition) -> AnalyticsEngineResult<String> {
-    let SourcePosition::SystemStream { source_scope, .. } = source_position else {
-        return Err(AnalyticsEngineError::IncompleteSourceEffectState);
-    };
-    Ok(format!(
-        "system:{}:{}:{}",
-        source_scope.version(),
-        source_scope.scope_id(),
-        source_scope.generation()
-    ))
 }
 
 fn append_digest_field(digest: &mut Sha256, value: &[u8]) {

@@ -14,6 +14,7 @@ mod privacy_fix;
 mod privacy_fix_args;
 mod raw_backup;
 mod raw_backup_args;
+mod recovery;
 mod runtime_config;
 mod trim;
 mod trim_args;

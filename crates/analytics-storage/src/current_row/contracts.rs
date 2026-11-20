@@ -3,7 +3,8 @@ use aws_sdk_dynamodb::types::AttributeValue as DynamoDbAttributeValue;
 use serde::{Deserialize, Serialize};
 use storage_types::{ExclusiveStartKey, ScanResponse, VecMap};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(Debug))]
 pub struct AuxStorageCurrentRowScanRequest {
     pub table_name: String,
     pub projection_expression: String,

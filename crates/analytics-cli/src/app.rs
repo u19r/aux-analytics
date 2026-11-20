@@ -19,12 +19,14 @@ use crate::{
     operations::run_operations_command,
     privacy_fix::run_privacy_fix_command,
     raw_backup::run_raw_backup_command,
+    recovery::run_recovery_command,
     runtime_config::read_structured_query,
     trim::run_trim_command,
 };
 
 pub async fn run(cli: Cli) -> CliResult<Option<String>> {
     match cli.command {
+        Command::Recovery(command) => run_recovery_command(command).map(Some),
         Command::Schema => pretty_json(&schemars::schema_for!(AnalyticsManifest)).map(Some),
         Command::ConfigSchema => pretty_json(&schemars::schema_for!(RootConfig)).map(Some),
         Command::Openapi => pretty_json(&analytics_api::build_openapi_json()).map(Some),
