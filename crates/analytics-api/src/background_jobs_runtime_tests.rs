@@ -21,6 +21,23 @@ fn backend() -> StorageBackend {
 }
 
 #[test]
+fn given_job_store_token_file_when_settings_are_built_then_the_path_is_carried_without_reading_it()
+{
+    let job_store = AnalyticsJobStoreConfig {
+        endpoint_url: Some("http://aux.example.test".to_string()),
+        internal_service_token_file: Some("/run/secrets/internal-token".into()),
+        ..AnalyticsJobStoreConfig::default()
+    };
+    let settings = job_store_settings(&job_store, &backend())
+        .expect("JobStore settings")
+        .expect("active source jobs");
+    assert_eq!(
+        settings.token_file,
+        Some(std::path::Path::new("/run/secrets/internal-token"))
+    );
+}
+
+#[test]
 fn given_job_store_endpoint_when_settings_are_built_then_only_endpoint_and_timeout_are_used() {
     let job_store = AnalyticsJobStoreConfig {
         endpoint_url: Some("http://aux.example.test".to_string()),
@@ -64,6 +81,7 @@ fn given_over_bound_job_store_timeout_when_settings_are_built_then_configuration
     let job_store = AnalyticsJobStoreConfig {
         endpoint_url: Some("http://jobs.example.test".to_string()),
         request_timeout_ms: MAX_JOB_STORE_REQUEST_TIMEOUT.as_millis() as u64 + 1,
+        ..AnalyticsJobStoreConfig::default()
     };
 
     assert!(job_store_settings(&job_store, &backend()).is_err());

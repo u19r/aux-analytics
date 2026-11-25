@@ -162,11 +162,32 @@ impl<S: JobStore + Clone> BackgroundJobRuntime<S> {
 }
 
 async fn connect_job_store(settings: JobStoreSettings<'_>) -> ApiResult<ScheduledJobStore> {
-    let store_config = RemoteScheduledJobStoreConfig::new([settings.endpoint], settings.timeout)
-        .map_err(|error| ApiError::with_source(ApiErrorKind::Config, error))?;
+    let mut store_config =
+        RemoteScheduledJobStoreConfig::new([settings.endpoint], settings.timeout)
+            .map_err(|error| ApiError::with_source(ApiErrorKind::Config, error))?;
+    if let Some(path) = settings.token_file {
+        store_config = store_config
+            .with_internal_service_token(load_job_store_token(path)?)
+            .map_err(|error| ApiError::with_source(ApiErrorKind::Config, error))?;
+    }
     connect_remote_scheduled_job_store(store_config)
         .await
         .map_err(|error| ApiError::with_source(ApiErrorKind::Config, error))
+}
+
+fn load_job_store_token(path: &std::path::Path) -> ApiResult<String> {
+    let token = std::fs::read_to_string(path)
+        .map_err(|error| ApiError::with_source(ApiErrorKind::Config, error))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(ApiError::with_debug(
+            ApiErrorKind::Config,
+            crate::error::ApiErrorDebug::Message(
+                "the JobStore service token file is empty".to_string(),
+            ),
+        ));
+    }
+    Ok(token.to_owned())
 }
 
 fn register_job_runtime<S: JobStore + Clone>(

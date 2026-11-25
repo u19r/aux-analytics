@@ -78,7 +78,11 @@ pub(crate) fn job_store_settings<'a>(
             ApiErrorDebug::Message(message.to_string()),
         )
     })?;
-    Ok(Some(JobStoreSettings { endpoint, timeout }))
+    Ok(Some(JobStoreSettings {
+        endpoint,
+        timeout,
+        token_file: job_store.internal_service_token_file.as_deref(),
+    }))
 }
 
 pub(crate) fn source_job_shared(app_state: &AppState) -> Arc<SourceJobShared> {
@@ -149,4 +153,5 @@ pub(crate) fn source_deadline_at_ms(now_ms: u128, timeout: Duration) -> Result<u
 pub(crate) struct JobStoreSettings<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) timeout: Duration,
+    pub(crate) token_file: Option<&'a std::path::Path>,
 }

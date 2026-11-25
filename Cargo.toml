@@ -11,7 +11,7 @@ repository = "https://github.com/u19r/aux-analytics"
 version = "0.1.0"
 
 [workspace.dependencies]
-alloc-counter = { package = "alloc-counter", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+alloc-counter = { package = "alloc-counter",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 analytics-api = { path = "crates/analytics-api", default-features = false }
 analytics-cli = { path = "crates/analytics-cli" }
 analytics-contract = { path = "crates/analytics-contract" }
@@ -23,7 +23,7 @@ analytics-storage = { path = "crates/analytics-storage" }
 anyhow = "1.0.104"
 aws-config = "1.13.3"
 aws-credential-types = "1.3.1"
-aws-credentials = { package = "aws-credentials", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+aws-credentials = { package = "aws-credentials",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 aws-sdk-dynamodb = { version = "1.140.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-dynamodbstreams = { version = "1.126.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1.161.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
@@ -31,8 +31,8 @@ aws-sdk-ssm = { version = "1.138.0", default-features = false, features = ["defa
 aws-smithy-http-client = { version = "1.5.3", default-features = false, features = ["default-client"] }
 axum = "0.8.9"
 base64 = "0.23.1"
-bg-jobs = { package = "bg-jobs", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
-bg-jobs-tokio = { package = "bg-jobs-tokio", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+bg-jobs = { package = "bg-jobs",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
+bg-jobs-tokio = { package = "bg-jobs-tokio",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 bytes = "1.12.2"
 clap = { version = "4.6.9", features = ["derive"] }
 clap_complete = "4.6.12"
@@ -44,11 +44,11 @@ flate2 = "1.1.11"
 hex = "0.4.3"
 hmac = "0.13.0"
 http-body-util = "0.1.5"
-http-request = { package = "http-request", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+http-request = { package = "http-request",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 jsonschema = { version = "0.61.2", default-features = false, features = ["resolve-file"] }
-lambda-web-runtime = { package = "lambda-web-runtime", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+lambda-web-runtime = { package = "lambda-web-runtime",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 lambda_runtime = "1.5.0"
-lru-ttl-cache = { package = "lru-ttl-cache", git = "https://github.com/u19r/aux-common", rev = "1c20f49ffc0e76ca75d53c7afcc42a26bbbc2e5a" }
+lru-ttl-cache = { package = "lru-ttl-cache",   git = "https://github.com/u19r/aux-common",rev = "a05c48727bafe089fcd1d418e9ddad1c34c5e629"}
 lz4_flex = { version = "0.14.2", default-features = false, features = ["safe-decode", "safe-encode", "std"] }
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
@@ -59,8 +59,8 @@ schemars = { version = "1.2.3", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
-storage = { package = "storage", default-features = false, features = ["remote"],   git = "https://github.com/u19r/aux-storage",rev = "b5c6306737a34e9298e427f577717ecc75eaf5b3"}
-storage-types = { package = "storage-types", default-features = false,   git = "https://github.com/u19r/aux-storage",rev = "b5c6306737a34e9298e427f577717ecc75eaf5b3"}
+storage = { package = "storage", default-features = false, features = ["remote"],   git = "https://github.com/u19r/aux-storage",rev = "2d5b390d46024caed4444a561c351f7104eeec59"}
+storage-types = { package = "storage-types", default-features = false,   git = "https://github.com/u19r/aux-storage",rev = "2d5b390d46024caed4444a561c351f7104eeec59"}
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["full", "tracing"] }

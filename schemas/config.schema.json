@@ -252,6 +252,13 @@
             "null"
           ]
         },
+        "internal_service_token_file": {
+          "description": "File holding the shared secret sent as `x-aux-internal-token` to a\nJobStore endpoint behind the storage owner's internal listener.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "request_timeout_ms": {
           "type": "integer",
           "format": "uint64",

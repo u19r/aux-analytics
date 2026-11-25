@@ -66,6 +66,7 @@ Registration references and documents are runtime configuration and are excluded
 | `analytics.source.poll_max_records_per_response` | `8192` | Maximum records accepted from one source response. |
 | `analytics.source.max_batch_bytes` | `1500000` | Serialized routed-record byte budget for one durable source batch. Destination expansion and catalog metadata have separate costs; this does not guarantee a native transaction fits. |
 | `analytics.job_store.endpoint_url` | none | Public AuxStorage scheduled JobStore endpoint. When set, the bg-jobs runtime uses the unauthenticated bounded-timeout library facade over ordinary DynamoDB API actions. |
+| `analytics.job_store.internal_service_token_file` | unset | File holding the shared secret sent as `x-aux-internal-token` to a JobStore endpoint that admits only internal services. |
 | `analytics.job_store.request_timeout_ms` | `5000` | Per-request timeout for the scheduled JobStore facade. |
 | `analytics.source.tables[].table_name` | required | Source storage table name. |
 | `analytics.source.tables[].stream_type` | inherits global | Per-table stream format override. |

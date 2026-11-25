@@ -20,6 +20,11 @@ pub struct AnalyticsJobStoreConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default)]
     pub endpoint_url: Option<String>,
+    /// File holding the shared secret sent as `x-aux-internal-token` to a
+    /// JobStore endpoint behind the storage owner's internal listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(default)]
+    pub internal_service_token_file: Option<std::path::PathBuf>,
     #[serde(default = "default_job_store_request_timeout_ms")]
     #[schemars(default = "default_job_store_request_timeout_ms")]
     pub request_timeout_ms: u64,
@@ -29,6 +34,7 @@ impl Default for AnalyticsJobStoreConfig {
     fn default() -> Self {
         Self {
             endpoint_url: None,
+            internal_service_token_file: None,
             request_timeout_ms: default_job_store_request_timeout_ms(),
         }
     }
